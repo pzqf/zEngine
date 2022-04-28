@@ -35,15 +35,30 @@ var DefaultLogger *Logger
 func Debug(msg string) {
 	DefaultLogger.Debug(msg)
 }
+func DebugF(format string, a ...interface{}) {
+	DefaultLogger.DebugF(format, a...)
+}
 
 func Info(msg string) {
 	DefaultLogger.Info(msg)
+}
+
+func InfoF(format string, a ...interface{}) {
+	DefaultLogger.InfoF(format, a...)
 }
 
 func Warning(msg string) {
 	DefaultLogger.Warning(msg)
 }
 
+func WarningF(format string, a ...interface{}) {
+	DefaultLogger.WarningF(format, a...)
+}
+
 func Error(msg string) {
 	DefaultLogger.Error(msg)
+}
+
+func ErrorF(format string, a ...interface{}) {
+	DefaultLogger.ErrorF(format, a...)
 }

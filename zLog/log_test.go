@@ -15,7 +15,7 @@ func TestMain(m *testing.M) {
 		Debug("test debug")
 		Warning("test warning")
 		Error("test error")
-		time.Sleep(1 * time.Second)
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	Close()

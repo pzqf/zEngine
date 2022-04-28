@@ -105,6 +105,8 @@ func NewLogger(confStr string) *Logger {
 
 func (l *Logger) Close() {
 	l.exitChan <- true
+	close(l.msgChan)
+	close(l.exitChan)
 	l.wg.Wait()
 }
 
@@ -282,15 +284,27 @@ func (l *Logger) output(msg *LogMessage) {
 func (l *Logger) Debug(msg string) {
 	l.receiveMsg(LevelDebug, msg)
 }
+func (l *Logger) DebugF(format string, a ...interface{}) {
+	l.receiveMsg(LevelDebug, fmt.Sprintf(format, a...))
+}
 
 func (l *Logger) Info(msg string) {
 	l.receiveMsg(LevelInfo, msg)
+}
+func (l *Logger) InfoF(format string, a ...interface{}) {
+	l.receiveMsg(LevelInfo, fmt.Sprintf(format, a...))
 }
 
 func (l *Logger) Warning(msg string) {
 	l.receiveMsg(LevelWarning, msg)
 }
+func (l *Logger) WarningF(format string, a ...interface{}) {
+	l.receiveMsg(LevelWarning, fmt.Sprintf(format, a...))
+}
 
 func (l *Logger) Error(msg string) {
 	l.receiveMsg(LevelError, msg)
+}
+func (l *Logger) ErrorF(format string, a ...interface{}) {
+	l.receiveMsg(LevelError, fmt.Sprintf(format, a...))
 }
