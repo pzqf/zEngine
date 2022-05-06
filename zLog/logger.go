@@ -47,6 +47,7 @@ type Logger struct {
 	fileIndex  int
 	exitChan   chan bool
 	wg         sync.WaitGroup
+	running    bool
 }
 
 // NewLogger create a new custom logger,
@@ -96,6 +97,7 @@ func NewLogger(confStr string) *Logger {
 		},
 		fileIndex: 1,
 		exitChan:  make(chan bool, 1),
+		running:   true,
 	}
 	newLogger.wg.Add(1)
 	go newLogger.process()
@@ -104,13 +106,15 @@ func NewLogger(confStr string) *Logger {
 }
 
 func (l *Logger) Close() {
+	l.running = false
 	l.exitChan <- true
-	close(l.msgChan)
-	close(l.exitChan)
 	l.wg.Wait()
 }
 
 func (l *Logger) receiveMsg(level LogLevel, msg string) {
+	if !l.running {
+		return
+	}
 	if level < LevelNil {
 		level = LevelNil
 	}
@@ -152,6 +156,8 @@ func (l *Logger) process() {
 					}
 					break
 				}
+				close(l.msgChan)
+				close(l.exitChan)
 				l.wg.Done()
 				return
 			}
@@ -250,12 +256,10 @@ func (l *Logger) output(msg *LogMessage) {
 	line := l.format(msg)
 
 	if l.config.Console {
-		fmt.Println(line)
+		_, _ = fmt.Fprintln(os.Stdout, line)
 	}
 
-	//app_2006-01-02_0001.log
 	if l.config.LogDir != "" {
-		//fmt.Println(l.getLogFilename())
 		for {
 			if l.fileIndex > 9 {
 				fmt.Println(fmt.Sprintf(`[E] log file count over 9999`))
