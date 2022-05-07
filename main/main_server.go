@@ -45,7 +45,7 @@ func HandlerLogin(sid int64, packet *zNet.NetPacket) {
 	}
 
 	var data loginDataInfo
-	err := packet.DecodeData(&data)
+	err := packet.JsonDecodeData(&data)
 	if err != nil {
 		zLog.InfoF("receive:%s, %s", data.UserName, data.Password)
 		return
@@ -66,5 +66,13 @@ func HandlerLogin(sid int64, packet *zNet.NetPacket) {
 		Time:  data.Time,
 	}
 
-	zNet.SendToClient(sid, 1, &sendData)
+	netPacket := zNet.NetPacket{}
+	netPacket.ProtoId = 1
+
+	err = netPacket.JsonEncodeData(sendData)
+	if err != nil {
+		return
+	}
+
+	zNet.SendToClient(sid, 1, &netPacket)
 }

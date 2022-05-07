@@ -14,8 +14,8 @@ type Session struct {
 	conn        *net.TCPConn
 	sid         int64 // session ID
 	exitChan    chan bool
-	sendChan    chan NetPacket
-	receiveChan chan NetPacket
+	sendChan    chan *NetPacket
+	receiveChan chan *NetPacket
 	wg          sync.WaitGroup
 }
 
@@ -23,8 +23,8 @@ func (s *Session) Init(conn *net.TCPConn, sid int64) {
 	s.conn = conn
 	s.sid = sid
 	s.exitChan = make(chan bool, 1)
-	s.sendChan = make(chan NetPacket, 4096)
-	s.receiveChan = make(chan NetPacket, 4096)
+	s.sendChan = make(chan *NetPacket, 4096)
+	s.receiveChan = make(chan *NetPacket, 4096)
 }
 
 func (s *Session) Start() {
@@ -108,7 +108,7 @@ func (s *Session) receive() {
 
 		netPacket.Data = dataBuf
 
-		s.receiveChan <- netPacket
+		s.receiveChan <- &netPacket
 	}
 	s.wg.Done()
 	s.exitChan <- true
@@ -127,12 +127,12 @@ func (s *Session) process() {
 			if receivePacket.ProtoId == 0 {
 				fmt.Println(receivePacket)
 			}
-			err := Dispatcher(s.sid, &receivePacket)
+			err := Dispatcher(s.sid, receivePacket)
 			if err != nil {
 				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 			}
 		case sendPacket := <-s.sendChan:
-			_, err := s.send(&sendPacket)
+			_, err := s.send(sendPacket)
 			if err != nil {
 				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
 			}
@@ -140,7 +140,7 @@ func (s *Session) process() {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					err := Dispatcher(s.sid, &receivePacket)
+					err := Dispatcher(s.sid, receivePacket)
 					if err != nil {
 						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 					}
@@ -151,7 +151,7 @@ func (s *Session) process() {
 			for {
 				if len(s.sendChan) > 0 {
 					sendPacket := <-s.sendChan
-					_, _ = s.send(&sendPacket)
+					_, _ = s.send(sendPacket)
 					continue
 				}
 				break
@@ -169,15 +169,7 @@ func (s *Session) process() {
 	s.close()
 }
 
-func (s *Session) Send(protoId int32, data interface{}) error {
-	netPacket := NetPacket{}
-	netPacket.ProtoId = protoId
-
-	err := netPacket.EncodeData(data)
-	if err != nil {
-		return err
-	}
-
+func (s *Session) Send(protoId int32, netPacket *NetPacket) error {
 	s.sendChan <- netPacket
 	return nil
 }

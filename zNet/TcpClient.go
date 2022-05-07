@@ -33,20 +33,13 @@ func (cli *TcpClient) Connect(serverAddr string, serverPort int) error {
 	return nil
 }
 
-func (cli *TcpClient) Send(protoId int32, data interface{}) error {
-	netPacket := NetPacket{
-		ProtoId: protoId,
-	}
-	err := netPacket.EncodeData(data)
-	if err != nil {
-		return err
-	}
+func (cli *TcpClient) Send(netPacket *NetPacket) error {
 	sendBuf := new(bytes.Buffer)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.Data)
 
-	_, err = cli.conn.Write(sendBuf.Bytes())
+	_, err := cli.conn.Write(sendBuf.Bytes())
 	if err != nil {
 		zLog.Error(err.Error())
 		return err

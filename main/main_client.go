@@ -40,8 +40,16 @@ func main() {
 				Password: "123456",
 				Time:     time.Now().UnixNano(),
 			}
+			sendPacket := zNet.NetPacket{
+				ProtoId: 1,
+			}
+			err = sendPacket.JsonEncodeData(newData)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 
-			err = cli.Send(1, newData)
+			err = cli.Send(&sendPacket)
 			if err != nil {
 				fmt.Println(err)
 				return
@@ -62,7 +70,7 @@ func main() {
 			}
 
 			var receiveData PlayerInfo
-			err = netPacket.DecodeData(&receiveData)
+			err = netPacket.JsonDecodeData(&receiveData)
 			if err != nil {
 				fmt.Println(err)
 				return
