@@ -31,7 +31,18 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 // if you want use json,gob,protobuf or other, change the function or add other decode, encode function
 // PS: struct size, gob > json,
 
-func (p *NetPacket) DecodeData(data interface{}) error {
+func (p *NetPacket) DecodeData(data []byte) error {
+	data = p.Data
+	return nil
+}
+
+func (p *NetPacket) EncodeData(data []byte) error {
+	p.Data = append([]byte(nil), data...)
+	p.DataSize = int32(len(p.Data))
+	return nil
+}
+
+func (p *NetPacket) JsonDecodeData(data interface{}) error {
 	err := json.Unmarshal(p.Data, data)
 	if err != nil {
 		return err
@@ -39,7 +50,7 @@ func (p *NetPacket) DecodeData(data interface{}) error {
 	return nil
 }
 
-func (p *NetPacket) EncodeData(data interface{}) error {
+func (p *NetPacket) JsonEncodeData(data interface{}) error {
 	marshal, err := json.Marshal(data)
 	if err != nil {
 		return err
