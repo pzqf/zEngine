@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -68,10 +69,7 @@ func (s *Session) receive() {
 			log.Printf("receive NetPacket protoid empty, sid:%d", s.sid)
 			continue
 		}
-		if netPacket.DataSize <= 0 {
-			log.Printf("Receive NetPacket Data size 0, sid:%d, protoid:%d", s.sid, netPacket.ProtoId)
-			continue
-		}
+
 		if netPacket.DataSize > MaxNetPacketDataSize {
 			log.Printf("Receive NetPacket Data size over max size, sid:%d, protoid:%d, data size:%d, max size: %d",
 				s.sid, netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
@@ -79,34 +77,36 @@ func (s *Session) receive() {
 		}
 
 		//read data
-		var dataBuf []byte
-		readSize := 0
-		readHappenError := false
-		for {
-			readBuf := make([]byte, netPacket.DataSize)
-			n, err = reader.Read(readBuf)
-			if err != nil {
-				log.Printf("Client conn read data error,%v, sid:%d, addr:%s", err, s.sid, s.conn.RemoteAddr().String())
-				readHappenError = true
+		if netPacket.DataSize > 0 {
+			var dataBuf []byte
+			readSize := 0
+			readHappenError := false
+			for {
+				readBuf := make([]byte, netPacket.DataSize)
+				n, err = reader.Read(readBuf)
+				if err != nil {
+					log.Printf("Client conn read data error,%v, sid:%d, addr:%s", err, s.sid, s.conn.RemoteAddr().String())
+					readHappenError = true
+					break
+				}
+
+				dataBuf = append(dataBuf, readBuf[:n]...)
+				readSize += n
+				if readSize >= int(netPacket.DataSize) {
+					break
+				}
+			}
+			if readHappenError {
 				break
 			}
 
-			dataBuf = append(dataBuf, readBuf[:n]...)
-			readSize += n
-			if readSize >= int(netPacket.DataSize) {
-				break
+			if netPacket.DataSize != int32(len(dataBuf)) {
+				log.Printf("receive NetPacket Data size error, sid:%d, protoid:%d, DataSize:%d:%d", s.sid, netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
+				continue
 			}
-		}
-		if readHappenError {
-			break
-		}
 
-		if netPacket.DataSize != int32(len(dataBuf)) {
-			log.Printf("receive NetPacket Data, sid:%d, protoid:%d, DataSize:%d:%d", s.sid, netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
-			continue
+			netPacket.Data = dataBuf
 		}
-
-		netPacket.Data = dataBuf
 
 		s.receiveChan <- &netPacket
 	}
@@ -127,7 +127,7 @@ func (s *Session) process() {
 			if receivePacket.ProtoId == 0 {
 				fmt.Println(receivePacket)
 			}
-			err := Dispatcher(s.sid, receivePacket)
+			err := Dispatcher(s, receivePacket)
 			if err != nil {
 				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 			}
@@ -140,7 +140,7 @@ func (s *Session) process() {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					err := Dispatcher(s.sid, receivePacket)
+					err := Dispatcher(s, receivePacket)
 					if err != nil {
 						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 					}
@@ -169,7 +169,18 @@ func (s *Session) process() {
 	s.close()
 }
 
-func (s *Session) Send(protoId int32, netPacket *NetPacket) error {
+func (s *Session) Send(netPacket *NetPacket) error {
+	if netPacket == nil {
+		return errors.New("send packet is nil")
+	}
+
+	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
+		return errors.New("send packet illegal")
+	}
+	if netPacket.DataSize > MaxNetPacketDataSize {
+		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d", netPacket.DataSize, MaxNetPacketDataSize))
+	}
+
 	s.sendChan <- netPacket
 	return nil
 }
@@ -194,4 +205,8 @@ func (s *Session) Close() {
 func (s *Session) close() {
 	s.wg.Wait()
 	TcpServerInstance.DelClient(s)
+}
+
+func (s *Session) GetSid() int64 {
+	return s.sid
 }

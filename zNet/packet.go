@@ -5,8 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
-	"errors"
-	"fmt"
 )
 
 const MaxNetPacketDataSize = 4096 * 2 * 2
@@ -79,9 +77,5 @@ func (p *NetPacket) GobEncodeData(data interface{}) error {
 	}
 	p.Data = append([]byte(nil), buf.Bytes()...)
 	p.DataSize = int32(len(p.Data))
-	if p.DataSize > MaxNetPacketDataSize {
-		return errors.New(fmt.Sprintf("Data size over max size, data size :%d, max size: %d", p.DataSize, MaxNetPacketDataSize))
-	}
-
 	return nil
 }

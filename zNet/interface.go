@@ -1,13 +1,13 @@
 package zNet
 
-func SendToClient(sid int64, protoId int32, netPacket *NetPacket) {
+func SendToClient(sid int64, netPacket *NetPacket) {
 	client := TcpServerInstance.GetSession(sid)
 	if client != nil {
-		_ = client.Send(protoId, netPacket)
+		_ = client.Send(netPacket)
 	}
 }
 
-func BroadcastToClient(protoId int32, netPacket *NetPacket) {
+func BroadcastToClient(netPacket *NetPacket) {
 	var list []*Session
 	TcpServerInstance.locker.Lock()
 	for _, v := range TcpServerInstance.ClientSessionMap {
@@ -16,7 +16,7 @@ func BroadcastToClient(protoId int32, netPacket *NetPacket) {
 	TcpServerInstance.locker.Unlock()
 
 	for _, v := range list {
-		_ = v.Send(protoId, netPacket)
+		_ = v.Send(netPacket)
 	}
 }
 

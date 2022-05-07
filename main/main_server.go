@@ -37,7 +37,7 @@ func main() {
 	log.Printf("====>>> FBI warning , server exit <<<=====")
 }
 
-func HandlerLogin(sid int64, packet *zNet.NetPacket) {
+func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 	type loginDataInfo struct {
 		UserName string `json:"user_name"`
 		Password string `json:"password"`
@@ -62,7 +62,7 @@ func HandlerLogin(sid int64, packet *zNet.NetPacket) {
 	sendData := PlayerInfo{
 		Id:    2,
 		Name:  data.UserName,
-		Level: int32(sid),
+		Level: int32(session.GetSid()),
 		Time:  data.Time,
 	}
 
@@ -74,5 +74,8 @@ func HandlerLogin(sid int64, packet *zNet.NetPacket) {
 		return
 	}
 
-	zNet.SendToClient(sid, 1, &netPacket)
+	err = session.Send(&netPacket)
+	if err != nil {
+		return
+	}
 }

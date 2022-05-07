@@ -2,7 +2,7 @@ package zNet
 
 import "errors"
 
-type HandlerFun func(sid int64, packet *NetPacket)
+type HandlerFun func(session *Session, packet *NetPacket)
 
 var mapHandler = make(map[int32]HandlerFun)
 
@@ -15,7 +15,7 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 	return nil
 }
 
-func Dispatcher(sid int64, netPacket *NetPacket) error {
+func Dispatcher(session *Session, netPacket *NetPacket) error {
 	if netPacket == nil {
 		return errors.New("packet is nil")
 	}
@@ -24,7 +24,7 @@ func Dispatcher(sid int64, netPacket *NetPacket) error {
 		return errors.New("no handlerFun")
 	}
 
-	fun(sid, netPacket)
+	fun(session, netPacket)
 
 	return nil
 }
