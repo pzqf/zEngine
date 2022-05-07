@@ -1,10 +1,10 @@
 package zSignal
 
 import (
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"zEngine/zLog"
 )
 
 func GracefulExit() {
@@ -12,7 +12,7 @@ func GracefulExit() {
 	signal.Notify(sc, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGKILL)
 	select {
 	case s := <-sc:
-		zLog.InfoF("receive signal %d:%v, app quit", s, s)
+		log.Printf("Receive signal %d:%v, app will be quit", s, s)
 		switch s {
 		case syscall.SIGHUP:
 		case syscall.SIGINT,

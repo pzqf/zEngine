@@ -2,11 +2,11 @@ package NetServer
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-	"zEngine/zLog"
 )
 
 var TcpServerInstance *TcpServer
@@ -23,7 +23,6 @@ type TcpServer struct {
 }
 
 func InitTcpServer(ip string, port int, maxClientCount int) {
-	zLog.Info("Init tcp server ... ")
 	svr := TcpServer{
 		maxClientCount:   maxClientCount,
 		ClientSessionMap: make(map[int64]*Session),
@@ -46,32 +45,26 @@ func Start() error {
 	var strRemote = fmt.Sprintf("%s:%d", TcpServerInstance.ListenIp, TcpServerInstance.ListenPort)
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", strRemote)
 	if err != nil {
-		zLog.Error(err.Error())
 		return err
 	}
 	listener, err := net.ListenTCP("tcp4", tcpAddr)
 	if err != nil {
-		zLog.Error(err.Error())
 		return err
 	}
 	TcpServerInstance.listener = listener
 
-	zLog.InfoF("Tcp server listing on %s ", tcpAddr.String())
-
 	go func() {
 		for {
 			if len(TcpServerInstance.ClientSessionMap) >= TcpServerInstance.maxClientCount {
-				zLog.ErrorF("Connects over max maxClientCount %d", TcpServerInstance.maxClientCount)
+				log.Printf("Connects over max maxClientCount %d", TcpServerInstance.maxClientCount)
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 			conn, err := TcpServerInstance.listener.AcceptTCP()
 			if err != nil {
-				zLog.Error(err.Error())
+				log.Printf(err.Error())
 				break
 			}
-
-			zLog.InfoF("Accept connect from %s", conn.RemoteAddr().String())
 
 			TcpServerInstance.AddClient(conn)
 		}
@@ -80,10 +73,18 @@ func Start() error {
 }
 
 func Close() {
-	zLog.InfoF("Close tcp server, session count %d", len(TcpServerInstance.ClientSessionMap))
+	log.Printf("Close tcp server, session count %d", len(TcpServerInstance.ClientSessionMap))
 
 	_ = TcpServerInstance.listener.Close()
+
+	var list []*Session
+	TcpServerInstance.locker.Lock()
 	for _, v := range TcpServerInstance.ClientSessionMap {
+		list = append(list, v)
+	}
+	TcpServerInstance.locker.Unlock()
+
+	for _, v := range list {
 		v.Close()
 	}
 }
@@ -96,27 +97,31 @@ func (svr *TcpServer) AddClient(conn *net.TCPConn) *Session {
 		svr.locker.Lock()
 		svr.ClientSessionMap[newSession.sid] = newSession
 		svr.locker.Unlock()
-		zLog.InfoF("Add client session, sid:%d ", newSession.sid)
 
 		newSession.Start()
 		return newSession
-	} else {
-		zLog.Info("Can't create Session")
 	}
 	return nil
 }
 
 func (svr *TcpServer) DelClient(cli *Session) bool {
-	zLog.InfoF("Delete client session：%d ", cli.sid)
-
-	svr.sessionPool.Put(cli)
 	svr.locker.Lock()
+	if _, ok := svr.ClientSessionMap[cli.sid]; !ok {
+		return false
+	}
+	svr.sessionPool.Put(cli)
 	delete(svr.ClientSessionMap, cli.sid)
 	svr.locker.Unlock()
-	zLog.InfoF("client count：%d ", len(svr.ClientSessionMap))
-
-	//todo
-	//notify player offline
 
 	return true
+}
+
+func (svr *TcpServer) GetSession(sid int64) *Session {
+	svr.locker.Lock()
+	defer svr.locker.Unlock()
+	if client, ok := svr.ClientSessionMap[sid]; ok {
+		return client
+	}
+
+	return nil
 }

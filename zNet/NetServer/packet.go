@@ -28,7 +28,7 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 	return nil
 }
 
-// if you want use json or other, change the function or add other decode, encode function
+// if you want use json,gob,protobuf or other, change the function or add other decode, encode function
 // PS: struct size, gob > json,
 
 func (p *NetPacket) DecodeData(data interface{}) error {

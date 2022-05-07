@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"zEngine/zLog"
@@ -49,12 +51,10 @@ func (cli *NetClient) Send(protoId int32, data interface{}) error {
 		zLog.Error(err.Error())
 		return err
 	}
-	//zLog.InfoF("Send NetPacket, ProtoId:%d, DataSize: %d", netPacket.ProtoId, netPacket.DataSize)
-
 	return nil
 }
 
-func (cli *NetClient) Receive() *NetPacket {
+func (cli *NetClient) Receive() (*NetPacket, error) {
 	reader := bufio.NewReader(cli.conn)
 	headSize := 8
 
@@ -62,24 +62,20 @@ func (cli *NetClient) Receive() *NetPacket {
 	var buff = make([]byte, headSize)
 	n, err := reader.Read(buff)
 	if err != nil {
-		zLog.Error(err.Error())
-		return nil
+		return nil, err
 	}
 
 	if n != headSize {
-		zLog.ErrorF("Receive NetPacket head error, addr:%s", cli.conn.RemoteAddr().String())
-		return nil
+		return nil, errors.New("receive NetPacket head error")
 	}
 
 	netPacket := &NetPacket{}
 	if err = netPacket.UnmarshalHead(buff); err != nil {
-		zLog.Error(err.Error())
-		return nil
+		return nil, err
 	}
 	if netPacket.DataSize > MaxNetPacketDataSize {
-		zLog.ErrorF("Receive NetPacket length over max receive buf, data size :%d, max size: %d",
-			netPacket.DataSize, MaxNetPacketDataSize)
-		return nil
+		return nil, errors.New(fmt.Sprintf("Receive NetPacket length over max receive buf, data size :%d, max size: %d",
+			netPacket.DataSize, MaxNetPacketDataSize))
 	}
 
 	//read data
@@ -90,7 +86,6 @@ func (cli *NetClient) Receive() *NetPacket {
 		readBuf := make([]byte, netPacket.DataSize)
 		n, err = reader.Read(readBuf)
 		if err != nil {
-			zLog.ErrorF("net read error,%v, addr:%s", err, cli.conn.RemoteAddr().String())
 			readHappenError = true
 			break
 		}
@@ -102,13 +97,12 @@ func (cli *NetClient) Receive() *NetPacket {
 		}
 	}
 	if readHappenError {
-		return nil
+		return nil, errors.New("read packet data error")
 	}
 
 	netPacket.Data = dataBuf
-	//zLog.InfoF("Receive NetPacket, ProtoId:%d, DataSize:%d", netPacket.ProtoId, netPacket.DataSize)
-	return netPacket
+	return netPacket, nil
 }
 func (cli *NetClient) Close() {
-	cli.conn.Close()
+	_ = cli.conn.Close()
 }

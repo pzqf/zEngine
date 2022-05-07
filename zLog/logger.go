@@ -60,7 +60,7 @@ func NewLogger(confStr string) *Logger {
 		LogDir:      "",
 		Console:     true,
 		CallerDepth: 3,
-		MsgChanLen:  512,
+		MsgChanLen:  409600,
 		Daily:       true,
 		MaxLine:     100000000,
 		MaxSize:     1 << 31,
@@ -133,9 +133,9 @@ func (l *Logger) receiveMsg(level LogLevel, msg string) {
 	_, file, line, _ := runtime.Caller(l.config.CallerDepth)
 	lm.File = file
 	lm.Line = line
-
-	l.msgChan <- lm
-
+	str := l.format(lm)
+	fmt.Println(str)
+	//l.msgChan <- lm
 	return
 }
 

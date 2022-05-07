@@ -4,150 +4,173 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"log"
 	"net"
-	"zEngine/zLog"
-	//"time"
+	"sync"
 )
 
 type Session struct {
 	conn        *net.TCPConn
-	uid         int64
-	sid         int64 // sessionID
+	sid         int64 // session ID
 	exitChan    chan bool
-	sendChan    chan *NetPacket
-	receiveChan chan *NetPacket
+	sendChan    chan NetPacket
+	receiveChan chan NetPacket
+	wg          sync.WaitGroup
 }
 
 func (s *Session) Init(conn *net.TCPConn, sid int64) {
 	s.conn = conn
 	s.sid = sid
 	s.exitChan = make(chan bool, 1)
-	s.sendChan = make(chan *NetPacket, 512)
-	s.receiveChan = make(chan *NetPacket, 512)
-}
-
-func (s *Session) SetUid(uid int64) {
-	s.uid = uid
+	s.sendChan = make(chan NetPacket, 4096)
+	s.receiveChan = make(chan NetPacket, 4096)
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
-	zLog.InfoF("Session [%d] Started, begin read", s.sid)
-	go func() {
-		headSize := 8
-		reader := bufio.NewReader(s.conn)
-		for {
-			//read head
-			var buff = make([]byte, headSize)
-			n, err := reader.Read(buff)
-			if err != nil {
-				zLog.ErrorF("Client conn read error,%v, sid:%d", err, s.sid)
-				break
-			}
-
-			if n != headSize {
-				zLog.ErrorF("Receive NetPacket head error,sid:%d, addr:%s", s.sid, s.conn.RemoteAddr().String())
-				continue
-			}
-
-			netPacket := &NetPacket{}
-			if err = netPacket.UnmarshalHead(buff); err != nil {
-				zLog.Error(err.Error())
-				break
-			}
-			if netPacket.DataSize > MaxNetPacketDataSize {
-				zLog.ErrorF("Receive NetPacket Data size over max size, data size :%d, max size: %d",
-					netPacket.DataSize, MaxNetPacketDataSize)
-				break
-			}
-
-			//read data
-			var dataBuf []byte
-			readSize := 0
-			readHappenError := false
-			for {
-				readBuf := make([]byte, netPacket.DataSize)
-				n, err = reader.Read(readBuf)
-				if err != nil {
-					zLog.ErrorF("Client conn read error,%v, sid:%d, addr:%s", err, s.sid, s.conn.RemoteAddr().String())
-					readHappenError = true
-					break
-				}
-
-				dataBuf = append(dataBuf, readBuf[:n]...)
-				readSize += n
-				if readSize >= int(netPacket.DataSize) {
-					break
-				}
-			}
-			if readHappenError {
-				break
-			}
-
-			netPacket.Data = dataBuf
-			zLog.InfoF("Receive NetPacket, sid:%d, uid:%d, ProtoId:%d, DataSize: %d",
-				s.sid, s.uid, netPacket.ProtoId, netPacket.DataSize)
-			s.receiveChan <- netPacket
-		}
-		s.Close()
-	}()
-
-	go s.processMsg()
-
+	s.wg.Add(2)
+	go s.receive()
+	go s.process()
 	return
 }
 
-func (s *Session) processMsg() {
+func (s *Session) receive() {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Println("panic:", err)
+		}
+	}()
+	headSize := 8
+	reader := bufio.NewReader(s.conn)
+	for {
+		//read head
+		var buff = make([]byte, headSize)
+		n, err := reader.Read(buff)
+		if err != nil {
+			//log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
+			break
+		}
+
+		if n != headSize {
+			log.Printf("Receive NetPacket head error,sid:%d, addr:%s", s.sid, s.conn.RemoteAddr().String())
+			continue
+		}
+
+		netPacket := NetPacket{}
+		if err = netPacket.UnmarshalHead(buff); err != nil {
+			log.Println(err)
+			continue
+		}
+		if netPacket.ProtoId <= 0 {
+			log.Printf("receive NetPacket protoid empty, sid:%d", s.sid)
+			continue
+		}
+		if netPacket.DataSize <= 0 {
+			log.Printf("Receive NetPacket Data size 0, sid:%d, protoid:%d", s.sid, netPacket.ProtoId)
+			continue
+		}
+		if netPacket.DataSize > MaxNetPacketDataSize {
+			log.Printf("Receive NetPacket Data size over max size, sid:%d, protoid:%d, data size:%d, max size: %d",
+				s.sid, netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
+			continue
+		}
+
+		//read data
+		var dataBuf []byte
+		readSize := 0
+		readHappenError := false
+		for {
+			readBuf := make([]byte, netPacket.DataSize)
+			n, err = reader.Read(readBuf)
+			if err != nil {
+				log.Printf("Client conn read data error,%v, sid:%d, addr:%s", err, s.sid, s.conn.RemoteAddr().String())
+				readHappenError = true
+				break
+			}
+
+			dataBuf = append(dataBuf, readBuf[:n]...)
+			readSize += n
+			if readSize >= int(netPacket.DataSize) {
+				break
+			}
+		}
+		if readHappenError {
+			break
+		}
+
+		if netPacket.DataSize != int32(len(dataBuf)) {
+			log.Printf("receive NetPacket Data, sid:%d, protoid:%d, DataSize:%d:%d", s.sid, netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
+			continue
+		}
+
+		netPacket.Data = dataBuf
+
+		s.receiveChan <- netPacket
+	}
+	s.wg.Done()
+	s.exitChan <- true
+}
+
+func (s *Session) process() {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Println("panic:", err)
+		}
+	}()
 	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			err := Dispatcher(s.sid, receivePacket)
+			if receivePacket.ProtoId == 0 {
+				fmt.Println(receivePacket)
+			}
+			err := Dispatcher(s.sid, &receivePacket)
 			if err != nil {
-				zLog.ErrorF("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 			}
 		case sendPacket := <-s.sendChan:
-			_, _ = s.send(sendPacket)
+			_, err := s.send(&sendPacket)
+			if err != nil {
+				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
+			}
 		case <-s.exitChan:
 			for {
 				if len(s.receiveChan) > 0 {
-					sendPacket := <-s.sendChan
-					err := Dispatcher(s.sid, sendPacket)
+					receivePacket := <-s.receiveChan
+					err := Dispatcher(s.sid, &receivePacket)
 					if err != nil {
-						zLog.ErrorF("Dispatcher NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
+						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 					}
 					continue
 				}
 				break
 			}
-			close(s.receiveChan)
-
 			for {
 				if len(s.sendChan) > 0 {
-					msg := <-s.sendChan
-					_, _ = s.send(msg)
+					sendPacket := <-s.sendChan
+					_, _ = s.send(&sendPacket)
 					continue
 				}
 				break
 			}
-
-			close(s.sendChan)
-
-			_ = s.conn.Close()
 			running = false
-			break
 		}
 
 		if !running {
 			break
 		}
 	}
+
+	s.wg.Done()
+	_ = s.conn.Close()
+	s.close()
 }
 
 func (s *Session) Send(protoId int32, data interface{}) error {
-	netPacket := &NetPacket{}
+	netPacket := NetPacket{}
 	netPacket.ProtoId = protoId
 
 	err := netPacket.EncodeData(data)
@@ -156,7 +179,6 @@ func (s *Session) Send(protoId int32, data interface{}) error {
 	}
 
 	s.sendChan <- netPacket
-
 	return nil
 }
 
@@ -170,14 +192,14 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	zLog.InfoF("Send NetPacket, sid:%d, uid:%d, ProtoId:%d, DataSize: %d",
-		s.sid, s.uid, netPacket.ProtoId, netPacket.DataSize)
 	return n, nil
 }
 
 func (s *Session) Close() {
-	zLog.InfoF("Close session %d ", s.sid)
-	TcpServerInstance.DelClient(s)
 	s.exitChan <- true
+}
+
+func (s *Session) close() {
+	s.wg.Wait()
+	TcpServerInstance.DelClient(s)
 }
