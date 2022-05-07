@@ -1,4 +1,4 @@
-package NetServer
+package zNet
 
 import (
 	"fmt"
@@ -41,7 +41,7 @@ func InitTcpServer(ip string, port int, maxClientCount int) {
 	return
 }
 
-func Start() error {
+func StartTcpServer() error {
 	var strRemote = fmt.Sprintf("%s:%d", TcpServerInstance.ListenIp, TcpServerInstance.ListenPort)
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", strRemote)
 	if err != nil {
@@ -72,7 +72,7 @@ func Start() error {
 	return nil
 }
 
-func Close() {
+func CloseTcpServer() {
 	log.Printf("Close tcp server, session count %d", len(TcpServerInstance.ClientSessionMap))
 
 	_ = TcpServerInstance.listener.Close()

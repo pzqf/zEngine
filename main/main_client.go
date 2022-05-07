@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"zEngine/zNet/NetServer"
+	"zEngine/zNet"
 )
 
 // for test
@@ -18,7 +18,7 @@ func main() {
 		wg.Add(1)
 		go func(x int) {
 			defer wg.Done()
-			cli := NetServer.NetClient{}
+			cli := zNet.TcpClient{}
 			err := cli.Connect("192.168.50.206", 9106)
 			//err := cli.Connect("127.0.0.1", 9106)
 			if err != nil {

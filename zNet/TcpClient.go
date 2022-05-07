@@ -1,4 +1,4 @@
-package NetServer
+package zNet
 
 import (
 	"bufio"
@@ -11,13 +11,13 @@ import (
 	"zEngine/zLog"
 )
 
-type NetClient struct {
+type TcpClient struct {
 	serverAddr string
 	serverPort int
 	conn       *net.TCPConn
 }
 
-func (cli *NetClient) Connect(serverAddr string, serverPort int) error {
+func (cli *TcpClient) Connect(serverAddr string, serverPort int) error {
 	cli.serverAddr = serverAddr
 	cli.serverPort = serverPort
 
@@ -33,7 +33,7 @@ func (cli *NetClient) Connect(serverAddr string, serverPort int) error {
 	return nil
 }
 
-func (cli *NetClient) Send(protoId int32, data interface{}) error {
+func (cli *TcpClient) Send(protoId int32, data interface{}) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
@@ -54,7 +54,7 @@ func (cli *NetClient) Send(protoId int32, data interface{}) error {
 	return nil
 }
 
-func (cli *NetClient) Receive() (*NetPacket, error) {
+func (cli *TcpClient) Receive() (*NetPacket, error) {
 	reader := bufio.NewReader(cli.conn)
 	headSize := 8
 
@@ -103,6 +103,6 @@ func (cli *NetClient) Receive() (*NetPacket, error) {
 	netPacket.Data = dataBuf
 	return netPacket, nil
 }
-func (cli *NetClient) Close() {
+func (cli *TcpClient) Close() {
 	_ = cli.conn.Close()
 }

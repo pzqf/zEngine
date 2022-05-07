@@ -1,4 +1,4 @@
-package NetServer
+package zNet
 
 import (
 	"bufio"

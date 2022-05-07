@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 	"zEngine/zLog"
-	"zEngine/zNet/NetServer"
+	"zEngine/zNet"
 	"zEngine/zSignal"
 )
 
@@ -15,14 +15,14 @@ func main() {
 		}`)
 	zLog.Info("Init tcp server ... ")
 	port := 9106
-	NetServer.InitTcpServer("", port, 100000)
+	zNet.InitTcpServer("", port, 100000)
 
-	err := NetServer.RegisterHandler(1, HandlerLogin)
+	err := zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
 		zLog.ErrorF("RegisterHandler error %d", 1)
 		return
 	}
-	err = NetServer.Start()
+	err = zNet.StartTcpServer()
 	if err != nil {
 		zLog.Error(err.Error())
 		zLog.Close()
@@ -32,12 +32,12 @@ func main() {
 
 	zSignal.GracefulExit()
 	zLog.InfoF("server will be shut off")
-	NetServer.Close()
+	zNet.CloseTcpServer()
 	zLog.Close()
 	log.Printf("====>>> FBI warning , server exit <<<=====")
 }
 
-func HandlerLogin(sid int64, packet *NetServer.NetPacket) {
+func HandlerLogin(sid int64, packet *zNet.NetPacket) {
 	type loginDataInfo struct {
 		UserName string `json:"user_name"`
 		Password string `json:"password"`
@@ -66,5 +66,5 @@ func HandlerLogin(sid int64, packet *NetServer.NetPacket) {
 		Time:  data.Time,
 	}
 
-	NetServer.SendToClient(sid, 1, &sendData)
+	zNet.SendToClient(sid, 1, &sendData)
 }

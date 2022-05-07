@@ -1,4 +1,4 @@
-package NetServer
+package zNet
 
 func SendToClient(sid int64, protoId int32, data interface{}) {
 	client := TcpServerInstance.GetSession(sid)
