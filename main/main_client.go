@@ -14,7 +14,7 @@ func main() {
 	begin := time.Now()
 
 	for i := 0; i < 10000; i++ {
-		time.Sleep(100 * time.Nanosecond)
+		time.Sleep(1000 * time.Microsecond)
 		wg.Add(1)
 		go func(x int) {
 			defer wg.Done()
@@ -27,7 +27,7 @@ func main() {
 				return
 			}
 			defer cli.Close()
-			fmt.Println("Connect success :", x)
+			//fmt.Println("Connect success :", x)
 
 			type loginDataInfo struct {
 				UserName string `json:"user_name"`
@@ -54,7 +54,7 @@ func main() {
 				fmt.Println(err)
 				return
 			}
-			fmt.Println("Send NetPacket, ProtoId:", 1, newData)
+			//fmt.Println("Send NetPacket, ProtoId:", 1, newData)
 
 			netPacket, err := cli.Receive()
 			if err != nil {

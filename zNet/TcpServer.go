@@ -1,7 +1,6 @@
 package zNet
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -13,8 +12,7 @@ var TcpServerInstance *TcpServer
 
 type TcpServer struct {
 	maxClientCount   int
-	ListenPort       int
-	ListenIp         string
+	address          string
 	ClientSessionMap map[int64]*Session
 	locker           *sync.RWMutex
 	sessionPool      sync.Pool
@@ -22,14 +20,13 @@ type TcpServer struct {
 	listener         *net.TCPListener
 }
 
-func InitTcpServer(ip string, port int, maxClientCount int) {
+func NewTcpServer(address string, maxClientCount int) *TcpServer {
 	svr := TcpServer{
 		maxClientCount:   maxClientCount,
 		ClientSessionMap: make(map[int64]*Session),
 		locker:           &sync.RWMutex{},
 		clientSIDAtomic:  10000,
-		ListenPort:       port,
-		ListenIp:         ip,
+		address:          address,
 		sessionPool: sync.Pool{
 			New: func() interface{} {
 				var s = &Session{}
@@ -37,13 +34,25 @@ func InitTcpServer(ip string, port int, maxClientCount int) {
 			},
 		},
 	}
-	TcpServerInstance = &svr
+
+	return &svr
+}
+
+func InitDefaultTcpServer(address string, maxClientCount int) {
+	TcpServerInstance = NewTcpServer(address, maxClientCount)
 	return
 }
 
 func StartTcpServer() error {
-	var strRemote = fmt.Sprintf("%s:%d", TcpServerInstance.ListenIp, TcpServerInstance.ListenPort)
-	tcpAddr, err := net.ResolveTCPAddr("tcp4", strRemote)
+	return TcpServerInstance.Start()
+}
+
+func CloseTcpServer() {
+	TcpServerInstance.Close()
+}
+
+func (svr *TcpServer) Start() error {
+	tcpAddr, err := net.ResolveTCPAddr("tcp4", svr.address)
 	if err != nil {
 		return err
 	}
@@ -51,38 +60,38 @@ func StartTcpServer() error {
 	if err != nil {
 		return err
 	}
-	TcpServerInstance.listener = listener
+	svr.listener = listener
 
 	go func() {
 		for {
-			if len(TcpServerInstance.ClientSessionMap) >= TcpServerInstance.maxClientCount {
-				log.Printf("Connects over max maxClientCount %d", TcpServerInstance.maxClientCount)
+			if len(svr.ClientSessionMap) >= svr.maxClientCount {
+				log.Printf("Connects over max maxClientCount %d", svr.maxClientCount)
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
-			conn, err := TcpServerInstance.listener.AcceptTCP()
+			conn, err := svr.listener.AcceptTCP()
 			if err != nil {
 				log.Printf(err.Error())
 				break
 			}
 
-			TcpServerInstance.AddClient(conn)
+			svr.AddClient(conn)
 		}
 	}()
 	return nil
 }
 
-func CloseTcpServer() {
+func (svr *TcpServer) Close() {
 	log.Printf("Close tcp server, session count %d", len(TcpServerInstance.ClientSessionMap))
 
-	_ = TcpServerInstance.listener.Close()
+	_ = svr.listener.Close()
 
 	var list []*Session
-	TcpServerInstance.locker.Lock()
-	for _, v := range TcpServerInstance.ClientSessionMap {
+	svr.locker.Lock()
+	for _, v := range svr.ClientSessionMap {
 		list = append(list, v)
 	}
-	TcpServerInstance.locker.Unlock()
+	svr.locker.Unlock()
 
 	for _, v := range list {
 		v.Close()

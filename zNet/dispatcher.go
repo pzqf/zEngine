@@ -28,3 +28,17 @@ func Dispatcher(session *Session, netPacket *NetPacket) error {
 
 	return nil
 }
+
+func init() {
+	_ = RegisterHandler(0, heartbeat)
+}
+
+func heartbeat(session *Session, packet *NetPacket) {
+	session.heartbeatUpdate()
+	sendPacket := NetPacket{
+		ProtoId:  0,
+		DataSize: packet.DataSize,
+		Data:     packet.Data,
+	}
+	_, _ = session.send(&sendPacket)
+}

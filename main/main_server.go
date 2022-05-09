@@ -2,20 +2,22 @@ package main
 
 import (
 	"log"
+	"net/http"
+	_ "net/http/pprof"
+	"runtime"
 	"zEngine/zLog"
 	"zEngine/zNet"
 	"zEngine/zSignal"
 )
 
-//for test
+//for tests
 func main() {
 	zLog.SetLogger(`{
 			"log_dir": "./logs",
 			"log_file_prefix": "server"
 		}`)
 	zLog.Info("Init tcp server ... ")
-	port := 9106
-	zNet.InitTcpServer("", port, 100000)
+	zNet.InitDefaultTcpServer(":9106", 100000)
 
 	err := zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
@@ -28,7 +30,12 @@ func main() {
 		zLog.Close()
 		return
 	}
-	zLog.InfoF("Tcp server listing on %d ", port)
+	zLog.InfoF("Tcp server listing on %d ", 9106)
+
+	//pprof
+	runtime.SetBlockProfileRate(1)     // 开启对阻塞操作的跟踪，block
+	runtime.SetMutexProfileFraction(1) // 开启对锁调用的跟踪，mutex
+	_ = http.ListenAndServe(":9107", nil)
 
 	zSignal.GracefulExit()
 	zLog.InfoF("server will be shut off")

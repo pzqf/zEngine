@@ -9,15 +9,17 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 type Session struct {
-	conn        *net.TCPConn
-	sid         int64 // session ID
-	exitChan    chan bool
-	sendChan    chan *NetPacket
-	receiveChan chan *NetPacket
-	wg          sync.WaitGroup
+	conn          *net.TCPConn
+	sid           int64 // session ID
+	exitChan      chan bool
+	sendChan      chan *NetPacket
+	receiveChan   chan *NetPacket
+	wg            sync.WaitGroup
+	lastHeartBeat time.Time
 }
 
 func (s *Session) Init(conn *net.TCPConn, sid int64) {
@@ -26,15 +28,17 @@ func (s *Session) Init(conn *net.TCPConn, sid int64) {
 	s.exitChan = make(chan bool, 1)
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
+	s.lastHeartBeat = time.Now()
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
-	s.wg.Add(2)
+	s.wg.Add(3)
 	go s.receive()
 	go s.process()
+	go s.heartbeatCheck()
 	return
 }
 
@@ -109,6 +113,9 @@ func (s *Session) receive() {
 		}
 
 		s.receiveChan <- &netPacket
+		//_ = Dispatcher(s, &netPacket)
+
+		s.heartbeatUpdate()
 	}
 	s.wg.Done()
 	s.exitChan <- true
@@ -182,6 +189,7 @@ func (s *Session) Send(netPacket *NetPacket) error {
 	}
 
 	s.sendChan <- netPacket
+
 	return nil
 }
 
@@ -209,4 +217,19 @@ func (s *Session) close() {
 
 func (s *Session) GetSid() int64 {
 	return s.sid
+}
+
+func (s *Session) heartbeatUpdate() {
+	s.lastHeartBeat = time.Now()
+}
+
+func (s *Session) heartbeatCheck() {
+	for {
+		if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
+			break
+		}
+		time.Sleep(60 * time.Second)
+	}
+	s.exitChan <- true
+	s.wg.Done()
 }
