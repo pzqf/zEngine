@@ -57,7 +57,7 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 		zLog.InfoF("receive:%s, %s", data.UserName, data.Password)
 		return
 	}
-	zLog.InfoF("receive:%s, %s, %d", data.UserName, data.Password, data.Time)
+	//zLog.InfoF("receive:%s, %s, %d", data.UserName, data.Password, data.Time)
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`

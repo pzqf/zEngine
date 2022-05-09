@@ -14,7 +14,7 @@ func main() {
 	begin := time.Now()
 
 	for i := 0; i < 10000; i++ {
-		time.Sleep(1000 * time.Microsecond)
+		time.Sleep(10 * time.Microsecond)
 		wg.Add(1)
 		go func(x int) {
 			defer wg.Done()

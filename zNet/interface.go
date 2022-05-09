@@ -8,16 +8,11 @@ func SendToClient(sid int64, netPacket *NetPacket) {
 }
 
 func BroadcastToClient(netPacket *NetPacket) {
-	var list []*Session
-	TcpServerInstance.locker.Lock()
-	for _, v := range TcpServerInstance.ClientSessionMap {
-		list = append(list, v)
-	}
-	TcpServerInstance.locker.Unlock()
-
-	for _, v := range list {
-		_ = v.Send(netPacket)
-	}
+	TcpServerInstance.ClientSessionMap.Range(func(key, value interface{}) bool {
+		session := value.(*Session)
+		_ = session.Send(netPacket)
+		return true
+	})
 }
 
 func GetSession(sid int64) *Session {
