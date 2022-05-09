@@ -11,27 +11,37 @@ import (
 var TcpServerInstance *TcpServer
 
 type TcpServer struct {
-	maxClientCount     int32
-	address            string
-	sessionPool        sync.Pool
-	clientSIDAtomic    int64
-	listener           *net.TCPListener
-	ClientSessionMap   sync.Map
-	clientSessionCount int32
+	maxClientCount      int32
+	address             string
+	sessionPool         sync.Pool
+	clientSIDAtomic     int64
+	listener            *net.TCPListener
+	clientSessionMap    sync.Map
+	clientSessionCount  int32
+	clientSessionOpChan chan sessionOption
+	exitChan            chan bool
+	wg                  sync.WaitGroup
+}
+
+type sessionOption struct {
+	option  int32 //1 add ,-1 del
+	session *Session
 }
 
 func NewTcpServer(address string, maxClientCount int32) *TcpServer {
 	svr := TcpServer{
-		maxClientCount:  maxClientCount,
-		clientSIDAtomic: 10000,
-		address:         address,
+		maxClientCount:      maxClientCount,
+		clientSIDAtomic:     10000,
+		address:             address,
+		clientSessionCount:  0,
+		clientSessionOpChan: make(chan sessionOption, 512),
+		exitChan:            make(chan bool, 1),
 		sessionPool: sync.Pool{
 			New: func() interface{} {
 				var s = &Session{}
 				return s
 			},
 		},
-		clientSessionCount: 0,
 	}
 
 	return &svr
@@ -62,6 +72,8 @@ func (svr *TcpServer) Start() error {
 	svr.listener = listener
 
 	go func() {
+		svr.wg.Add(1)
+		defer svr.wg.Done()
 		for {
 			if svr.clientSessionCount >= svr.maxClientCount {
 				log.Printf("Connects over max maxClientCount %d", svr.maxClientCount)
@@ -77,6 +89,28 @@ func (svr *TcpServer) Start() error {
 			svr.AddClient(conn)
 		}
 	}()
+
+	go func() {
+		svr.wg.Add(1)
+		running := true
+		for {
+			select {
+			case op := <-svr.clientSessionOpChan:
+				if op.option == 1 {
+					svr.clientSessionMap.Store(op.session.sid, op.session)
+				} else if op.option == -1 {
+					svr.clientSessionMap.Delete(op.session.sid)
+				}
+			case <-svr.exitChan:
+				running = false
+				break
+			}
+			if !running {
+				break
+			}
+		}
+		svr.wg.Done()
+	}()
 	return nil
 }
 
@@ -85,20 +119,25 @@ func (svr *TcpServer) Close() {
 
 	_ = svr.listener.Close()
 
-	svr.ClientSessionMap.Range(func(key, value interface{}) bool {
+	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*Session)
 		session.Close()
+		svr.clientSessionMap.Delete(session.sid)
 		return true
 	})
+
 	atomic.StoreInt32(&svr.clientSessionCount, 0)
+
+	svr.exitChan <- true
+	svr.wg.Done()
 }
 
 func (svr *TcpServer) AddClient(conn *net.TCPConn) *Session {
 	newSession := svr.sessionPool.Get().(*Session)
 	if newSession != nil {
-		newSession.Init(conn, atomic.AddInt64(&svr.clientSIDAtomic, 1))
+		newSession.Init(conn, atomic.AddInt64(&svr.clientSIDAtomic, 1), svr)
 
-		svr.ClientSessionMap.Store(newSession.sid, newSession)
+		svr.clientSessionOpChan <- sessionOption{option: 1, session: newSession}
 		atomic.AddInt32(&svr.clientSessionCount, 1)
 
 		newSession.Start()
@@ -108,16 +147,14 @@ func (svr *TcpServer) AddClient(conn *net.TCPConn) *Session {
 }
 
 func (svr *TcpServer) DelClient(cli *Session) bool {
-
-	svr.ClientSessionMap.Delete(cli.sid)
+	svr.clientSessionOpChan <- sessionOption{option: -1, session: cli}
 	atomic.AddInt32(&svr.clientSessionCount, -1)
 	return true
 }
 
 func (svr *TcpServer) GetSession(sid int64) *Session {
-	if client, ok := svr.ClientSessionMap.Load(sid); ok {
+	if client, ok := svr.clientSessionMap.Load(sid); ok {
 		return client.(*Session)
 	}
-
 	return nil
 }

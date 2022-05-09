@@ -8,7 +8,7 @@ func SendToClient(sid int64, netPacket *NetPacket) {
 }
 
 func BroadcastToClient(netPacket *NetPacket) {
-	TcpServerInstance.ClientSessionMap.Range(func(key, value interface{}) bool {
+	TcpServerInstance.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*Session)
 		_ = session.Send(netPacket)
 		return true

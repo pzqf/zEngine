@@ -20,22 +20,23 @@ type Session struct {
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
+	tcpServer     *TcpServer
 }
 
-func (s *Session) Init(conn *net.TCPConn, sid int64) {
+func (s *Session) Init(conn *net.TCPConn, sid int64, server *TcpServer) {
 	s.conn = conn
 	s.sid = sid
 	s.exitChan = make(chan bool, 1)
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
+	s.tcpServer = server
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
-	s.wg.Add(3)
 	go s.receive()
 	go s.process()
 	go s.heartbeatCheck()
@@ -43,6 +44,7 @@ func (s *Session) Start() {
 }
 
 func (s *Session) receive() {
+	s.wg.Add(1)
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
@@ -122,6 +124,7 @@ func (s *Session) receive() {
 }
 
 func (s *Session) process() {
+	s.wg.Add(1)
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
@@ -212,7 +215,7 @@ func (s *Session) Close() {
 
 func (s *Session) close() {
 	s.wg.Wait()
-	TcpServerInstance.DelClient(s)
+	s.tcpServer.DelClient(s)
 }
 
 func (s *Session) GetSid() int64 {
@@ -224,6 +227,7 @@ func (s *Session) heartbeatUpdate() {
 }
 
 func (s *Session) heartbeatCheck() {
+	s.wg.Add(1)
 	for {
 		if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
 			break

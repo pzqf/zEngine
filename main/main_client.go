@@ -13,8 +13,8 @@ func main() {
 	failedCount := 0
 	begin := time.Now()
 
-	for i := 0; i < 10000; i++ {
-		time.Sleep(10 * time.Microsecond)
+	for i := 0; i < 1000; i++ {
+		time.Sleep(1 * time.Microsecond)
 		wg.Add(1)
 		go func(x int) {
 			defer wg.Done()
