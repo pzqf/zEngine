@@ -3,9 +3,10 @@ package main
 import (
 	"log"
 	_ "net/http/pprof"
-	"zEngine/zLog"
-	"zEngine/zNet"
-	"zEngine/zSignal"
+
+	"github.com/pzqf/zEngine/zLog"
+	"github.com/pzqf/zEngine/zNet"
+	"github.com/pzqf/zEngine/zSignal"
 )
 
 //for tests

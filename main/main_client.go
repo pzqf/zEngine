@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"zEngine/zNet"
+
+	"github.com/pzqf/zEngine/zNet"
 )
 
 // for test

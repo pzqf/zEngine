@@ -3,6 +3,7 @@ package zNet
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,41 +14,45 @@ import (
 )
 
 type Session struct {
-	conn *net.TCPConn
-	sid  int64 // session ID
-	//exitChan      chan bool
+	conn          *net.TCPConn
+	sid           int64 // session ID
 	sendChan      chan *NetPacket
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
 	tcpServer     *TcpServer
-	running       bool
+	ctx           context.Context
+	ctxCancel     context.CancelFunc
 }
 
 func (s *Session) Init(conn *net.TCPConn, sid int64, server *TcpServer) {
 	s.conn = conn
 	s.sid = sid
-	//s.exitChan = make(chan bool, 1)
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
 	s.tcpServer = server
-	s.running = false
+	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
-	s.running = true
-	go s.receive()
-	go s.process()
-	go s.heartbeatCheck()
+	go s.receive(s.ctx)
+	go s.process(s.ctx)
+	go s.heartbeatCheck(s.ctx)
 	return
 }
 
-func (s *Session) receive() {
+func (s *Session) Close() {
+	s.ctxCancel()
+	s.wg.Wait()
+}
+
+func (s *Session) receive(ctx context.Context) {
 	s.wg.Add(1)
+	defer s.wg.Done()
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
@@ -56,15 +61,11 @@ func (s *Session) receive() {
 	headSize := 8
 	reader := bufio.NewReader(s.conn)
 	for {
-		if !s.running {
-			break
-		}
 		//read head
 		var buff = make([]byte, headSize)
 		n, err := reader.Read(buff)
 		if err != nil {
 			//log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
-			s.running = false
 			break
 		}
 
@@ -110,7 +111,6 @@ func (s *Session) receive() {
 				}
 			}
 			if readHappenError {
-				s.running = false
 				break
 			}
 
@@ -127,16 +127,19 @@ func (s *Session) receive() {
 
 		s.heartbeatUpdate()
 	}
-	s.wg.Done()
+
+	s.ctxCancel()
 }
 
-func (s *Session) process() {
+func (s *Session) process(ctx context.Context) {
 	s.wg.Add(1)
+	defer s.wg.Done()
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
 		}
 	}()
+	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
@@ -152,40 +155,40 @@ func (s *Session) process() {
 			if err != nil {
 				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
 			}
-		case <-time.After(1 * time.Second):
-			if !s.running {
-				for {
-					if len(s.receiveChan) > 0 {
-						receivePacket := <-s.receiveChan
-						err := Dispatcher(s, receivePacket)
-						if err != nil {
-							log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
-						}
-						continue
+		case <-ctx.Done():
+			for {
+				if len(s.receiveChan) > 0 {
+					receivePacket := <-s.receiveChan
+					err := Dispatcher(s, receivePacket)
+					if err != nil {
+						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
 					}
-					break
+					continue
 				}
-				for {
-					if len(s.sendChan) > 0 {
-						sendPacket := <-s.sendChan
-						_, err := s.send(sendPacket)
-						if err != nil {
-							break
-						}
-						continue
-					}
-					break
-				}
+				break
 			}
-		}
+			for {
+				if len(s.sendChan) > 0 {
+					sendPacket := <-s.sendChan
+					_, err := s.send(sendPacket)
+					if err != nil {
+						break
+					}
+					continue
+				}
+				break
+			}
 
-		if !s.running {
+			running = false
+		}
+		if !running {
 			break
 		}
 	}
-	s.wg.Done()
+
+	//for process finish all packet
 	_ = s.conn.Close()
-	s.close()
+	s.tcpServer.DelClient(s)
 }
 
 func (s *Session) Send(netPacket *NetPacket) error {
@@ -218,15 +221,6 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 	return n, nil
 }
 
-func (s *Session) Close() {
-	s.running = false
-}
-
-func (s *Session) close() {
-	s.wg.Wait()
-	s.tcpServer.DelClient(s)
-}
-
 func (s *Session) GetSid() int64 {
 	return s.sid
 }
@@ -235,23 +229,18 @@ func (s *Session) heartbeatUpdate() {
 	s.lastHeartBeat = time.Now()
 }
 
-func (s *Session) heartbeatCheck() {
+func (s *Session) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
+	defer s.wg.Done()
 	for {
-		time.Sleep(1 * time.Second)
-
 		select {
 		case <-time.After(60 * time.Second):
 			if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
-				s.running = false
+				s.ctxCancel()
 				break
 			}
-		case <-time.After(1 * time.Second):
-		}
-
-		if !s.running {
-			break
+		case <-ctx.Done():
+			return
 		}
 	}
-	s.wg.Done()
 }

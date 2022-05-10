@@ -16,3 +16,5 @@
 *.xml
 *.iml
 *.log
+main/bin/client
+main/bin/server
