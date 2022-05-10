@@ -12,12 +12,15 @@ func main() {
 	wg := sync.WaitGroup{}
 	failedCount := 0
 	begin := time.Now()
+	clientCount := 10000
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Microsecond)
-		wg.Add(1)
 		go func(x int) {
-			defer wg.Done()
+			wg.Add(1)
+			defer func() {
+				wg.Done()
+			}()
 			cli := zNet.TcpClient{}
 			err := cli.Connect("192.168.50.206", 9106)
 			//err := cli.Connect("127.0.0.1", 9106)
@@ -27,7 +30,7 @@ func main() {
 				return
 			}
 			defer cli.Close()
-			//fmt.Println("Connect success :", x)
+			fmt.Println("Connect success :", x)
 
 			type loginDataInfo struct {
 				UserName string `json:"user_name"`
@@ -77,10 +80,10 @@ func main() {
 			}
 			mill := time.Duration(time.Now().UnixNano()-receiveData.Time) * time.Nanosecond
 			fmt.Println(fmt.Sprintf("receive player data:%v, time:%s", receiveData, mill.String()))
-			//select {}
+			cli.Close()
 		}(i)
-
 	}
+
 	wg.Wait()
 	fmt.Printf("========================failedCount:%d, cost:%s \n", failedCount, time.Now().Sub(begin).String())
 

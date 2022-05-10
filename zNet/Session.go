@@ -13,30 +13,33 @@ import (
 )
 
 type Session struct {
-	conn          *net.TCPConn
-	sid           int64 // session ID
-	exitChan      chan bool
+	conn *net.TCPConn
+	sid  int64 // session ID
+	//exitChan      chan bool
 	sendChan      chan *NetPacket
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
 	tcpServer     *TcpServer
+	running       bool
 }
 
 func (s *Session) Init(conn *net.TCPConn, sid int64, server *TcpServer) {
 	s.conn = conn
 	s.sid = sid
-	s.exitChan = make(chan bool, 1)
+	//s.exitChan = make(chan bool, 1)
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
 	s.tcpServer = server
+	s.running = false
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
+	s.running = true
 	go s.receive()
 	go s.process()
 	go s.heartbeatCheck()
@@ -53,11 +56,15 @@ func (s *Session) receive() {
 	headSize := 8
 	reader := bufio.NewReader(s.conn)
 	for {
+		if !s.running {
+			break
+		}
 		//read head
 		var buff = make([]byte, headSize)
 		n, err := reader.Read(buff)
 		if err != nil {
 			//log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
+			s.running = false
 			break
 		}
 
@@ -103,6 +110,7 @@ func (s *Session) receive() {
 				}
 			}
 			if readHappenError {
+				s.running = false
 				break
 			}
 
@@ -120,7 +128,6 @@ func (s *Session) receive() {
 		s.heartbeatUpdate()
 	}
 	s.wg.Done()
-	s.exitChan <- true
 }
 
 func (s *Session) process() {
@@ -130,7 +137,6 @@ func (s *Session) process() {
 			log.Println("panic:", err)
 		}
 	}()
-	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
@@ -146,34 +152,37 @@ func (s *Session) process() {
 			if err != nil {
 				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
 			}
-		case <-s.exitChan:
-			for {
-				if len(s.receiveChan) > 0 {
-					receivePacket := <-s.receiveChan
-					err := Dispatcher(s, receivePacket)
-					if err != nil {
-						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+		case <-time.After(1 * time.Second):
+			if !s.running {
+				for {
+					if len(s.receiveChan) > 0 {
+						receivePacket := <-s.receiveChan
+						err := Dispatcher(s, receivePacket)
+						if err != nil {
+							log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+						}
+						continue
 					}
-					continue
+					break
 				}
-				break
-			}
-			for {
-				if len(s.sendChan) > 0 {
-					sendPacket := <-s.sendChan
-					_, _ = s.send(sendPacket)
-					continue
+				for {
+					if len(s.sendChan) > 0 {
+						sendPacket := <-s.sendChan
+						_, err := s.send(sendPacket)
+						if err != nil {
+							break
+						}
+						continue
+					}
+					break
 				}
-				break
 			}
-			running = false
 		}
 
-		if !running {
+		if !s.running {
 			break
 		}
 	}
-
 	s.wg.Done()
 	_ = s.conn.Close()
 	s.close()
@@ -210,7 +219,7 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 }
 
 func (s *Session) Close() {
-	s.exitChan <- true
+	s.running = false
 }
 
 func (s *Session) close() {
@@ -229,11 +238,20 @@ func (s *Session) heartbeatUpdate() {
 func (s *Session) heartbeatCheck() {
 	s.wg.Add(1)
 	for {
-		if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
+		time.Sleep(1 * time.Second)
+
+		select {
+		case <-time.After(60 * time.Second):
+			if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
+				s.running = false
+				break
+			}
+		case <-time.After(1 * time.Second):
+		}
+
+		if !s.running {
 			break
 		}
-		time.Sleep(60 * time.Second)
 	}
-	s.exitChan <- true
 	s.wg.Done()
 }

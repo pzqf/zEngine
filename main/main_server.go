@@ -22,7 +22,7 @@ func main() {
 		zLog.ErrorF("RegisterHandler error %d", 1)
 		return
 	}
-	err = zNet.StartTcpServer()
+	err = zNet.StartDefaultTcpServer()
 	if err != nil {
 		zLog.Error(err.Error())
 		zLog.Close()
@@ -37,7 +37,7 @@ func main() {
 
 	zSignal.GracefulExit()
 	zLog.InfoF("server will be shut off")
-	zNet.CloseTcpServer()
+	zNet.CloseDefaultTcpServer()
 	zLog.Close()
 	log.Printf("====>>> FBI warning , server exit <<<=====")
 }
@@ -79,8 +79,7 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 		return
 	}
 
-	err = session.Send(&netPacket)
-	if err != nil {
-		return
-	}
+	_ = session.Send(&netPacket)
+
+	//zNet.SendToClient(session.GetSid(), &netPacket)
 }

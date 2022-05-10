@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-var TcpServerInstance *TcpServer
-
 type TcpServer struct {
 	maxClientCount      int32
 	address             string
@@ -45,19 +43,6 @@ func NewTcpServer(address string, maxClientCount int32) *TcpServer {
 	}
 
 	return &svr
-}
-
-func InitDefaultTcpServer(address string, maxClientCount int32) {
-	TcpServerInstance = NewTcpServer(address, maxClientCount)
-	return
-}
-
-func StartTcpServer() error {
-	return TcpServerInstance.Start()
-}
-
-func CloseTcpServer() {
-	TcpServerInstance.Close()
 }
 
 func (svr *TcpServer) Start() error {
@@ -111,6 +96,7 @@ func (svr *TcpServer) Start() error {
 		}
 		svr.wg.Done()
 	}()
+
 	return nil
 }
 
@@ -122,6 +108,7 @@ func (svr *TcpServer) Close() {
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*Session)
 		session.Close()
+		log.Printf("Close  session  %d", session.sid)
 		svr.clientSessionMap.Delete(session.sid)
 		return true
 	})
@@ -157,4 +144,12 @@ func (svr *TcpServer) GetSession(sid int64) *Session {
 		return client.(*Session)
 	}
 	return nil
+}
+
+func (svr *TcpServer) BroadcastToClient(netPacket *NetPacket) {
+	TcpServerInstance.clientSessionMap.Range(func(key, value interface{}) bool {
+		session := value.(*Session)
+		_ = session.Send(netPacket)
+		return true
+	})
 }

@@ -1,6 +1,20 @@
 package zNet
 
-/*
+var TcpServerInstance *TcpServer
+
+func InitDefaultTcpServer(address string, maxClientCount int32) {
+	TcpServerInstance = NewTcpServer(address, maxClientCount)
+	return
+}
+
+func StartDefaultTcpServer() error {
+	return TcpServerInstance.Start()
+}
+
+func CloseDefaultTcpServer() {
+	TcpServerInstance.Close()
+}
+
 func SendToClient(sid int64, netPacket *NetPacket) {
 	client := TcpServerInstance.GetSession(sid)
 	if client != nil {
@@ -15,8 +29,3 @@ func BroadcastToClient(netPacket *NetPacket) {
 		return true
 	})
 }
-
-func GetSession(sid int64) *Session {
-	return TcpServerInstance.GetSession(sid)
-}
-*/
