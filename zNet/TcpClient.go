@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-
-	"github.com/pzqf/zEngine/zLog"
 )
 
 type TcpClient struct {
@@ -27,7 +25,6 @@ func (cli *TcpClient) Connect(serverAddr string, serverPort int) error {
 
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
-		//zLog.Error("Client connect error ! " + err.Error())
 		return err
 	}
 	cli.conn = conn
@@ -42,7 +39,6 @@ func (cli *TcpClient) Send(netPacket *NetPacket) error {
 
 	_, err := cli.conn.Write(sendBuf.Bytes())
 	if err != nil {
-		zLog.Error(err.Error())
 		return err
 	}
 	return nil
@@ -97,6 +93,7 @@ func (cli *TcpClient) Receive() (*NetPacket, error) {
 	netPacket.Data = dataBuf
 	return netPacket, nil
 }
+
 func (cli *TcpClient) Close() {
 	_ = cli.conn.Close()
 }

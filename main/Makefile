@@ -1,5 +1,5 @@
-.PHONY: build
-build:
+.PHONY: win
+win:
 	mkdir -p bin/ && go build -o ./bin/server.exe main_server.go
 	mkdir -p bin/ && go build -o ./bin/client.exe main_client.go
 
