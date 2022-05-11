@@ -13,3 +13,8 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+*.xml
+*.iml
+*.log
+main/bin/client
+main/bin/server
