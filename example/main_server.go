@@ -4,32 +4,26 @@ import (
 	"log"
 	_ "net/http/pprof"
 
-	"github.com/pzqf/zEngine/zLog"
 	"github.com/pzqf/zEngine/zNet"
 	"github.com/pzqf/zEngine/zSignal"
 )
 
 //for tests
 func main() {
-	zLog.SetLogger(`{
-			"log_dir": "./logs",
-			"log_file_prefix": "server"
-		}`)
-	zLog.Info("Init tcp server ... ")
+
 	zNet.InitDefaultTcpServer(":9106", 100000)
 
 	err := zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
-		zLog.ErrorF("RegisterHandler error %d", 1)
+		log.Printf("RegisterHandler error %d", 1)
 		return
 	}
 	err = zNet.StartDefaultTcpServer()
 	if err != nil {
-		zLog.Error(err.Error())
-		zLog.Close()
+		log.Printf(err.Error())
 		return
 	}
-	zLog.InfoF("Tcp server listing on %d ", 9106)
+	log.Printf("Tcp server listing on %d ", 9106)
 
 	//pprof
 	//runtime.SetBlockProfileRate(1)     // 开启对阻塞操作的跟踪，block
@@ -37,9 +31,8 @@ func main() {
 	//_ = http.ListenAndServe(":9107", nil)
 
 	zSignal.GracefulExit()
-	zLog.InfoF("server will be shut off")
+	log.Printf("server will be shut off")
 	zNet.CloseDefaultTcpServer()
-	zLog.Close()
 	log.Printf("====>>> FBI warning , server exit <<<=====")
 }
 
@@ -53,7 +46,7 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 	var data loginDataInfo
 	err := packet.JsonDecodeData(&data)
 	if err != nil {
-		zLog.InfoF("receive:%s, %s", data.UserName, data.Password)
+		log.Printf("receive:%s, %s", data.UserName, data.Password)
 		return
 	}
 	//zLog.InfoF("receive:%s, %s, %d", data.UserName, data.Password, data.Time)
