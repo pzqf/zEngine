@@ -9,6 +9,14 @@ import (
 
 const MaxNetPacketDataSize = 4096 * 2 * 2
 
+type PacketCodeType int
+
+const (
+	PacketCodeByte = PacketCodeType(1)
+	PacketCodeJson = PacketCodeType(2)
+	PacketCodeGob  = PacketCodeType(3)
+)
+
 type NetPacket struct {
 	ProtoId  int32  `json:"proto_id"`
 	DataSize int32  `json:"data_size"`

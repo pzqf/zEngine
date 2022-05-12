@@ -20,6 +20,7 @@ type TcpServer struct {
 	clientSessionOpChan chan sessionOption
 	exitChan            chan bool
 	wg                  sync.WaitGroup
+	PacketCodeType      PacketCodeType
 }
 
 type sessionOption struct {
@@ -35,6 +36,7 @@ func NewTcpServer(address string, maxClientCount int32) *TcpServer {
 		clientSessionMap:    zMap.NewMap(),
 		clientSessionOpChan: make(chan sessionOption, 512),
 		exitChan:            make(chan bool, 1),
+		PacketCodeType:      PacketCodeJson,
 		sessionPool: sync.Pool{
 			New: func() interface{} {
 				var s = &Session{}
@@ -142,10 +144,13 @@ func (svr *TcpServer) GetSession(sid int64) *Session {
 	return nil
 }
 
-func (svr *TcpServer) BroadcastToClient(netPacket *NetPacket) {
-	TcpServerInstance.clientSessionMap.Range(func(key, value interface{}) bool {
+func (svr *TcpServer) BroadcastToClient(protoId int32, data interface{}) {
+	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*Session)
-		_ = session.Send(netPacket)
+		_ = session.Send(protoId, data)
 		return true
 	})
+}
+func (svr *TcpServer) SetPacketCodeType(codeType PacketCodeType) {
+	svr.PacketCodeType = codeType
 }

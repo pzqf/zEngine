@@ -191,9 +191,27 @@ func (s *Session) process(ctx context.Context) {
 	s.tcpServer.DelClient(s)
 }
 
-func (s *Session) Send(netPacket *NetPacket) error {
-	if netPacket == nil {
-		return errors.New("send packet is nil")
+func (s *Session) Send(protoId int32, data interface{}) error {
+	netPacket := NetPacket{
+		ProtoId: protoId,
+	}
+
+	switch s.tcpServer.PacketCodeType {
+	case PacketCodeByte:
+		err := netPacket.EncodeData(data.([]byte))
+		if err != nil {
+			return err
+		}
+	case PacketCodeJson:
+		err := netPacket.JsonEncodeData(data)
+		if err != nil {
+			return err
+		}
+	case PacketCodeGob:
+		err := netPacket.GobEncodeData(data)
+		if err != nil {
+			return err
+		}
 	}
 
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
@@ -203,7 +221,7 @@ func (s *Session) Send(netPacket *NetPacket) error {
 		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d", netPacket.DataSize, MaxNetPacketDataSize))
 	}
 
-	s.sendChan <- netPacket
+	s.sendChan <- &netPacket
 
 	return nil
 }
