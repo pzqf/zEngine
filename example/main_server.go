@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	_ "net/http/pprof"
 
@@ -10,30 +11,27 @@ import (
 
 //for tests
 func main() {
-
-	zNet.InitDefaultTcpServer(":9106", 100000)
+	port := 9106
+	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port), 100000)
+	zNet.InitPacketCodeType(zNet.PacketCodeJson)
 
 	err := zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
 		log.Printf("RegisterHandler error %d", 1)
 		return
 	}
+
 	err = zNet.StartDefaultTcpServer()
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
-	log.Printf("Tcp server listing on %d ", 9106)
-
-	//pprof
-	//runtime.SetBlockProfileRate(1)     // 开启对阻塞操作的跟踪，block
-	//runtime.SetMutexProfileFraction(1) // 开启对锁调用的跟踪，mutex
-	//_ = http.ListenAndServe(":9107", nil)
+	log.Printf("Tcp server listing on %d ", port)
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
 	zNet.CloseDefaultTcpServer()
-	log.Printf("====>>> FBI warning , server exit <<<=====")
+	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
 func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
@@ -44,12 +42,12 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 	}
 
 	var data loginDataInfo
-	err := packet.JsonDecodeData(&data)
+	err := packet.DecodeData(&data)
 	if err != nil {
 		log.Printf("receive:%s, %s", data.UserName, data.Password)
 		return
 	}
-	//zLog.InfoF("receive:%s, %s, %d", data.UserName, data.Password, data.Time)
+	log.Printf("receive:%d, %s, %s, %d", packet.ProtoId, data.UserName, data.Password, data.Time)
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
@@ -64,16 +62,6 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 		Level: int32(session.GetSid()),
 		Time:  data.Time,
 	}
+	_ = session.Send(1, sendData)
 
-	netPacket := zNet.NetPacket{}
-	netPacket.ProtoId = 1
-
-	err = netPacket.JsonEncodeData(sendData)
-	if err != nil {
-		return
-	}
-
-	_ = session.Send(&netPacket)
-
-	//zNet.SendToClient(session.GetSid(), &netPacket)
 }

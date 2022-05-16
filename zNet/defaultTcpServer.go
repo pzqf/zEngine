@@ -25,7 +25,3 @@ func SendToClient(sid int64, protoId int32, data interface{}) {
 func BroadcastToClient(protoId int32, data interface{}) {
 	TcpServerInstance.BroadcastToClient(protoId, data)
 }
-
-func SetPacketCodeType(codeType PacketCodeType) {
-	TcpServerInstance.SetPacketCodeType(codeType)
-}
