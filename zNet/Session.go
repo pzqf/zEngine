@@ -13,25 +13,29 @@ import (
 	"time"
 )
 
+type SessionIdType int64
+
 type Session struct {
 	conn          *net.TCPConn
-	sid           int64 // session ID
+	sid           SessionIdType // session ID
 	sendChan      chan *NetPacket
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
-	tcpServer     *TcpServer
 	ctx           context.Context
 	ctxCancel     context.CancelFunc
+	onClose       CloseCallBackFunc
 }
 
-func (s *Session) Init(conn *net.TCPConn, sid int64, server *TcpServer) {
+type CloseCallBackFunc func(c *Session)
+
+func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc) {
 	s.conn = conn
 	s.sid = sid
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
-	s.tcpServer = server
+	s.onClose = closeCallBack
 	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 }
 
@@ -52,6 +56,7 @@ func (s *Session) Close() {
 
 func (s *Session) receive(ctx context.Context) {
 	s.wg.Add(1)
+	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
 		if err := recover(); err != nil {
@@ -61,6 +66,10 @@ func (s *Session) receive(ctx context.Context) {
 	headSize := 8
 	reader := bufio.NewReader(s.conn)
 	for {
+		if ctx.Err() != nil {
+			break
+		}
+
 		//read head
 		var buff = make([]byte, headSize)
 		n, err := reader.Read(buff)
@@ -70,7 +79,7 @@ func (s *Session) receive(ctx context.Context) {
 		}
 
 		if n != headSize {
-			log.Printf("Receive NetPacket head error,sid:%d, addr:%s", s.sid, s.conn.RemoteAddr().String())
+			log.Printf("Receive NetPacket head error, addr:%s", s.conn.RemoteAddr().String())
 			continue
 		}
 
@@ -80,13 +89,13 @@ func (s *Session) receive(ctx context.Context) {
 			continue
 		}
 		if netPacket.ProtoId <= 0 {
-			log.Printf("receive NetPacket protoid empty, sid:%d", s.sid)
+			log.Printf("receive NetPacket protoid empty")
 			continue
 		}
 
 		if netPacket.DataSize > MaxNetPacketDataSize {
-			log.Printf("Receive NetPacket Data size over max size, sid:%d, protoid:%d, data size:%d, max size: %d",
-				s.sid, netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
+			log.Printf("Receive NetPacket Data size over max size, protoid:%d, data size:%d, max size: %d",
+				netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
 			continue
 		}
 
@@ -99,7 +108,7 @@ func (s *Session) receive(ctx context.Context) {
 				readBuf := make([]byte, netPacket.DataSize)
 				n, err = reader.Read(readBuf)
 				if err != nil {
-					log.Printf("Client conn read data error,%v, sid:%d, addr:%s", err, s.sid, s.conn.RemoteAddr().String())
+					log.Printf("Client conn read data error,%v, addr:%s", err, s.conn.RemoteAddr().String())
 					readHappenError = true
 					break
 				}
@@ -115,7 +124,8 @@ func (s *Session) receive(ctx context.Context) {
 			}
 
 			if netPacket.DataSize != int32(len(dataBuf)) {
-				log.Printf("receive NetPacket Data size error, sid:%d, protoid:%d, DataSize:%d:%d", s.sid, netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
+				log.Printf("receive NetPacket Data size error,protoid:%d, DataSize:%d:%d",
+					netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
 				continue
 			}
 
@@ -123,12 +133,9 @@ func (s *Session) receive(ctx context.Context) {
 		}
 
 		s.receiveChan <- &netPacket
-		//_ = Dispatcher(s, &netPacket)
 
 		s.heartbeatUpdate()
 	}
-
-	s.ctxCancel()
 }
 
 func (s *Session) process(ctx context.Context) {
@@ -186,24 +193,30 @@ func (s *Session) process(ctx context.Context) {
 		}
 	}
 
-	//for process finish all packet
 	_ = s.conn.Close()
-	s.tcpServer.DelClient(s)
+	if s.onClose != nil {
+		s.onClose(s)
+	}
 }
 
-func (s *Session) Send(netPacket *NetPacket) error {
-	if netPacket == nil {
-		return errors.New("send packet is nil")
+func (s *Session) Send(protoId int32, data interface{}) error {
+	netPacket := NetPacket{
+		ProtoId: protoId,
 	}
 
+	err := netPacket.EncodeData(data)
+	if err != nil {
+		return err
+	}
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
 	if netPacket.DataSize > MaxNetPacketDataSize {
-		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d", netPacket.DataSize, MaxNetPacketDataSize))
+		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d, protoId:%d",
+			netPacket.DataSize, MaxNetPacketDataSize, protoId))
 	}
 
-	s.sendChan <- netPacket
+	s.sendChan <- &netPacket
 
 	return nil
 }
@@ -219,10 +232,6 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 		return 0, err
 	}
 	return n, nil
-}
-
-func (s *Session) GetSid() int64 {
-	return s.sid
 }
 
 func (s *Session) heartbeatUpdate() {
@@ -243,4 +252,8 @@ func (s *Session) heartbeatCheck(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (s *Session) GetSid() SessionIdType {
+	return s.sid
 }

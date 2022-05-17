@@ -2,18 +2,26 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/pzqf/zEngine/zNet"
 )
 
-// for test
 func main() {
 	wg := sync.WaitGroup{}
 	failedCount := 0
 	begin := time.Now()
 	clientCount := 10000
+
+	err := zNet.RegisterHandler(1, HandlerLoginRes)
+	if err != nil {
+		log.Printf("RegisterHandler error %d", 1)
+		return
+	}
+
+	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
 
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Microsecond)
@@ -23,15 +31,17 @@ func main() {
 				wg.Done()
 			}()
 			cli := zNet.TcpClient{}
-			err := cli.Connect("192.168.50.206", 9106)
-			//err := cli.Connect("127.0.0.1", 9106)
+
+			err = cli.ConnectToServer("192.168.50.206", 9106)
+			//err := cli.ConnectToServer("127.0.0.1", 9106)
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
 				return
 			}
+
 			defer cli.Close()
-			fmt.Println("Connect success :", x)
+			//fmt.Println("Connect success :", x)
 
 			type loginDataInfo struct {
 				UserName string `json:"user_name"`
@@ -44,48 +54,38 @@ func main() {
 				Password: "123456",
 				Time:     time.Now().UnixNano(),
 			}
-			sendPacket := zNet.NetPacket{
-				ProtoId: 1,
-			}
-			err = sendPacket.JsonEncodeData(newData)
+
+			err = cli.Send(1, &newData)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
 
-			err = cli.Send(&sendPacket)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			//fmt.Println("Send NetPacket, ProtoId:", 1, newData)
+			time.Sleep(time.Second * 2)
 
-			netPacket, err := cli.Receive()
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-
-			type PlayerInfo struct {
-				Id    int32  `json:"id"`
-				Name  string `json:"name"`
-				Level int32  `json:"level"`
-				Time  int64  `json:"time"`
-			}
-
-			var receiveData PlayerInfo
-			err = netPacket.JsonDecodeData(&receiveData)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			mill := time.Duration(time.Now().UnixNano()-receiveData.Time) * time.Nanosecond
-			fmt.Println(fmt.Sprintf("receive player data:%v, time:%s", receiveData, mill.String()))
-			cli.Close()
 		}(i)
 	}
 
 	wg.Wait()
 	fmt.Printf("========================failedCount:%d, cost:%s \n", failedCount, time.Now().Sub(begin).String())
+
+}
+
+func HandlerLoginRes(session *zNet.Session, packet *zNet.NetPacket) {
+	type receiveData struct {
+		Id    int32  `json:"id"`
+		Name  string `json:"name"`
+		Level int32  `json:"level"`
+		Time  int64  `json:"time"`
+	}
+
+	var data receiveData
+	err := packet.DecodeData(&data)
+	if err != nil {
+		log.Printf("receive:%s, %s", data.Name, data.Time)
+		return
+	}
+	mill := time.Duration(time.Now().UnixNano()-data.Time) * time.Nanosecond
+	fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", packet.ProtoId, data, mill.String()))
 
 }

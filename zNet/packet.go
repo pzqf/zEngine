@@ -9,6 +9,28 @@ import (
 
 const MaxNetPacketDataSize = 4096 * 2 * 2
 
+type PacketCodeType int
+
+const (
+	PacketCodeByte = PacketCodeType(1)
+	PacketCodeJson = PacketCodeType(2)
+	PacketCodeGob  = PacketCodeType(3)
+)
+
+var packetCode = PacketCodeJson
+var PacketDataSize = MaxNetPacketDataSize
+
+func InitPacket(packetCodeType PacketCodeType, maxDataSize int) {
+	if packetCodeType < PacketCodeByte && packetCodeType > PacketCodeGob {
+		packetCodeType = PacketCodeJson
+	}
+	packetCode = packetCodeType
+
+	if maxDataSize <= 0 {
+		PacketDataSize = MaxNetPacketDataSize
+	}
+}
+
 type NetPacket struct {
 	ProtoId  int32  `json:"proto_id"`
 	DataSize int32  `json:"data_size"`
@@ -26,15 +48,58 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 	return nil
 }
 
-// if you want use json,gob,protobuf or other, change the function or add other decode, encode function
-// PS: struct size, gob > json,
+// if you want custom code type, please use PacketCodeByte, data type must []byte
 
-func (p *NetPacket) DecodeData(data []byte) error {
+func (p *NetPacket) EncodeData(data interface{}) error {
+	switch packetCode {
+	case PacketCodeByte:
+		err := p.ByteEncodeData(data.([]byte))
+		if err != nil {
+			return err
+		}
+	case PacketCodeJson:
+		err := p.JsonEncodeData(data)
+		if err != nil {
+			return err
+		}
+	case PacketCodeGob:
+		err := p.GobEncodeData(data)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *NetPacket) DecodeData(data interface{}) error {
+	switch packetCode {
+	case PacketCodeByte:
+		err := p.ByteDecodeData(data.([]byte))
+		if err != nil {
+			return err
+		}
+	case PacketCodeJson:
+		err := p.JsonDecodeData(data)
+		if err != nil {
+			return err
+		}
+	case PacketCodeGob:
+		err := p.GobDecodeData(data)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *NetPacket) ByteDecodeData(data []byte) error {
 	data = p.Data
 	return nil
 }
 
-func (p *NetPacket) EncodeData(data []byte) error {
+func (p *NetPacket) ByteEncodeData(data []byte) error {
 	p.Data = append([]byte(nil), data...)
 	p.DataSize = int32(len(p.Data))
 	return nil
