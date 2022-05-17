@@ -9,11 +9,10 @@ import (
 	"github.com/pzqf/zEngine/zSignal"
 )
 
-//for tests
 func main() {
 	port := 9106
 	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port), 100000)
-	zNet.InitPacketCodeType(zNet.PacketCodeJson)
+	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
 
 	err := zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {

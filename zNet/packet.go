@@ -18,12 +18,17 @@ const (
 )
 
 var packetCode = PacketCodeJson
+var PacketDataSize = MaxNetPacketDataSize
 
-func InitPacketCodeType(t PacketCodeType) {
-	if t < PacketCodeByte && t > PacketCodeGob {
-		t = PacketCodeJson
+func InitPacket(packetCodeType PacketCodeType, maxDataSize int) {
+	if packetCodeType < PacketCodeByte && packetCodeType > PacketCodeGob {
+		packetCodeType = PacketCodeJson
 	}
-	packetCode = t
+	packetCode = packetCodeType
+
+	if maxDataSize <= 0 {
+		PacketDataSize = MaxNetPacketDataSize
+	}
 }
 
 type NetPacket struct {

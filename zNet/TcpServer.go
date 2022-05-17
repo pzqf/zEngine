@@ -89,7 +89,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 	newSession := svr.sessionPool.Get().(*Session)
 	if newSession != nil {
 		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
-		newSession.Init(conn, sid, svr.CloseSession)
+		newSession.Init(conn, sid, svr.RemoveSession)
 
 		svr.clientSessionMap.Store(sid, newSession)
 		newSession.Start()
@@ -98,7 +98,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 	return nil
 }
 
-func (svr *TcpServer) CloseSession(cli *Session) {
+func (svr *TcpServer) RemoveSession(cli *Session) {
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
@@ -107,6 +107,16 @@ func (svr *TcpServer) GetSession(sid int64) *Session {
 		return client.(*Session)
 	}
 	return nil
+}
+
+func (svr *TcpServer) GetAllSession() []*Session {
+	var sessionList []*Session
+	svr.clientSessionMap.Range(func(key, value interface{}) bool {
+		sessionList = append(sessionList, value.(*Session))
+		return true
+	})
+
+	return sessionList
 }
 
 func (svr *TcpServer) BroadcastToClient(protoId int32, data interface{}) {
