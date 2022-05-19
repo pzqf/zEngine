@@ -18,14 +18,18 @@ type TcpServer struct {
 	listener         *net.TCPListener
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
+	onRemoveSession  RemoveSessionCallBackFunc
 }
 
-func NewTcpServer(address string, maxClientCount int32) *TcpServer {
+type RemoveSessionCallBackFunc func(sid SessionIdType)
+
+func NewTcpServer(address string, maxClientCount int32, cb RemoveSessionCallBackFunc) *TcpServer {
 	svr := TcpServer{
 		maxClientCount:   maxClientCount,
 		clientSIDAtomic:  10000,
 		address:          address,
 		clientSessionMap: zMap.NewMap(),
+		onRemoveSession:  cb,
 		sessionPool: sync.Pool{
 			New: func() interface{} {
 				var s = &Session{}
@@ -99,6 +103,9 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 }
 
 func (svr *TcpServer) RemoveSession(cli *Session) {
+	if svr.onRemoveSession != nil {
+		svr.onRemoveSession(cli.sid)
+	}
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
