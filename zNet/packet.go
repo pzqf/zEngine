@@ -51,6 +51,10 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 // if you want custom code type, please use PacketCodeByte, data type must []byte
 
 func (p *NetPacket) EncodeData(data interface{}) error {
+	if data == nil {
+		p.DataSize = 0
+		return nil
+	}
 	switch packetCode {
 	case PacketCodeByte:
 		err := p.ByteEncodeData(data.([]byte))
@@ -73,6 +77,9 @@ func (p *NetPacket) EncodeData(data interface{}) error {
 }
 
 func (p *NetPacket) DecodeData(data interface{}) error {
+	if p.DataSize == 0 {
+		return nil
+	}
 	switch packetCode {
 	case PacketCodeByte:
 		err := p.ByteDecodeData(data.([]byte))

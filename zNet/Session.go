@@ -217,7 +217,6 @@ func (s *Session) Send(protoId int32, data interface{}) error {
 	}
 
 	s.sendChan <- &netPacket
-
 	return nil
 }
 
@@ -225,7 +224,9 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 	sendBuf := new(bytes.Buffer)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
-	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.Data)
+	if netPacket.Data != nil {
+		_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.Data)
+	}
 
 	n, err := s.conn.Write(sendBuf.Bytes())
 	if err != nil {
