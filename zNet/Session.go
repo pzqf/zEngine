@@ -45,7 +45,7 @@ func (s *Session) Start() {
 	}
 	go s.receive(s.ctx)
 	go s.process(s.ctx)
-	go s.heartbeatCheck(s.ctx)
+	//go s.heartbeatCheck(s.ctx)
 	return
 }
 
