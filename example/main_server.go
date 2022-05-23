@@ -20,7 +20,7 @@ func main() {
 		return
 	}
 
-	err = zNet.StartDefaultTcpServer()
+	err = zNet.GetDefaultTcpServer().Start()
 	if err != nil {
 		log.Printf(err.Error())
 		return
@@ -29,7 +29,7 @@ func main() {
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	zNet.CloseDefaultTcpServer()
+	zNet.GetDefaultTcpServer().Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
