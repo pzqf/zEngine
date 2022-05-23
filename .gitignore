@@ -18,3 +18,5 @@
 *.log
 main/bin/client
 main/bin/server
+example/bin/client
+example/bin/server

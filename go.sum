@@ -1,4 +1,4 @@
-github.com/pzqf/zUtil v0.0.0-20220510055134-151d893ec8ff h1:I3GBrzkBgqm7P7ahTV05ez44r9heAIrICQK3eLWNI6c=
-github.com/pzqf/zUtil v0.0.0-20220510055134-151d893ec8ff/go.mod h1:J7qqBl3TOKcEtWYSRaX1Pa47SHtgoiE9ZxFsXzbIlWE=
-github.com/pzqf/zUtil v0.0.0-20220510065844-6cd0a0c36238 h1:fqsB7aRchdxVfF6mwYiM7AL960e6tRZBfVLy6irWlO8=
-github.com/pzqf/zUtil v0.0.0-20220510065844-6cd0a0c36238/go.mod h1:J7qqBl3TOKcEtWYSRaX1Pa47SHtgoiE9ZxFsXzbIlWE=
+github.com/panjf2000/ants v1.3.0 h1:8pQ+8leaLc9lys2viEEr8md0U4RN6uOSUCE9bOYjQ9M=
+github.com/panjf2000/ants v1.3.0/go.mod h1:AaACblRPzq35m1g3enqYcxspbbiOJJYaxU2wMpm1cXY=
+github.com/pzqf/zUtil v0.0.0-20220513071314-ccdedab5cbbe h1:EgPBihWmVte8HpXnGp4TzJyCQ7uewwaPFznPFZ93th0=
+github.com/pzqf/zUtil v0.0.0-20220513071314-ccdedab5cbbe/go.mod h1:J7qqBl3TOKcEtWYSRaX1Pa47SHtgoiE9ZxFsXzbIlWE=
