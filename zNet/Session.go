@@ -43,6 +43,7 @@ func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
+	s.wg.Add(2)
 	go s.receive(s.ctx)
 	go s.process(s.ctx)
 	//go s.heartbeatCheck(s.ctx)
@@ -55,7 +56,6 @@ func (s *Session) Close() {
 }
 
 func (s *Session) receive(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
@@ -139,7 +139,7 @@ func (s *Session) receive(ctx context.Context) {
 }
 
 func (s *Session) process(ctx context.Context) {
-	s.wg.Add(1)
+	//s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
 		if err := recover(); err != nil {

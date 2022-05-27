@@ -57,7 +57,7 @@ func (svr *TcpServer) Start() error {
 		defer svr.wg.Done()
 		for {
 			if svr.clientSessionMap.Len() >= svr.maxClientCount {
-				log.Printf("Connects over max maxClientCount %d", svr.maxClientCount)
+				log.Printf("Maximum connections exceeded, max:%d", svr.maxClientCount)
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}

@@ -23,7 +23,7 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 
 func Dispatcher(session *Session, netPacket *NetPacket) error {
 	if netPacket == nil {
-		return errors.New("packet is nil")
+		return errors.New("nil packet")
 	}
 
 	fun, ok := mapHandler[netPacket.ProtoId]
