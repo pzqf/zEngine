@@ -18,18 +18,7 @@ const (
 )
 
 var packetCode = PacketCodeJson
-var PacketDataSize = MaxNetPacketDataSize
-
-func InitPacket(packetCodeType PacketCodeType, maxDataSize int) {
-	if packetCodeType < PacketCodeByte && packetCodeType > PacketCodeGob {
-		packetCodeType = PacketCodeJson
-	}
-	packetCode = packetCodeType
-
-	if maxDataSize <= 0 {
-		PacketDataSize = MaxNetPacketDataSize
-	}
-}
+var maxPacketDataSize = int32(MaxNetPacketDataSize)
 
 type NetPacket struct {
 	ProtoId  int32  `json:"proto_id"`

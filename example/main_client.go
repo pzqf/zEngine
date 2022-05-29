@@ -27,7 +27,7 @@ func main() {
 		return
 	}
 
-	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
+	//zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Microsecond)
@@ -72,7 +72,8 @@ func main() {
 	}
 
 	wg.Wait()
-	fmt.Printf("========================failedCount:%d, cost:%s \n", failedCount, time.Now().Sub(begin).String())
+	fmt.Printf("==============clientCount:%d, failedCount:%d, cost:%s \n",
+		clientCount, failedCount, time.Now().Sub(begin).String())
 
 }
 

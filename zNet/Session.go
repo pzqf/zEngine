@@ -22,9 +22,9 @@ type Session struct {
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
-	ctx           context.Context
-	ctxCancel     context.CancelFunc
-	onClose       CloseCallBackFunc
+	//ctx           context.Context
+	ctxCancel context.CancelFunc
+	onClose   CloseCallBackFunc
 }
 
 type CloseCallBackFunc func(c *Session)
@@ -36,16 +36,18 @@ func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack Close
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
 	s.onClose = closeCallBack
-	s.ctx, s.ctxCancel = context.WithCancel(context.Background())
+	//s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 }
 
 func (s *Session) Start() {
 	if s.conn == nil {
 		return
 	}
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	s.ctxCancel = ctxCancel
 	s.wg.Add(2)
-	go s.receive(s.ctx)
-	go s.process(s.ctx)
+	go s.receive(ctx)
+	go s.process(ctx)
 	//go s.heartbeatCheck(s.ctx)
 	return
 }
@@ -93,7 +95,7 @@ func (s *Session) receive(ctx context.Context) {
 			continue
 		}
 
-		if netPacket.DataSize > MaxNetPacketDataSize {
+		if netPacket.DataSize > maxPacketDataSize {
 			log.Printf("Receive NetPacket Data size over max size, protoid:%d, data size:%d, max size: %d",
 				netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
 			continue
@@ -150,9 +152,6 @@ func (s *Session) process(ctx context.Context) {
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			if receivePacket.ProtoId == 0 {
-				fmt.Println(receivePacket)
-			}
 			err := Dispatcher(s, receivePacket)
 			if err != nil {
 				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
@@ -211,9 +210,9 @@ func (s *Session) Send(protoId int32, data interface{}) error {
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
-	if netPacket.DataSize > MaxNetPacketDataSize {
+	if netPacket.DataSize > maxPacketDataSize {
 		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, MaxNetPacketDataSize, protoId))
+			netPacket.DataSize, maxPacketDataSize, protoId))
 	}
 
 	s.sendChan <- &netPacket

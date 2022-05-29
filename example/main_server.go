@@ -20,7 +20,7 @@ func main() {
 		Level:    zLog.InfoLevel,
 		Console:  true,
 		Filename: "./logs/server.log",
-		MaxSize:  1,
+		MaxSize:  1024,
 	}
 	err := zLog.InitLogger(&cfg)
 	if err != nil {
@@ -29,8 +29,13 @@ func main() {
 	}
 
 	port := 9106
-	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port), 100000)
-	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
+	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port),
+		zNet.WithMaxClientCount(10000),
+		zNet.WithSidInitio(10000),
+		zNet.WithPacketCodeType(zNet.PacketCodeJson),
+		zNet.WithMaxPacketDataSize(4096*2),
+		zNet.WithDispatcherPoolSize(3000),
+	)
 
 	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {

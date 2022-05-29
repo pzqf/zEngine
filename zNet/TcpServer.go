@@ -24,9 +24,11 @@ type TcpServer struct {
 
 type SessionCallBackFunc func(sid SessionIdType)
 
-func NewTcpServer(address string, maxClientCount int32) *TcpServer {
-	svr := TcpServer{
-		maxClientCount:   maxClientCount,
+type Options func(*TcpServer)
+
+func NewTcpServer(address string, opts ...Options) *TcpServer {
+	svr := &TcpServer{
+		maxClientCount:   10000,
 		clientSIDAtomic:  10000,
 		address:          address,
 		clientSessionMap: zMap.NewMap(),
@@ -38,7 +40,10 @@ func NewTcpServer(address string, maxClientCount int32) *TcpServer {
 		},
 	}
 
-	return &svr
+	for _, opt := range opts {
+		opt(svr)
+	}
+	return svr
 }
 
 func (svr *TcpServer) Start() error {
