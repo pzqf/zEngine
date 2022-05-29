@@ -26,6 +26,16 @@ type NetPacket struct {
 	Data     []byte `json:"data"`
 }
 
+func InitPacket(packetCodeType PacketCodeType, maxDataSize int) {
+	if packetCodeType < PacketCodeByte && packetCodeType > PacketCodeGob {
+		packetCodeType = PacketCodeJson
+	}
+	packetCode = packetCodeType
+	if maxDataSize <= 0 {
+		maxPacketDataSize = MaxNetPacketDataSize
+	}
+}
+
 func (p *NetPacket) UnmarshalHead(data []byte) error {
 	buf := bytes.NewReader(data)
 	if err := binary.Read(buf, binary.LittleEndian, &p.ProtoId); err != nil {

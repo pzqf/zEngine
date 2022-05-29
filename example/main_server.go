@@ -33,8 +33,8 @@ func main() {
 		zNet.WithMaxClientCount(10000),
 		zNet.WithSidInitio(10000),
 		zNet.WithPacketCodeType(zNet.PacketCodeJson),
-		zNet.WithMaxPacketDataSize(4096*2),
-		zNet.WithDispatcherPoolSize(3000),
+		zNet.WithMaxPacketDataSize(zNet.MaxNetPacketDataSize),
+		zNet.WithDispatcherPoolSize(10000),
 	)
 
 	err = zNet.RegisterHandler(1, HandlerLogin)

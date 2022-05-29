@@ -27,7 +27,7 @@ func main() {
 		return
 	}
 
-	//zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
+	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Microsecond)
