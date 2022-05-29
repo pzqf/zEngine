@@ -13,6 +13,12 @@ var defaultPoolSize = 10000
 var workerPool *ants.Pool
 
 func RegisterHandler(protoId int32, fun HandlerFun) error {
+	p, err := ants.NewPool(defaultPoolSize)
+	if err != nil {
+		panic(err)
+	}
+	workerPool = p
+
 	if _, ok := mapHandler[protoId]; ok {
 		return errors.New("had handlerFun")
 	}
@@ -23,7 +29,7 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 
 func Dispatcher(session *Session, netPacket *NetPacket) error {
 	if netPacket == nil {
-		return errors.New("packet is nil")
+		return errors.New("nil packet")
 	}
 
 	fun, ok := mapHandler[netPacket.ProtoId]
@@ -37,11 +43,6 @@ func Dispatcher(session *Session, netPacket *NetPacket) error {
 }
 
 func init() {
-	p, err := ants.NewPool(defaultPoolSize)
-	if err != nil {
-		panic(err)
-	}
-	workerPool = p
 	_ = RegisterHandler(0, heartbeat)
 }
 

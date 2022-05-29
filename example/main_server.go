@@ -4,17 +4,40 @@ import (
 	"fmt"
 	"log"
 	_ "net/http/pprof"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/pzqf/zEngine/zLog"
 
 	"github.com/pzqf/zEngine/zNet"
 	"github.com/pzqf/zEngine/zSignal"
 )
 
 func main() {
-	port := 9106
-	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port), 100000)
-	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
 
-	err := zNet.RegisterHandler(1, HandlerLogin)
+	cfg := zLog.Config{
+		Level:    zLog.InfoLevel,
+		Console:  true,
+		Filename: "./logs/server.log",
+		MaxSize:  1024,
+	}
+	err := zLog.InitLogger(&cfg)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	port := 9106
+	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port),
+		zNet.WithMaxClientCount(10000),
+		zNet.WithSidInitio(10000),
+		zNet.WithPacketCodeType(zNet.PacketCodeJson),
+		zNet.WithMaxPacketDataSize(zNet.MaxNetPacketDataSize),
+		zNet.WithDispatcherPoolSize(10000),
+	)
+
+	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
 		log.Printf("RegisterHandler error %d", 1)
 		return
@@ -46,7 +69,8 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 		log.Printf("receive:%s, %s", data.UserName, data.Password)
 		return
 	}
-	log.Printf("receive:%d, %s, %s, %d", packet.ProtoId, data.UserName, data.Password, data.Time)
+	zLog.Info("receive:", zap.Int32("proto_id", packet.ProtoId), zap.Any("data", data),
+		zap.Int64("cost", (time.Now().UnixNano()-data.Time)/100000))
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`

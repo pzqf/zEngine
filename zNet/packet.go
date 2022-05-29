@@ -18,23 +18,22 @@ const (
 )
 
 var packetCode = PacketCodeJson
-var PacketDataSize = MaxNetPacketDataSize
+var maxPacketDataSize = int32(MaxNetPacketDataSize)
+
+type NetPacket struct {
+	ProtoId  int32  `json:"proto_id"`
+	DataSize int32  `json:"data_size"`
+	Data     []byte `json:"data"`
+}
 
 func InitPacket(packetCodeType PacketCodeType, maxDataSize int) {
 	if packetCodeType < PacketCodeByte && packetCodeType > PacketCodeGob {
 		packetCodeType = PacketCodeJson
 	}
 	packetCode = packetCodeType
-
 	if maxDataSize <= 0 {
-		PacketDataSize = MaxNetPacketDataSize
+		maxPacketDataSize = MaxNetPacketDataSize
 	}
-}
-
-type NetPacket struct {
-	ProtoId  int32  `json:"proto_id"`
-	DataSize int32  `json:"data_size"`
-	Data     []byte `json:"data"`
 }
 
 func (p *NetPacket) UnmarshalHead(data []byte) error {
