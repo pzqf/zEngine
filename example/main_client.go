@@ -13,7 +13,7 @@ import (
 func main() {
 
 	address := flag.String("a", "127.0.0.1", "server address")
-	count := flag.Int("n", 10000, "client count")
+	count := flag.Int("n", 1000, "client count")
 	flag.Parse()
 
 	var wg sync.WaitGroup
@@ -54,19 +54,21 @@ func main() {
 				Time     int64  `json:"time"`
 			}
 
-			newData := loginDataInfo{
-				UserName: fmt.Sprintf("pppp-%d", x),
-				Password: "123456",
-				Time:     time.Now().UnixNano(),
+			for i := 0; i < 5; i++ {
+				newData := loginDataInfo{
+					UserName: fmt.Sprintf("pppp-%d", x),
+					Password: "123456",
+					Time:     time.Now().UnixNano(),
+				}
+				err = cli.Send(1, &newData)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				time.Sleep(time.Microsecond * 10)
 			}
 
-			err = cli.Send(1, &newData)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-
-			time.Sleep(time.Second * 2)
+			time.Sleep(time.Second * 1)
 
 		}(i)
 	}
