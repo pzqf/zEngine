@@ -23,3 +23,4 @@ example/bin/server
 !/example/bin/
 example/bin/engine_test_client
 example/bin/engine_test_server
+*.pprof
