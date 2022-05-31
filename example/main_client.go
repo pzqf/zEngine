@@ -11,9 +11,8 @@ import (
 )
 
 func main() {
-
 	address := flag.String("a", "127.0.0.1", "server address")
-	count := flag.Int("n", 1000, "client count")
+	count := flag.Int("n", 1, "client count")
 	flag.Parse()
 
 	var wg sync.WaitGroup
@@ -27,7 +26,8 @@ func main() {
 		return
 	}
 
-	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize)
+	//PS:Same as the server
+	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize*100)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Microsecond)
@@ -38,7 +38,6 @@ func main() {
 			cli := zNet.TcpClient{}
 
 			err = cli.ConnectToServer(*address, 9106)
-			//err := cli.ConnectToServer("127.0.0.1", 9106)
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
@@ -46,26 +45,38 @@ func main() {
 			}
 
 			defer cli.Close()
-			//fmt.Println("Connect success :", x)
 
 			type loginDataInfo struct {
-				UserName string `json:"user_name"`
-				Password string `json:"password"`
-				Time     int64  `json:"time"`
+				UserName string   `json:"user_name"`
+				Password string   `json:"password"`
+				Time     int64    `json:"time"`
+				Over     []string `json:"over"`
 			}
 
-			for i := 0; i < 5; i++ {
+			for i := 0; i < 10; i++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
 					Time:     time.Now().UnixNano(),
 				}
+				/* test
+				for s := 0; s < 5000; s++ {
+					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
+						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+				}
+				*/
+
 				err = cli.Send(1, &newData)
 				if err != nil {
 					fmt.Println(err)
 					return
 				}
-				time.Sleep(time.Microsecond * 10)
+				//time.Sleep(time.Microsecond * 1)
 			}
 
 			time.Sleep(time.Second * 1)
@@ -94,5 +105,10 @@ func HandlerLoginRes(session *zNet.Session, packet *zNet.NetPacket) {
 		return
 	}
 	mill := time.Duration(time.Now().UnixNano()-data.Time) * time.Nanosecond
-	fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", packet.ProtoId, data, mill.String()))
+	if mill > time.Millisecond*1 {
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s, loooooooong", packet.ProtoId, data, mill.String()))
+	} else {
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", packet.ProtoId, data, mill.String()))
+	}
+
 }

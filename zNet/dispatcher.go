@@ -2,6 +2,7 @@ package zNet
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/panjf2000/ants"
 )
@@ -13,14 +14,16 @@ var defaultPoolSize = 10000
 var workerPool *ants.Pool
 
 func RegisterHandler(protoId int32, fun HandlerFun) error {
-	p, err := ants.NewPool(defaultPoolSize)
-	if err != nil {
-		panic(err)
+	if workerPool == nil {
+		p, err := ants.NewPool(defaultPoolSize)
+		if err != nil {
+			panic(err)
+		}
+		workerPool = p
 	}
-	workerPool = p
 
 	if _, ok := mapHandler[protoId]; ok {
-		return errors.New("had handlerFun")
+		return errors.New(fmt.Sprintf("protoId %d had handlerFun", protoId))
 	}
 	mapHandler[protoId] = fun
 
@@ -34,11 +37,14 @@ func Dispatcher(session *Session, netPacket *NetPacket) error {
 
 	fun, ok := mapHandler[netPacket.ProtoId]
 	if !ok {
-		return errors.New("no handlerFun")
+		return errors.New(fmt.Sprintf("protoId %d no handlerFun", netPacket.ProtoId))
 	}
-	workerPool.Submit(func() {
+	err := workerPool.Submit(func() {
 		fun(session, netPacket)
 	})
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

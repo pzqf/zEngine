@@ -81,7 +81,7 @@ func (s *Session) receive(ctx context.Context) {
 		}
 
 		if n != headSize {
-			log.Printf("Receive NetPacket head error, addr:%s", s.conn.RemoteAddr().String())
+			log.Printf("Receive NetPacket, head error, addr:%s", s.conn.RemoteAddr().String())
 			continue
 		}
 
@@ -90,24 +90,15 @@ func (s *Session) receive(ctx context.Context) {
 			log.Println(err)
 			continue
 		}
-		if netPacket.ProtoId <= 0 {
-			log.Printf("receive NetPacket protoid empty")
-			continue
-		}
-
-		if netPacket.DataSize > maxPacketDataSize {
-			log.Printf("Receive NetPacket Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, MaxNetPacketDataSize)
-			continue
-		}
-
 		//read data
 		if netPacket.DataSize > 0 {
 			var dataBuf []byte
-			readSize := 0
+
 			readHappenError := false
+
+			needReadSize := int(netPacket.DataSize)
 			for {
-				readBuf := make([]byte, netPacket.DataSize)
+				readBuf := make([]byte, needReadSize)
 				n, err = reader.Read(readBuf)
 				if err != nil {
 					log.Printf("Client conn read data error,%v, addr:%s", err, s.conn.RemoteAddr().String())
@@ -116,8 +107,8 @@ func (s *Session) receive(ctx context.Context) {
 				}
 
 				dataBuf = append(dataBuf, readBuf[:n]...)
-				readSize += n
-				if readSize >= int(netPacket.DataSize) {
+				needReadSize -= n
+				if needReadSize <= 0 {
 					break
 				}
 			}
@@ -126,12 +117,23 @@ func (s *Session) receive(ctx context.Context) {
 			}
 
 			if netPacket.DataSize != int32(len(dataBuf)) {
-				log.Printf("receive NetPacket Data size error,protoid:%d, DataSize:%d:%d",
+				log.Printf("receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
 					netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
 				continue
 			}
 
 			netPacket.Data = dataBuf
+		}
+
+		if netPacket.ProtoId < 0 {
+			log.Printf("receive NetPacket protoid empty")
+			continue
+		}
+
+		if netPacket.DataSize > maxPacketDataSize {
+			log.Printf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize)
+			continue
 		}
 
 		s.receiveChan <- &netPacket
@@ -211,7 +213,7 @@ func (s *Session) Send(protoId int32, data interface{}) error {
 		return errors.New("send packet illegal")
 	}
 	if netPacket.DataSize > maxPacketDataSize {
-		return errors.New(fmt.Sprintf("NetPacket Data size over max size, data size :%d, max size: %d, protoId:%d",
+		return errors.New(fmt.Sprintf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
 			netPacket.DataSize, maxPacketDataSize, protoId))
 	}
 

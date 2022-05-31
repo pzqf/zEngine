@@ -3,18 +3,24 @@ package main
 import (
 	"fmt"
 	"log"
-	_ "net/http/pprof"
-	"time"
 
 	"go.uber.org/zap"
+
+	//_ "net/http/pprof"
 
 	"github.com/pzqf/zEngine/zLog"
 
 	"github.com/pzqf/zEngine/zNet"
 	"github.com/pzqf/zEngine/zSignal"
+
+	"github.com/pkg/profile"
 )
 
 func main() {
+
+	stopper := profile.Start(profile.CPUProfile, profile.ProfilePath("."), profile.NoShutdownHook)
+	defer stopper.Stop()
+	// go tool pprof -http=:9999 cpu.pprof
 
 	cfg := zLog.Config{
 		Level:    zLog.InfoLevel,
@@ -30,16 +36,16 @@ func main() {
 
 	port := 9106
 	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port),
-		zNet.WithMaxClientCount(10000),
+		zNet.WithMaxClientCount(100000),
 		zNet.WithSidInitio(10000),
 		zNet.WithPacketCodeType(zNet.PacketCodeJson),
-		zNet.WithMaxPacketDataSize(zNet.MaxNetPacketDataSize),
-		zNet.WithDispatcherPoolSize(10000),
+		zNet.WithMaxPacketDataSize(zNet.MaxNetPacketDataSize*100),
+		zNet.WithDispatcherPoolSize(100000),
 	)
 
 	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
-		log.Printf("RegisterHandler error %d", 1)
+		zLog.Error("RegisterHandler error", zap.Error(err))
 		return
 	}
 
@@ -58,19 +64,20 @@ func main() {
 
 func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 	type loginDataInfo struct {
-		UserName string `json:"user_name"`
-		Password string `json:"password"`
-		Time     int64  `json:"time"`
+		UserName string   `json:"user_name"`
+		Password string   `json:"password"`
+		Time     int64    `json:"time"`
+		Over     []string `json:"over"`
 	}
 
 	var data loginDataInfo
 	err := packet.DecodeData(&data)
 	if err != nil {
-		log.Printf("receive:%s, %s", data.UserName, data.Password)
+		log.Printf("receive:%s, %s, %v", data.UserName, data.Password, err)
 		return
 	}
-	zLog.Info("receive:", zap.Int32("proto_id", packet.ProtoId), zap.Any("data", data),
-		zap.Int64("cost", (time.Now().UnixNano()-data.Time)/100000))
+	//zLog.Info("receive:", zap.Int32("proto_id", packet.ProtoId), zap.Any("data", data),
+	//	zap.Int64("cost", (time.Now().UnixNano()-data.Time)/100000))
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
