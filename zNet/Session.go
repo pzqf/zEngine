@@ -22,9 +22,8 @@ type Session struct {
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
-	//ctx           context.Context
-	ctxCancel context.CancelFunc
-	onClose   CloseCallBackFunc
+	ctxCancel     context.CancelFunc
+	onClose       CloseCallBackFunc
 }
 
 type CloseCallBackFunc func(c *Session)
@@ -36,7 +35,6 @@ func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack Close
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
 	s.onClose = closeCallBack
-	//s.ctx, s.ctxCancel = context.WithCancel(context.Background())
 }
 
 func (s *Session) Start() {
@@ -65,45 +63,52 @@ func (s *Session) receive(ctx context.Context) {
 			log.Println("panic:", err)
 		}
 	}()
-	headSize := 8
+
 	reader := bufio.NewReader(s.conn)
+endOfReceiveErr:
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 
 		//read head
-		var buff = make([]byte, headSize)
-		n, err := reader.Read(buff)
-		if err != nil {
-			//log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
-			break
-		}
-
-		if n != headSize {
-			log.Printf("Receive NetPacket, head error, addr:%s", s.conn.RemoteAddr().String())
-			continue
+		var headBuf []byte
+		needReadSize := 8
+		for {
+			readBuf := make([]byte, needReadSize)
+			n, err := reader.Read(readBuf)
+			if err != nil {
+				log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
+				break endOfReceiveErr
+			}
+			headBuf = append(headBuf, readBuf[:n]...)
+			needReadSize -= n
+			if needReadSize <= 0 {
+				break
+			}
 		}
 
 		netPacket := NetPacket{}
-		if err = netPacket.UnmarshalHead(buff); err != nil {
-			log.Println(err)
-			continue
+		if err := netPacket.UnmarshalHead(headBuf); err != nil {
+			log.Println("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+			break
 		}
+
+		if netPacket.DataSize > maxPacketDataSize {
+			log.Printf("Receive NetPacket, head DataSize over max size, protoid:%d, DataSize:%d", netPacket.ProtoId, netPacket.DataSize)
+			break
+		}
+
 		//read data
 		if netPacket.DataSize > 0 {
 			var dataBuf []byte
-
-			readHappenError := false
-
-			needReadSize := int(netPacket.DataSize)
+			needReadSize = int(netPacket.DataSize)
 			for {
 				readBuf := make([]byte, needReadSize)
-				n, err = reader.Read(readBuf)
+				n, err := reader.Read(readBuf)
 				if err != nil {
 					log.Printf("Client conn read data error,%v, addr:%s", err, s.conn.RemoteAddr().String())
-					readHappenError = true
-					break
+					break endOfReceiveErr
 				}
 
 				dataBuf = append(dataBuf, readBuf[:n]...)
@@ -112,12 +117,9 @@ func (s *Session) receive(ctx context.Context) {
 					break
 				}
 			}
-			if readHappenError {
-				break
-			}
 
 			if netPacket.DataSize != int32(len(dataBuf)) {
-				log.Printf("receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+				log.Printf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
 					netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
 				continue
 			}
@@ -140,6 +142,7 @@ func (s *Session) receive(ctx context.Context) {
 
 		s.heartbeatUpdate()
 	}
+	s.ctxCancel()
 }
 
 func (s *Session) process(ctx context.Context) {
