@@ -1,12 +1,12 @@
 package zNet
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -64,28 +64,26 @@ func (s *Session) receive(ctx context.Context) {
 		}
 	}()
 
-	reader := bufio.NewReader(s.conn)
-endOfReceiveErr:
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 
-		//read head
-		var headBuf []byte
-		needReadSize := 8
-		for {
-			readBuf := make([]byte, needReadSize)
-			n, err := reader.Read(readBuf)
-			if err != nil {
-				log.Printf("Client conn read error,%v, sid:%d, closed", err, s.sid)
-				break endOfReceiveErr
+		headSize := 8
+		headBuf := make([]byte, headSize)
+		n, err := io.ReadFull(s.conn, headBuf)
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+			} else {
+				log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
 			}
-			headBuf = append(headBuf, readBuf[:n]...)
-			needReadSize -= n
-			if needReadSize <= 0 {
-				break
-			}
+
+			break
+		}
+		if n != headSize {
+			log.Printf("Client conn read error, error:head size error %d, sid:%d, closed", n, s.sid)
+			break
 		}
 
 		netPacket := NetPacket{}
@@ -94,37 +92,19 @@ endOfReceiveErr:
 			break
 		}
 
-		if netPacket.DataSize > maxPacketDataSize {
-			log.Printf("Receive NetPacket, head DataSize over max size, protoid:%d, DataSize:%d", netPacket.ProtoId, netPacket.DataSize)
-			break
-		}
-
-		//read data
 		if netPacket.DataSize > 0 {
-			var dataBuf []byte
-			needReadSize = int(netPacket.DataSize)
-			for {
-				readBuf := make([]byte, needReadSize)
-				n, err := reader.Read(readBuf)
-				if err != nil {
-					log.Printf("Client conn read data error,%v, addr:%s", err, s.conn.RemoteAddr().String())
-					break endOfReceiveErr
-				}
-
-				dataBuf = append(dataBuf, readBuf[:n]...)
-				needReadSize -= n
-				if needReadSize <= 0 {
-					break
-				}
+			netPacket.Data = make([]byte, int(netPacket.DataSize))
+			n, err = io.ReadFull(s.conn, netPacket.Data)
+			if err != nil {
+				log.Printf("Client conn read data error,%v,  sid:%d, closed", err, s.sid)
+				break
 			}
 
-			if netPacket.DataSize != int32(len(dataBuf)) {
+			if netPacket.DataSize != int32(n) {
 				log.Printf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-					netPacket.ProtoId, netPacket.DataSize, len(dataBuf))
-				continue
+					netPacket.ProtoId, netPacket.DataSize, n)
+				break
 			}
-
-			netPacket.Data = dataBuf
 		}
 
 		if netPacket.ProtoId < 0 {
@@ -146,7 +126,6 @@ endOfReceiveErr:
 }
 
 func (s *Session) process(ctx context.Context) {
-	//s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
 		if err := recover(); err != nil {

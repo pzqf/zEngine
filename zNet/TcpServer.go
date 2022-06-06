@@ -100,6 +100,8 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
 		newSession.Init(conn, sid, svr.RemoveSession)
 
+		//todo 验证
+
 		svr.clientSessionMap.Store(sid, newSession)
 
 		if svr.onAddSession != nil {

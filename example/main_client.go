@@ -53,14 +53,14 @@ func main() {
 				Over     []string `json:"over"`
 			}
 
-			for i := 0; i < 10; i++ {
+			for n := 0; n < 100; n++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
 					Time:     time.Now().UnixNano(),
 				}
-				/* test
-				for s := 0; s < 5000; s++ {
+				// test
+				for s := 0; s < 50000; s++ {
 					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
@@ -69,7 +69,6 @@ func main() {
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
 				}
-				*/
 
 				err = cli.Send(1, &newData)
 				if err != nil {
@@ -79,8 +78,7 @@ func main() {
 				//time.Sleep(time.Microsecond * 1)
 			}
 
-			time.Sleep(time.Second * 1)
-
+			time.Sleep(time.Second * 5)
 		}(i)
 	}
 
