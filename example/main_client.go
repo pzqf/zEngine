@@ -31,7 +31,7 @@ func main() {
 	zNet.InitPacket(zNet.DefaultPacketDataSize * 100)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
-		time.Sleep(10 * time.Microsecond)
+		time.Sleep(1 * time.Millisecond)
 		go func(x int) {
 			defer func() {
 				wg.Done()
@@ -84,7 +84,7 @@ func main() {
 				//time.Sleep(time.Microsecond * 1)
 			}
 
-			time.Sleep(time.Second * 5)
+			time.Sleep(time.Second * 1)
 		}(i)
 	}
 
