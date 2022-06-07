@@ -13,6 +13,7 @@ anything, issues.
 
 
 # create rsa key file
-openssl genrsa -out rsa_private.key 2048
-
-openssl rsa -in rsa_private.key -pubout -out rsa_public.key
+## private key
+```~#openssl genrsa -out rsa_private.key 2048```
+## public key
+```~#openssl rsa -in rsa_private.key -pubout -out rsa_public.key```

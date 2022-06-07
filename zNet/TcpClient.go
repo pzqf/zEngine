@@ -70,7 +70,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 			return err
 		}
 
-		conn.Write(v15)
+		_, _ = conn.Write(v15)
 	}
 
 	cli.session.Init(conn, 1, nil, aesKey)

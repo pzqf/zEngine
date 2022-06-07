@@ -41,7 +41,7 @@ func main() {
 		zNet.WithSidInitio(10000),
 		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
 		zNet.WithDispatcherPoolSize(100000),
-		//zNet.WithRsaEncrypt("rsa_private.key"),
+		zNet.WithRsaEncrypt("rsa_private.key"),
 	)
 
 	err = zNet.RegisterHandler(1, HandlerLogin)

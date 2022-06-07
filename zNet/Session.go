@@ -80,16 +80,14 @@ func (s *Session) receive(ctx context.Context) {
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
 			if err != io.EOF {
-				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+				log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
 			} else {
 				//log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
 			}
 
 			break
 		}
-		if n == 0 {
-			continue
-		}
+
 		if n != headSize {
 			log.Printf("Client conn read error, error:head size error %d, sid:%d, closed", n, s.sid)
 			break

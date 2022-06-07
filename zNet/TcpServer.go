@@ -106,6 +106,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 		if svr.privateKey != nil {
 			_, err := conn.Write([]byte("hello"))
 			if err != nil {
+				_ = conn.Close()
 				return nil
 			}
 
@@ -115,18 +116,19 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 			aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
 			if err != nil {
 				log.Println("Decrypt aes key failed")
+				_ = conn.Close()
 				return nil
 			}
 		} else {
 			_, err := conn.Write([]byte("nokey"))
 			if err != nil {
+				_ = conn.Close()
 				return nil
 			}
 		}
 
 		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
 		newSession.Init(conn, sid, svr.RemoveSession, aesKey)
-		//fmt.Println(sid, "aesKey", string(aesKey))
 
 		svr.clientSessionMap.Store(sid, newSession)
 
