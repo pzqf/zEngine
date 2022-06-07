@@ -7,7 +7,9 @@ import (
 	"github.com/panjf2000/ants"
 )
 
-type HandlerFun func(session *Session, packet *NetPacket)
+//type HandlerFun func(session *Session, packet *NetPacket)
+
+type HandlerFun func(session *Session, protoId int32, data []byte)
 
 var mapHandler = make(map[int32]HandlerFun)
 var defaultPoolSize = 10000
@@ -40,7 +42,7 @@ func Dispatcher(session *Session, netPacket *NetPacket) error {
 		return errors.New(fmt.Sprintf("protoId %d no handlerFun", netPacket.ProtoId))
 	}
 	err := workerPool.Submit(func() {
-		fun(session, netPacket)
+		fun(session, netPacket.ProtoId, netPacket.Data)
 	})
 	if err != nil {
 		return err
@@ -52,12 +54,12 @@ func init() {
 	_ = RegisterHandler(0, heartbeat)
 }
 
-func heartbeat(session *Session, packet *NetPacket) {
+func heartbeat(session *Session, protoId int32, data []byte) {
 	session.heartbeatUpdate()
 	sendPacket := NetPacket{
 		ProtoId:  0,
-		DataSize: packet.DataSize,
-		Data:     packet.Data,
+		DataSize: int32(len(data)),
+		Data:     data,
 	}
 	_, _ = session.send(&sendPacket)
 }

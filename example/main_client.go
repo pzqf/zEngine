@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -27,17 +28,17 @@ func main() {
 	}
 
 	//PS:Same as the server
-	zNet.InitPacket(zNet.PacketCodeJson, zNet.MaxNetPacketDataSize*100)
+	zNet.InitPacket(zNet.DefaultPacketDataSize * 100)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
-		time.Sleep(1 * time.Microsecond)
+		time.Sleep(10 * time.Microsecond)
 		go func(x int) {
 			defer func() {
 				wg.Done()
 			}()
 			cli := zNet.TcpClient{}
 
-			err = cli.ConnectToServer(*address, 9106)
+			err = cli.ConnectToServer(*address, 9106, "rsa_public.key")
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
@@ -53,14 +54,14 @@ func main() {
 				Over     []string `json:"over"`
 			}
 
-			for n := 0; n < 100; n++ {
+			for n := 0; n < 1; n++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
 					Time:     time.Now().UnixNano(),
 				}
 				// test
-				for s := 0; s < 50000; s++ {
+				for s := 0; s < 0; s++ {
 					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
@@ -70,7 +71,12 @@ func main() {
 						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
 				}
 
-				err = cli.Send(1, &newData)
+				marshal, err := json.Marshal(newData)
+				if err != nil {
+					return
+				}
+
+				err = cli.Send(1, marshal)
 				if err != nil {
 					fmt.Println(err)
 					return
@@ -88,7 +94,7 @@ func main() {
 
 }
 
-func HandlerLoginRes(session *zNet.Session, packet *zNet.NetPacket) {
+func HandlerLoginRes(session *zNet.Session, protoId int32, data []byte) {
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
 		Name  string `json:"name"`
@@ -96,17 +102,19 @@ func HandlerLoginRes(session *zNet.Session, packet *zNet.NetPacket) {
 		Time  int64  `json:"time"`
 	}
 
-	var data PlayerInfo
-	err := packet.DecodeData(&data)
+	var loginResData PlayerInfo
+	//err := packet.DecodeData(&data)
+	err := json.Unmarshal(data, &loginResData)
 	if err != nil {
-		log.Printf("receive:%s, %s", data.Name, data.Time)
+		//log.Printf("receive:%s, %s", loginResData.Name, loginResData.Time)
+		fmt.Println(err)
 		return
 	}
-	mill := time.Duration(time.Now().UnixNano()-data.Time) * time.Nanosecond
+	mill := time.Duration(time.Now().UnixNano()-loginResData.Time) * time.Nanosecond
 	if mill > time.Millisecond*1 {
-		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s, loooooooong", packet.ProtoId, data, mill.String()))
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s, loooooooong", protoId, loginResData, mill.String()))
 	} else {
-		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", packet.ProtoId, data, mill.String()))
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", protoId, loginResData, mill.String()))
 	}
 
 }

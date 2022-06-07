@@ -1,6 +1,9 @@
 package zNet
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -20,6 +23,7 @@ type TcpServer struct {
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
+	privateKey       *rsa.PrivateKey
 }
 
 type SessionCallBackFunc func(sid SessionIdType)
@@ -43,6 +47,7 @@ func NewTcpServer(address string, opts ...Options) *TcpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
+
 	return svr
 }
 
@@ -72,7 +77,7 @@ func (svr *TcpServer) Start() error {
 				break
 			}
 
-			svr.AddSession(conn)
+			go svr.AddSession(conn)
 		}
 	}()
 
@@ -97,10 +102,31 @@ func (svr *TcpServer) Close() {
 func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
 	newSession := svr.sessionPool.Get().(*Session)
 	if newSession != nil {
-		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
-		newSession.Init(conn, sid, svr.RemoveSession)
+		var aesKey []byte
+		if svr.privateKey != nil {
+			_, err := conn.Write([]byte("hello"))
+			if err != nil {
+				return nil
+			}
 
-		//todo 验证
+			rsaBuf := make([]byte, 256)
+			_, _ = io.ReadFull(conn, rsaBuf)
+
+			aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
+			if err != nil {
+				log.Println("Decrypt aes key failed")
+				return nil
+			}
+		} else {
+			_, err := conn.Write([]byte("nokey"))
+			if err != nil {
+				return nil
+			}
+		}
+
+		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
+		newSession.Init(conn, sid, svr.RemoveSession, aesKey)
+		//fmt.Println(sid, "aesKey", string(aesKey))
 
 		svr.clientSessionMap.Store(sid, newSession)
 
@@ -146,7 +172,7 @@ func (svr *TcpServer) GetAllSession() []*Session {
 	return sessionList
 }
 
-func (svr *TcpServer) BroadcastToClient(protoId int32, data interface{}) {
+func (svr *TcpServer) BroadcastToClient(protoId int32, data []byte) {
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*Session)
 		_ = session.Send(protoId, data)

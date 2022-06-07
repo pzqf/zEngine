@@ -9,8 +9,11 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/pzqf/zUtil/zAes"
 )
 
 type SessionIdType int64
@@ -24,17 +27,19 @@ type Session struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	onClose       CloseCallBackFunc
+	aesKey        []byte
 }
 
 type CloseCallBackFunc func(c *Session)
 
-func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc) {
+func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc, aesKey []byte) {
 	s.conn = conn
 	s.sid = sid
 	s.sendChan = make(chan *NetPacket, 4096)
 	s.receiveChan = make(chan *NetPacket, 4096)
 	s.lastHeartBeat = time.Now()
 	s.onClose = closeCallBack
+	s.aesKey = aesKey
 }
 
 func (s *Session) Start() {
@@ -61,6 +66,7 @@ func (s *Session) receive(ctx context.Context) {
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
+			log.Println(string(debug.Stack()))
 		}
 	}()
 
@@ -74,12 +80,15 @@ func (s *Session) receive(ctx context.Context) {
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
 			} else {
-				log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
+				//log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
 			}
 
 			break
+		}
+		if n == 0 {
+			continue
 		}
 		if n != headSize {
 			log.Printf("Client conn read error, error:head size error %d, sid:%d, closed", n, s.sid)
@@ -130,12 +139,16 @@ func (s *Session) process(ctx context.Context) {
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println("panic:", err)
+			log.Println(string(debug.Stack()))
 		}
 	}()
 	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
+			if s.aesKey != nil {
+				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
+			}
 			err := Dispatcher(s, receivePacket)
 			if err != nil {
 				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
@@ -182,15 +195,16 @@ func (s *Session) process(ctx context.Context) {
 	}
 }
 
-func (s *Session) Send(protoId int32, data interface{}) error {
+func (s *Session) Send(protoId int32, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
-
-	err := netPacket.EncodeData(data)
-	if err != nil {
-		return err
+	if s.aesKey != nil {
+		netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+	} else {
+		netPacket.Data = data
 	}
+	netPacket.DataSize = int32(len(netPacket.Data))
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
