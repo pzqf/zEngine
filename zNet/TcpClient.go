@@ -19,7 +19,7 @@ import (
 type TcpClient struct {
 	serverAddr string
 	serverPort int
-	session    *Session
+	session    *TcpClientSession
 }
 
 func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string) error {
@@ -33,7 +33,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 	if err != nil {
 		return err
 	}
-	cli.session = &Session{}
+	cli.session = &TcpClientSession{}
 	var aesKey []byte
 
 	helloBuf := make([]byte, 5)
@@ -73,7 +73,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		_, _ = conn.Write(v15)
 	}
 
-	cli.session.Init(conn, 1, nil, aesKey)
+	cli.session.Init(conn, aesKey)
 	cli.session.Start()
 
 	return nil

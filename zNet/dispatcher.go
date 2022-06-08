@@ -7,9 +7,7 @@ import (
 	"github.com/panjf2000/ants"
 )
 
-//type HandlerFun func(session *Session, packet *NetPacket)
-
-type HandlerFun func(session *Session, protoId int32, data []byte)
+type HandlerFun func(session Session, protoId int32, data []byte)
 
 var mapHandler = make(map[int32]HandlerFun)
 var defaultPoolSize = 10000
@@ -32,7 +30,7 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 	return nil
 }
 
-func Dispatcher(session *Session, netPacket *NetPacket) error {
+func Dispatcher(session Session, netPacket *NetPacket) error {
 	if netPacket == nil {
 		return errors.New("nil packet")
 	}
@@ -48,18 +46,4 @@ func Dispatcher(session *Session, netPacket *NetPacket) error {
 		return err
 	}
 	return nil
-}
-
-func init() {
-	_ = RegisterHandler(0, heartbeat)
-}
-
-func heartbeat(session *Session, protoId int32, data []byte) {
-	session.heartbeatUpdate()
-	sendPacket := NetPacket{
-		ProtoId:  0,
-		DataSize: int32(len(data)),
-		Data:     data,
-	}
-	_, _ = session.send(&sendPacket)
 }

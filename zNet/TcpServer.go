@@ -14,8 +14,6 @@ import (
 )
 
 type TcpServer struct {
-	maxClientCount   int32
-	address          string
 	sessionPool      sync.Pool
 	clientSIDAtomic  int64
 	listener         *net.TCPListener
@@ -30,15 +28,28 @@ type SessionCallBackFunc func(sid SessionIdType)
 
 type Options func(*TcpServer)
 
-func NewTcpServer(address string, opts ...Options) *TcpServer {
+func NewTcpServer(cfg *Config, opts ...Options) *TcpServer {
+	if cfg.ListenAddress == "" {
+		cfg.ListenAddress = ":9160"
+	}
+	if cfg.MaxPacketDataSize == 0 {
+		cfg.MaxPacketDataSize = DefaultPacketDataSize
+	}
+	if cfg.ChanSize <= 0 {
+		cfg.ChanSize = 2048
+	}
+	if cfg.MaxClientCount <= 0 {
+		cfg.MaxClientCount = 10000
+	}
+	GConfig = cfg
+	InitPacket(cfg.MaxPacketDataSize)
+
 	svr := &TcpServer{
-		maxClientCount:   10000,
 		clientSIDAtomic:  10000,
-		address:          address,
 		clientSessionMap: zMap.NewMap(),
 		sessionPool: sync.Pool{
 			New: func() interface{} {
-				var s = &Session{}
+				var s = &TcpServerSession{}
 				return s
 			},
 		},
@@ -52,7 +63,7 @@ func NewTcpServer(address string, opts ...Options) *TcpServer {
 }
 
 func (svr *TcpServer) Start() error {
-	tcpAddr, err := net.ResolveTCPAddr("tcp4", svr.address)
+	tcpAddr, err := net.ResolveTCPAddr("tcp4", GConfig.ListenAddress)
 	if err != nil {
 		return err
 	}
@@ -62,13 +73,15 @@ func (svr *TcpServer) Start() error {
 	}
 	svr.listener = listener
 
+	log.Printf("Tcp server listing on %s ", GConfig.ListenAddress)
+
 	go func() {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
-			if svr.clientSessionMap.Len() >= svr.maxClientCount {
-				log.Printf("Maximum connections exceeded, max:%d", svr.maxClientCount)
-				time.Sleep(10 * time.Millisecond)
+			if svr.clientSessionMap.Len() >= GConfig.MaxClientCount {
+				log.Printf("Maximum connections exceeded, max:%d", GConfig.MaxClientCount)
+				time.Sleep(1 * time.Millisecond)
 				continue
 			}
 			conn, err := svr.listener.AcceptTCP()
@@ -90,7 +103,7 @@ func (svr *TcpServer) Close() {
 	_ = svr.listener.Close()
 
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*Session)
+		session := value.(*TcpServerSession)
 		session.Close()
 		svr.clientSessionMap.Delete(session.sid)
 		return true
@@ -99,8 +112,8 @@ func (svr *TcpServer) Close() {
 	svr.wg.Wait()
 }
 
-func (svr *TcpServer) AddSession(conn *net.TCPConn) *Session {
-	newSession := svr.sessionPool.Get().(*Session)
+func (svr *TcpServer) AddSession(conn *net.TCPConn) *TcpServerSession {
+	newSession := svr.sessionPool.Get().(*TcpServerSession)
 	if newSession != nil {
 		var aesKey []byte
 		if svr.privateKey != nil {
@@ -146,7 +159,7 @@ func (svr *TcpServer) SetAddSessionCallBack(cb SessionCallBackFunc) {
 	svr.onAddSession = cb
 }
 
-func (svr *TcpServer) RemoveSession(cli *Session) {
+func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
 	if svr.onRemoveSession != nil {
 		svr.onRemoveSession(cli.sid)
 	}
@@ -157,27 +170,19 @@ func (svr *TcpServer) SetRemoveSessionCallBack(cb SessionCallBackFunc) {
 	svr.onRemoveSession = cb
 }
 
-func (svr *TcpServer) GetSession(sid int64) *Session {
+func (svr *TcpServer) GetSession(sid int64) *TcpServerSession {
 	if client, ok := svr.clientSessionMap.Get(sid); ok {
-		return client.(*Session)
+		return client.(*TcpServerSession)
 	}
 	return nil
 }
 
-func (svr *TcpServer) GetAllSession() []*Session {
-	var sessionList []*Session
+func (svr *TcpServer) GetAllSession() []*TcpServerSession {
+	var sessionList []*TcpServerSession
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		sessionList = append(sessionList, value.(*Session))
+		sessionList = append(sessionList, value.(*TcpServerSession))
 		return true
 	})
 
 	return sessionList
-}
-
-func (svr *TcpServer) BroadcastToClient(protoId int32, data []byte) {
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*Session)
-		_ = session.Send(protoId, data)
-		return true
-	})
 }

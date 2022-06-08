@@ -10,7 +10,7 @@ import (
 
 func WithMaxClientCount(maxClientCount int32) Options {
 	return func(svr *TcpServer) {
-		svr.maxClientCount = maxClientCount
+		GConfig.MaxClientCount = maxClientCount
 	}
 }
 func WithSidInitio(sidInitio int64) Options {
@@ -21,13 +21,11 @@ func WithSidInitio(sidInitio int64) Options {
 
 func WithMaxPacketDataSize(size int32) Options {
 	return func(svr *TcpServer) {
-		maxPacketDataSize = size
-	}
-}
-
-func WithDispatcherPoolSize(size int) Options {
-	return func(svr *TcpServer) {
-		defaultPoolSize = size
+		GConfig.MaxPacketDataSize = size
+		if GConfig.MaxPacketDataSize == 0 {
+			GConfig.MaxPacketDataSize = DefaultPacketDataSize
+		}
+		InitPacket(GConfig.MaxPacketDataSize)
 	}
 }
 
@@ -58,6 +56,19 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 
 			svr.privateKey = prkI //.(*rsa.PrivateKey)
 		}
+	}
+}
 
+func WithChanSize(chanSize int32) Options {
+	return func(svr *TcpServer) {
+		if chanSize > 0 {
+			GConfig.ChanSize = chanSize
+		}
+	}
+}
+
+func WithHeartbeat(duration int) Options {
+	return func(svr *TcpServer) {
+		GConfig.HeartbeatDuration = duration
 	}
 }

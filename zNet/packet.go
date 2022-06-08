@@ -9,6 +9,8 @@ const DefaultPacketDataSize = int32(1024 * 1024)
 
 var maxPacketDataSize = DefaultPacketDataSize
 
+const HeartbeatProtoId = int32(0)
+
 type NetPacket struct {
 	ProtoId  int32  `json:"proto_id"`
 	DataSize int32  `json:"data_size"`

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 
 type SessionIdType int64
 
-type Session struct {
+type TcpServerSession struct {
 	conn          *net.TCPConn
 	sid           SessionIdType // session ID
 	sendChan      chan *NetPacket
@@ -30,45 +29,43 @@ type Session struct {
 	aesKey        []byte
 }
 
-type CloseCallBackFunc func(c *Session)
+type CloseCallBackFunc func(c *TcpServerSession)
 
-func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc, aesKey []byte) {
+func (s *TcpServerSession) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc, aesKey []byte) {
 	s.conn = conn
 	s.sid = sid
-	s.sendChan = make(chan *NetPacket, 4096)
-	s.receiveChan = make(chan *NetPacket, 4096)
+	s.sendChan = make(chan *NetPacket, GConfig.ChanSize)
+	s.receiveChan = make(chan *NetPacket, GConfig.ChanSize)
 	s.lastHeartBeat = time.Now()
 	s.onClose = closeCallBack
 	s.aesKey = aesKey
 }
 
-func (s *Session) Start() {
+func (s *TcpServerSession) Start() {
 	if s.conn == nil {
 		return
 	}
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
-	s.wg.Add(2)
+
 	go s.receive(ctx)
 	go s.process(ctx)
-	//go s.heartbeatCheck(s.ctx)
+	if GConfig.HeartbeatDuration > 0 {
+		go s.heartbeatCheck(ctx)
+	}
 	return
 }
 
-func (s *Session) Close() {
+func (s *TcpServerSession) Close() {
 	s.ctxCancel()
 	s.wg.Wait()
 }
 
-func (s *Session) receive(ctx context.Context) {
+func (s *TcpServerSession) receive(ctx context.Context) {
+	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
-	defer func() {
-		if err := recover(); err != nil {
-			log.Println("panic:", err)
-			log.Println(string(debug.Stack()))
-		}
-	}()
+	defer Recover()
 
 	for {
 		if ctx.Err() != nil {
@@ -125,26 +122,24 @@ func (s *Session) receive(ctx context.Context) {
 			continue
 		}
 
-		s.receiveChan <- &netPacket
+		if netPacket.ProtoId != HeartbeatProtoId {
+			s.receiveChan <- &netPacket
+		}
 
 		s.heartbeatUpdate()
 	}
 	s.ctxCancel()
 }
 
-func (s *Session) process(ctx context.Context) {
+func (s *TcpServerSession) process(ctx context.Context) {
+	s.wg.Add(1)
 	defer s.wg.Done()
-	defer func() {
-		if err := recover(); err != nil {
-			log.Println("panic:", err)
-			log.Println(string(debug.Stack()))
-		}
-	}()
+	defer Recover()
 	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			if s.aesKey != nil {
+			if receivePacket.DataSize > 0 && s.aesKey != nil {
 				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
 			}
 			err := Dispatcher(s, receivePacket)
@@ -193,7 +188,7 @@ func (s *Session) process(ctx context.Context) {
 	}
 }
 
-func (s *Session) Send(protoId int32, data []byte) error {
+func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
@@ -215,7 +210,7 @@ func (s *Session) Send(protoId int32, data []byte) error {
 	return nil
 }
 
-func (s *Session) send(netPacket *NetPacket) (int, error) {
+func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
 	sendBuf := new(bytes.Buffer)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
@@ -230,17 +225,19 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 	return n, nil
 }
 
-func (s *Session) heartbeatUpdate() {
+func (s *TcpServerSession) heartbeatUpdate() {
 	s.lastHeartBeat = time.Now()
 }
 
-func (s *Session) heartbeatCheck(ctx context.Context) {
+func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
+	duration := time.Second * time.Duration(GConfig.HeartbeatDuration)
+	breakDuration := time.Second * time.Duration(GConfig.HeartbeatDuration*2)
 	for {
 		select {
-		case <-time.After(60 * time.Second):
-			if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
+		case <-time.After(duration):
+			if time.Now().Sub(s.lastHeartBeat) > breakDuration {
 				s.ctxCancel()
 				break
 			}
@@ -250,6 +247,6 @@ func (s *Session) heartbeatCheck(ctx context.Context) {
 	}
 }
 
-func (s *Session) GetSid() SessionIdType {
+func (s *TcpServerSession) GetSid() SessionIdType {
 	return s.sid
 }

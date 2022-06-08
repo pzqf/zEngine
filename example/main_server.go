@@ -34,14 +34,19 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+	port := 9160
 
-	port := 9106
-	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port),
+	netCfg := zNet.Config{
+		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
+		ListenAddress:     fmt.Sprintf(":%d", port),
+	}
+
+	zNet.InitTcpServerDefault(&netCfg,
 		zNet.WithMaxClientCount(100000),
 		zNet.WithSidInitio(10000),
-		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
-		zNet.WithDispatcherPoolSize(100000),
+		//zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
 		zNet.WithRsaEncrypt("rsa_private.key"),
+		zNet.WithHeartbeat(30),
 	)
 
 	err = zNet.RegisterHandler(1, HandlerLogin)
@@ -50,20 +55,19 @@ func main() {
 		return
 	}
 
-	err = zNet.GetDefaultTcpServer().Start()
+	err = zNet.GetTcpServerDefault().Start()
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
-	log.Printf("Tcp server listing on %d ", port)
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	zNet.GetDefaultTcpServer().Close()
+	zNet.GetTcpServerDefault().Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
-func HandlerLogin(session *zNet.Session, protoId int32, data []byte) {
+func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
 	type loginDataInfo struct {
 		UserName string   `json:"user_name"`
 		Password string   `json:"password"`
@@ -91,7 +95,7 @@ func HandlerLogin(session *zNet.Session, protoId int32, data []byte) {
 	sendData := PlayerInfo{
 		Id:    2,
 		Name:  loginData.UserName,
-		Level: int32(session.GetSid()),
+		Level: 100,
 		Time:  loginData.Time,
 	}
 
@@ -101,6 +105,5 @@ func HandlerLogin(session *zNet.Session, protoId int32, data []byte) {
 		return
 	}
 
-	_ = session.Send(1, marshal)
-
+	_ = si.Send(1, marshal)
 }

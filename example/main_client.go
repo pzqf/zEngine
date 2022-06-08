@@ -38,7 +38,7 @@ func main() {
 			}()
 			cli := zNet.TcpClient{}
 
-			err = cli.ConnectToServer(*address, 9106, "rsa_public.key")
+			err = cli.ConnectToServer(*address, 9160, "rsa_public.key")
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
@@ -54,7 +54,7 @@ func main() {
 				Over     []string `json:"over"`
 			}
 
-			for n := 0; n < 1; n++ {
+			for n := 0; n < 3; n++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
@@ -83,18 +83,16 @@ func main() {
 				}
 				//time.Sleep(time.Microsecond * 1)
 			}
-
-			time.Sleep(time.Second * 1)
+			time.Sleep(time.Second * 10)
 		}(i)
 	}
-
 	wg.Wait()
 	fmt.Printf("==============clientCount:%d, failedCount:%d, cost:%s \n",
 		clientCount, failedCount, time.Now().Sub(begin).String())
 
 }
 
-func HandlerLoginRes(session *zNet.Session, protoId int32, data []byte) {
+func HandlerLoginRes(si zNet.Session, protoId int32, data []byte) {
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
 		Name  string `json:"name"`
@@ -103,10 +101,8 @@ func HandlerLoginRes(session *zNet.Session, protoId int32, data []byte) {
 	}
 
 	var loginResData PlayerInfo
-	//err := packet.DecodeData(&data)
 	err := json.Unmarshal(data, &loginResData)
 	if err != nil {
-		//log.Printf("receive:%s, %s", loginResData.Name, loginResData.Time)
 		fmt.Println(err)
 		return
 	}
