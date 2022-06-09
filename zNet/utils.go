@@ -7,7 +7,11 @@ import (
 
 func Recover() {
 	if err := recover(); err != nil {
-		log.Println("panic:", err)
-		log.Println(string(debug.Stack()))
+		LogPrint("panic:", err)
+		LogPrint(string(debug.Stack()))
 	}
 }
+
+type LogPrintFunc func(v ...any)
+
+var LogPrint LogPrintFunc = log.Println

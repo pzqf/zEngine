@@ -47,7 +47,16 @@ func main() {
 		//zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
 		zNet.WithRsaEncrypt("rsa_private.key"),
 		zNet.WithHeartbeat(30),
+		zNet.WithLogPrintFunc(func(v ...any) {
+			zLog.Info("zNet info", zap.Any("info", v))
+		}),
 	)
+	zNet.GetTcpServerDefault().SetAddSessionCallBack(func(sid zNet.SessionIdType) {
+		zLog.Info("add session", zap.Any("session id", sid))
+	})
+	zNet.GetTcpServerDefault().SetRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+		zLog.Info("remove session", zap.Any("session id", sid))
+	})
 
 	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {

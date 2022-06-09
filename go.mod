@@ -1,6 +1,6 @@
 module github.com/pzqf/zEngine
 
-go 1.17
+go 1.18
 
 require github.com/pzqf/zUtil v0.0.0-20220513071314-ccdedab5cbbe
 

@@ -4,7 +4,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"io"
-	"log"
 	"os"
 )
 
@@ -43,14 +42,14 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 
 			block, _ := pem.Decode(all)
 			if block == nil {
-				log.Println("public key error")
+				LogPrint("public key error")
 				return
 			}
 
 			//x509.ParsePKCS8PrivateKey()
 			prkI, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err != nil {
-				log.Println("ParsePKCS1PrivateKey error", err)
+				LogPrint("ParsePKCS1PrivateKey error", err)
 				return
 			}
 
@@ -70,5 +69,11 @@ func WithChanSize(chanSize int32) Options {
 func WithHeartbeat(duration int) Options {
 	return func(svr *TcpServer) {
 		GConfig.HeartbeatDuration = duration
+	}
+}
+
+func WithLogPrintFunc(lpf LogPrintFunc) Options {
+	return func(svr *TcpServer) {
+		LogPrint = lpf
 	}
 }

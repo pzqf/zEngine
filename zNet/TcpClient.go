@@ -22,7 +22,7 @@ type TcpClient struct {
 	session    *TcpClientSession
 }
 
-func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string) error {
+func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string, heartbeatDuration int) error {
 	cli.serverAddr = serverAddr
 	cli.serverPort = serverPort
 
@@ -73,7 +73,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		_, _ = conn.Write(v15)
 	}
 
-	cli.session.Init(conn, aesKey)
+	cli.session.Init(conn, aesKey, heartbeatDuration)
 	cli.session.Start()
 
 	return nil

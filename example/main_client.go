@@ -38,7 +38,7 @@ func main() {
 			}()
 			cli := zNet.TcpClient{}
 
-			err = cli.ConnectToServer(*address, 9160, "rsa_public.key")
+			err = cli.ConnectToServer(*address, 9160, "rsa_public.key", 30)
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1

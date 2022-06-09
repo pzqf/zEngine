@@ -3,8 +3,8 @@ package zNet
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -73,20 +73,20 @@ func (svr *TcpServer) Start() error {
 	}
 	svr.listener = listener
 
-	log.Printf("Tcp server listing on %s ", GConfig.ListenAddress)
+	LogPrint(fmt.Sprintf("Tcp server listing on %s ", GConfig.ListenAddress))
 
 	go func() {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
 			if svr.clientSessionMap.Len() >= GConfig.MaxClientCount {
-				log.Printf("Maximum connections exceeded, max:%d", GConfig.MaxClientCount)
-				time.Sleep(1 * time.Millisecond)
+				LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", GConfig.MaxClientCount))
+				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 			conn, err := svr.listener.AcceptTCP()
 			if err != nil {
-				log.Printf(err.Error())
+				LogPrint(err)
 				break
 			}
 
@@ -98,7 +98,7 @@ func (svr *TcpServer) Start() error {
 }
 
 func (svr *TcpServer) Close() {
-	log.Printf("Close tcp server, session count %d", svr.clientSessionMap.Len())
+	LogPrint("Close tcp server, session count ", svr.clientSessionMap.Len())
 
 	_ = svr.listener.Close()
 
@@ -119,6 +119,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *TcpServerSession {
 		if svr.privateKey != nil {
 			_, err := conn.Write([]byte("hello"))
 			if err != nil {
+				LogPrint(err)
 				_ = conn.Close()
 				return nil
 			}
@@ -128,13 +129,14 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *TcpServerSession {
 
 			aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
 			if err != nil {
-				log.Println("Decrypt aes key failed")
+				LogPrint("Decrypt aes key failed", err)
 				_ = conn.Close()
 				return nil
 			}
 		} else {
 			_, err := conn.Write([]byte("nokey"))
 			if err != nil {
+				LogPrint(err)
 				_ = conn.Close()
 				return nil
 			}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -81,18 +80,18 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			} else {
 				//log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
 			}
-
+			LogPrint(fmt.Sprintf("Client conn read error, error:%v, sid:%d, closed", err, s.sid))
 			break
 		}
 
 		if n != headSize {
-			log.Printf("Client conn read error, error:head size error %d, sid:%d, closed", n, s.sid)
+			LogPrint(fmt.Sprintf("Client conn read error, head size %d, sid:%d, closed", n, s.sid))
 			break
 		}
 
 		netPacket := NetPacket{}
-		if err := netPacket.UnmarshalHead(headBuf); err != nil {
-			log.Println("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+		if err = netPacket.UnmarshalHead(headBuf); err != nil {
+			LogPrint("Receive NetPacket,Unmarshal head error", err, len(headBuf))
 			break
 		}
 
@@ -100,25 +99,25 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
 			if err != nil {
-				log.Printf("Client conn read data error,%v,  sid:%d, closed", err, s.sid)
+				LogPrint(fmt.Sprintf("Client conn read data error,%v,  sid:%d, closed", err, s.sid))
 				break
 			}
 
 			if netPacket.DataSize != int32(n) {
-				log.Printf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-					netPacket.ProtoId, netPacket.DataSize, n)
+				LogPrint(fmt.Sprintf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+					netPacket.ProtoId, netPacket.DataSize, n))
 				break
 			}
 		}
 
 		if netPacket.ProtoId < 0 {
-			log.Printf("receive NetPacket protoid empty")
+			LogPrint("receive NetPacket ProtoId less than 0")
 			continue
 		}
 
 		if netPacket.DataSize > maxPacketDataSize {
-			log.Printf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize)
+			LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize))
 			continue
 		}
 
@@ -144,12 +143,12 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			}
 			err := Dispatcher(s, receivePacket)
 			if err != nil {
-				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 			}
 		case sendPacket := <-s.sendChan:
 			_, err := s.send(sendPacket)
 			if err != nil {
-				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
+				LogPrint(fmt.Sprintf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId))
 			}
 		case <-ctx.Done():
 			for {
@@ -157,7 +156,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 					receivePacket := <-s.receiveChan
 					err := Dispatcher(s, receivePacket)
 					if err != nil {
-						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+						LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 					}
 					continue
 				}
@@ -168,6 +167,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 					sendPacket := <-s.sendChan
 					_, err := s.send(sendPacket)
 					if err != nil {
+						LogPrint(err)
 						break
 					}
 					continue

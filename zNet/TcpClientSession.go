@@ -16,17 +16,19 @@ import (
 )
 
 type TcpClientSession struct {
-	conn          *net.TCPConn
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	aesKey        []byte
+	conn              *net.TCPConn
+	wg                sync.WaitGroup
+	lastHeartBeat     time.Time
+	ctxCancel         context.CancelFunc
+	aesKey            []byte
+	heartbeatDuration int
 }
 
-func (s *TcpClientSession) Init(conn *net.TCPConn, aesKey []byte) {
+func (s *TcpClientSession) Init(conn *net.TCPConn, aesKey []byte, heartbeatDuration int) {
 	s.conn = conn
 	s.lastHeartBeat = time.Now()
 	s.aesKey = aesKey
+	s.heartbeatDuration = heartbeatDuration
 }
 
 func (s *TcpClientSession) Start() {
@@ -37,7 +39,10 @@ func (s *TcpClientSession) Start() {
 	s.ctxCancel = ctxCancel
 
 	go s.receive(ctx)
-	go s.heartbeatCheck(ctx)
+	if s.heartbeatDuration > 0 {
+		go s.heartbeatCheck(ctx)
+	}
+
 	return
 }
 
@@ -63,26 +68,29 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		headBuf := make([]byte, headSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
-			if err.(net.Error).Timeout() {
-				continue
+			if netErr, ok := err.(net.Error); ok {
+				if netErr.Timeout() {
+					continue
+				}
 			}
+
 			if err != io.EOF {
 				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
 			} else {
-				log.Printf("Socket closed, error:%v, closed", err)
+				LogPrint(fmt.Sprintf("Socket closed, error:%v, closed", err))
 			}
 
 			break
 		}
 
 		if n != headSize {
-			log.Printf("Client conn read error, error:head size error %d, closed", n)
+			LogPrint(fmt.Sprintf("Client conn read error, error:head size error %d, closed", n))
 			break
 		}
 
 		netPacket := NetPacket{}
 		if err = netPacket.UnmarshalHead(headBuf); err != nil {
-			log.Println("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+			LogPrint("Receive NetPacket,Unmarshal head error", err, len(headBuf))
 			break
 		}
 
@@ -90,13 +98,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
 			if err != nil {
-				log.Printf("Client conn read data error,%v,  closed", err)
+				LogPrint(fmt.Sprintf("Client conn read data error,%v,  closed", err))
 				break
 			}
 
 			if netPacket.DataSize != int32(n) {
-				log.Printf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-					netPacket.ProtoId, netPacket.DataSize, n)
+				LogPrint(fmt.Sprintf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+					netPacket.ProtoId, netPacket.DataSize, n))
 				break
 			}
 		}
@@ -107,8 +115,8 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		}
 
 		if netPacket.DataSize > maxPacketDataSize {
-			log.Printf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize)
+			LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize))
 			continue
 		}
 
@@ -118,7 +126,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 
 		err = Dispatcher(s, &netPacket)
 		if err != nil {
-			log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId)
+			LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
 		}
 	}
 	s.ctxCancel()
@@ -168,14 +176,18 @@ func (s *TcpClientSession) heartbeatUpdate() {
 func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
+	hbd := float64(s.heartbeatDuration)
 	for {
 		select {
 		case <-time.After(30 * time.Second):
-			if time.Now().Sub(s.lastHeartBeat).Seconds() >= 30 {
+			if time.Now().Sub(s.lastHeartBeat).Seconds() >= hbd {
 				_ = s.Send(HeartbeatProtoId, nil)
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+func (s *TcpClientSession) GetSid() SessionIdType {
+	return SessionIdType(1)
 }
