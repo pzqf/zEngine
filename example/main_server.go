@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -17,7 +19,6 @@ import (
 )
 
 func main() {
-
 	stopper := profile.Start(profile.CPUProfile, profile.ProfilePath("."), profile.NoShutdownHook)
 	defer stopper.Stop()
 	// go tool pprof -http=:9999 cpu.pprof
@@ -33,15 +34,29 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+	port := 9160
 
-	port := 9106
-	zNet.InitDefaultTcpServer(fmt.Sprintf(":%d", port),
+	netCfg := zNet.Config{
+		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
+		ListenAddress:     fmt.Sprintf(":%d", port),
+	}
+
+	zNet.InitTcpServerDefault(&netCfg,
 		zNet.WithMaxClientCount(100000),
 		zNet.WithSidInitio(10000),
-		zNet.WithPacketCodeType(zNet.PacketCodeJson),
-		zNet.WithMaxPacketDataSize(zNet.MaxNetPacketDataSize*100),
-		zNet.WithDispatcherPoolSize(100000),
+		//zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
+		zNet.WithRsaEncrypt("rsa_private.key"),
+		zNet.WithHeartbeat(30),
+		zNet.WithLogPrintFunc(func(v ...any) {
+			zLog.Info("zNet info", zap.Any("info", v))
+		}),
 	)
+	zNet.GetTcpServerDefault().SetAddSessionCallBack(func(sid zNet.SessionIdType) {
+		zLog.Info("add session", zap.Any("session id", sid))
+	})
+	zNet.GetTcpServerDefault().SetRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+		zLog.Info("remove session", zap.Any("session id", sid))
+	})
 
 	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
@@ -49,20 +64,19 @@ func main() {
 		return
 	}
 
-	err = zNet.GetDefaultTcpServer().Start()
+	err = zNet.GetTcpServerDefault().Start()
 	if err != nil {
 		log.Printf(err.Error())
 		return
 	}
-	log.Printf("Tcp server listing on %d ", port)
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	zNet.GetDefaultTcpServer().Close()
+	zNet.GetTcpServerDefault().Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
-func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
+func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
 	type loginDataInfo struct {
 		UserName string   `json:"user_name"`
 		Password string   `json:"password"`
@@ -70,14 +84,15 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 		Over     []string `json:"over"`
 	}
 
-	var data loginDataInfo
-	err := packet.DecodeData(&data)
+	var loginData loginDataInfo
+	err := json.Unmarshal(data, &loginData)
 	if err != nil {
-		log.Printf("receive:%s, %s, %v", data.UserName, data.Password, err)
+		log.Printf("receive:%s, %s, %v", loginData.UserName, loginData.Password, err)
 		return
 	}
-	//zLog.Info("receive:", zap.Int32("proto_id", packet.ProtoId), zap.Any("data", data),
-	//	zap.Int64("cost", (time.Now().UnixNano()-data.Time)/100000))
+
+	mill := time.Duration(time.Now().UnixNano()-loginData.Time) * time.Nanosecond
+	fmt.Println(loginData, mill.String())
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
@@ -88,10 +103,16 @@ func HandlerLogin(session *zNet.Session, packet *zNet.NetPacket) {
 
 	sendData := PlayerInfo{
 		Id:    2,
-		Name:  data.UserName,
-		Level: int32(session.GetSid()),
-		Time:  data.Time,
+		Name:  loginData.UserName,
+		Level: 100,
+		Time:  loginData.Time,
 	}
-	_ = session.Send(1, sendData)
 
+	marshal, err := json.Marshal(sendData)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	_ = si.Send(1, marshal)
 }

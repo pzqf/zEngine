@@ -7,15 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/pzqf/zUtil/zAes"
 )
 
 type SessionIdType int64
 
-type Session struct {
+type TcpServerSession struct {
 	conn          *net.TCPConn
 	sid           SessionIdType // session ID
 	sendChan      chan *NetPacket
@@ -24,45 +25,46 @@ type Session struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	onClose       CloseCallBackFunc
+	aesKey        []byte
 }
 
-type CloseCallBackFunc func(c *Session)
+type CloseCallBackFunc func(c *TcpServerSession)
 
-func (s *Session) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc) {
+func (s *TcpServerSession) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc, aesKey []byte) {
 	s.conn = conn
 	s.sid = sid
-	s.sendChan = make(chan *NetPacket, 4096)
-	s.receiveChan = make(chan *NetPacket, 4096)
+	s.sendChan = make(chan *NetPacket, GConfig.ChanSize)
+	s.receiveChan = make(chan *NetPacket, GConfig.ChanSize)
 	s.lastHeartBeat = time.Now()
 	s.onClose = closeCallBack
+	s.aesKey = aesKey
 }
 
-func (s *Session) Start() {
+func (s *TcpServerSession) Start() {
 	if s.conn == nil {
 		return
 	}
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
-	s.wg.Add(2)
+
 	go s.receive(ctx)
 	go s.process(ctx)
-	//go s.heartbeatCheck(s.ctx)
+	if GConfig.HeartbeatDuration > 0 {
+		go s.heartbeatCheck(ctx)
+	}
 	return
 }
 
-func (s *Session) Close() {
+func (s *TcpServerSession) Close() {
 	s.ctxCancel()
 	s.wg.Wait()
 }
 
-func (s *Session) receive(ctx context.Context) {
+func (s *TcpServerSession) receive(ctx context.Context) {
+	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
-	defer func() {
-		if err := recover(); err != nil {
-			log.Println("panic:", err)
-		}
-	}()
+	defer Recover()
 
 	for {
 		if ctx.Err() != nil {
@@ -74,21 +76,22 @@ func (s *Session) receive(ctx context.Context) {
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
 			} else {
-				log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
+				//log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
 			}
-
+			LogPrint(fmt.Sprintf("Client conn read error, error:%v, sid:%d, closed", err, s.sid))
 			break
 		}
+
 		if n != headSize {
-			log.Printf("Client conn read error, error:head size error %d, sid:%d, closed", n, s.sid)
+			LogPrint(fmt.Sprintf("Client conn read error, head size %d, sid:%d, closed", n, s.sid))
 			break
 		}
 
 		netPacket := NetPacket{}
-		if err := netPacket.UnmarshalHead(headBuf); err != nil {
-			log.Println("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+		if err = netPacket.UnmarshalHead(headBuf); err != nil {
+			LogPrint("Receive NetPacket,Unmarshal head error", err, len(headBuf))
 			break
 		}
 
@@ -96,54 +99,56 @@ func (s *Session) receive(ctx context.Context) {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
 			if err != nil {
-				log.Printf("Client conn read data error,%v,  sid:%d, closed", err, s.sid)
+				LogPrint(fmt.Sprintf("Client conn read data error,%v,  sid:%d, closed", err, s.sid))
 				break
 			}
 
 			if netPacket.DataSize != int32(n) {
-				log.Printf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-					netPacket.ProtoId, netPacket.DataSize, n)
+				LogPrint(fmt.Sprintf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+					netPacket.ProtoId, netPacket.DataSize, n))
 				break
 			}
 		}
 
 		if netPacket.ProtoId < 0 {
-			log.Printf("receive NetPacket protoid empty")
+			LogPrint("receive NetPacket ProtoId less than 0")
 			continue
 		}
 
 		if netPacket.DataSize > maxPacketDataSize {
-			log.Printf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize)
+			LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize))
 			continue
 		}
 
-		s.receiveChan <- &netPacket
+		if netPacket.ProtoId != HeartbeatProtoId {
+			s.receiveChan <- &netPacket
+		}
 
 		s.heartbeatUpdate()
 	}
 	s.ctxCancel()
 }
 
-func (s *Session) process(ctx context.Context) {
+func (s *TcpServerSession) process(ctx context.Context) {
+	s.wg.Add(1)
 	defer s.wg.Done()
-	defer func() {
-		if err := recover(); err != nil {
-			log.Println("panic:", err)
-		}
-	}()
+	defer Recover()
 	running := true
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
+			if receivePacket.DataSize > 0 && s.aesKey != nil {
+				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
+			}
 			err := Dispatcher(s, receivePacket)
 			if err != nil {
-				log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 			}
 		case sendPacket := <-s.sendChan:
 			_, err := s.send(sendPacket)
 			if err != nil {
-				log.Printf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId)
+				LogPrint(fmt.Sprintf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId))
 			}
 		case <-ctx.Done():
 			for {
@@ -151,7 +156,7 @@ func (s *Session) process(ctx context.Context) {
 					receivePacket := <-s.receiveChan
 					err := Dispatcher(s, receivePacket)
 					if err != nil {
-						log.Printf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId)
+						LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 					}
 					continue
 				}
@@ -162,6 +167,7 @@ func (s *Session) process(ctx context.Context) {
 					sendPacket := <-s.sendChan
 					_, err := s.send(sendPacket)
 					if err != nil {
+						LogPrint(err)
 						break
 					}
 					continue
@@ -182,15 +188,16 @@ func (s *Session) process(ctx context.Context) {
 	}
 }
 
-func (s *Session) Send(protoId int32, data interface{}) error {
+func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
-
-	err := netPacket.EncodeData(data)
-	if err != nil {
-		return err
+	if s.aesKey != nil {
+		netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+	} else {
+		netPacket.Data = data
 	}
+	netPacket.DataSize = int32(len(netPacket.Data))
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
@@ -203,7 +210,7 @@ func (s *Session) Send(protoId int32, data interface{}) error {
 	return nil
 }
 
-func (s *Session) send(netPacket *NetPacket) (int, error) {
+func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
 	sendBuf := new(bytes.Buffer)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
 	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
@@ -218,17 +225,19 @@ func (s *Session) send(netPacket *NetPacket) (int, error) {
 	return n, nil
 }
 
-func (s *Session) heartbeatUpdate() {
+func (s *TcpServerSession) heartbeatUpdate() {
 	s.lastHeartBeat = time.Now()
 }
 
-func (s *Session) heartbeatCheck(ctx context.Context) {
+func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
+	duration := time.Second * time.Duration(GConfig.HeartbeatDuration)
+	breakDuration := time.Second * time.Duration(GConfig.HeartbeatDuration*2)
 	for {
 		select {
-		case <-time.After(60 * time.Second):
-			if time.Now().Sub(s.lastHeartBeat).Seconds() > 120 {
+		case <-time.After(duration):
+			if time.Now().Sub(s.lastHeartBeat) > breakDuration {
 				s.ctxCancel()
 				break
 			}
@@ -238,6 +247,6 @@ func (s *Session) heartbeatCheck(ctx context.Context) {
 	}
 }
 
-func (s *Session) GetSid() SessionIdType {
+func (s *TcpServerSession) GetSid() SessionIdType {
 	return s.sid
 }
