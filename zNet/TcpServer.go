@@ -166,6 +166,7 @@ func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
 		svr.onRemoveSession(cli.sid)
 	}
 	svr.clientSessionMap.Delete(cli.sid)
+	svr.sessionPool.Put(cli)
 }
 
 func (svr *TcpServer) SetRemoveSessionCallBack(cb SessionCallBackFunc) {
