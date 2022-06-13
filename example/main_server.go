@@ -44,7 +44,7 @@ func main() {
 	zNet.InitTcpServerDefault(&netCfg,
 		zNet.WithMaxClientCount(100000),
 		zNet.WithSidInitio(10000),
-		//zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize*100),
+		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
 		zNet.WithRsaEncrypt("rsa_private.key"),
 		zNet.WithHeartbeat(30),
 		zNet.WithLogPrintFunc(func(v ...any) {
@@ -66,7 +66,7 @@ func main() {
 
 	err = zNet.GetTcpServerDefault().Start()
 	if err != nil {
-		log.Printf(err.Error())
+		zLog.Error(err.Error())
 		return
 	}
 
@@ -87,12 +87,13 @@ func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
 	var loginData loginDataInfo
 	err := json.Unmarshal(data, &loginData)
 	if err != nil {
-		log.Printf("receive:%s, %s, %v", loginData.UserName, loginData.Password, err)
+		fmt.Println(len(data))
+		zLog.Error(fmt.Sprintf("receive err: %v", err))
 		return
 	}
 
 	mill := time.Duration(time.Now().UnixNano()-loginData.Time) * time.Nanosecond
-	fmt.Println(loginData, mill.String())
+	zLog.Info(fmt.Sprintf("received:%#v, %s", loginData, mill.String()))
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`

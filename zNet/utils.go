@@ -5,6 +5,8 @@ import (
 	"runtime/debug"
 )
 
+type SessionIdType int64
+
 func Recover() {
 	if err := recover(); err != nil {
 		LogPrint("panic:", err)

@@ -1,9 +1,7 @@
 package zNet
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -13,8 +11,6 @@ import (
 
 	"github.com/pzqf/zUtil/zAes"
 )
-
-type SessionIdType int64
 
 type TcpServerSession struct {
 	conn          *net.TCPConn
@@ -71,20 +67,14 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			break
 		}
 
-		headSize := 8
-		headBuf := make([]byte, headSize)
+		headBuf := make([]byte, NetPacketHeadSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
-			if err != io.EOF {
-				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
-			} else {
-				//log.Printf("Socket closed, error:%v, sid:%d, closed", err, s.sid)
-			}
 			LogPrint(fmt.Sprintf("Client conn read error, error:%v, sid:%d, closed", err, s.sid))
 			break
 		}
 
-		if n != headSize {
+		if n != NetPacketHeadSize {
 			LogPrint(fmt.Sprintf("Client conn read error, head size %d, sid:%d, closed", n, s.sid))
 			break
 		}
@@ -211,14 +201,7 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 }
 
 func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
-	sendBuf := new(bytes.Buffer)
-	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
-	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
-	if netPacket.Data != nil {
-		_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.Data)
-	}
-
-	n, err := s.conn.Write(sendBuf.Bytes())
+	n, err := s.conn.Write(netPacket.Marshal())
 	if err != nil {
 		return 0, err
 	}

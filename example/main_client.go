@@ -28,7 +28,7 @@ func main() {
 	}
 
 	//PS:Same as the server
-	zNet.InitPacket(zNet.DefaultPacketDataSize * 100)
+	zNet.InitPacket(zNet.DefaultPacketDataSize)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Millisecond)
@@ -54,7 +54,7 @@ func main() {
 				Over     []string `json:"over"`
 			}
 
-			for n := 0; n < 3; n++ {
+			for n := 0; n < 1; n++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
@@ -62,13 +62,7 @@ func main() {
 				}
 				// test
 				for s := 0; s < 0; s++ {
-					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"+
-						"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
 				}
 
 				marshal, err := json.Marshal(newData)

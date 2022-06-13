@@ -1,9 +1,7 @@
 package zNet
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +54,6 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer Recover()
-
 	for {
 		if ctx.Err() != nil {
 			break
@@ -64,8 +61,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 
 		_ = s.conn.SetReadDeadline(time.Now().Add(time.Second * 3))
 
-		headSize := 8
-		headBuf := make([]byte, headSize)
+		headBuf := make([]byte, NetPacketHeadSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok {
@@ -73,17 +69,11 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 					continue
 				}
 			}
-
-			if err != io.EOF {
-				//log.Printf("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
-			} else {
-				LogPrint(fmt.Sprintf("Socket closed, error:%v, closed", err))
-			}
-
+			LogPrint(fmt.Sprintf("Client conn read error, error:%v, closed", err))
 			break
 		}
 
-		if n != headSize {
+		if n != NetPacketHeadSize {
 			LogPrint(fmt.Sprintf("Client conn read error, error:head size error %d, closed", n))
 			break
 		}
@@ -154,14 +144,7 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 			netPacket.DataSize, maxPacketDataSize, protoId))
 	}
 
-	sendBuf := new(bytes.Buffer)
-	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.ProtoId)
-	_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.DataSize)
-	if netPacket.Data != nil {
-		_ = binary.Write(sendBuf, binary.LittleEndian, netPacket.Data)
-	}
-
-	_, err := s.conn.Write(sendBuf.Bytes())
+	_, err := s.conn.Write(netPacket.Marshal())
 	if err != nil {
 		return err
 	}

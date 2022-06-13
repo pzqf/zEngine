@@ -26,8 +26,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 	cli.serverAddr = serverAddr
 	cli.serverPort = serverPort
 
-	var tcpAddr *net.TCPAddr
-	tcpAddr, _ = net.ResolveTCPAddr("tcp", cli.serverAddr+":"+strconv.Itoa(cli.serverPort))
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", cli.serverAddr+":"+strconv.Itoa(cli.serverPort))
 
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {

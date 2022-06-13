@@ -18,6 +18,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pzqf/zUtil v0.0.0-20220513071314-ccdedab5cbbe h1:EgPBihWmVte8HpXnGp4TzJyCQ7uewwaPFznPFZ93th0=
 github.com/pzqf/zUtil v0.0.0-20220513071314-ccdedab5cbbe/go.mod h1:J7qqBl3TOKcEtWYSRaX1Pa47SHtgoiE9ZxFsXzbIlWE=
+github.com/pzqf/zUtil v0.0.1 h1:yDCA7j8fTVyln6ue5iD6Gnb/1sDerHadw9BQSkDOWHw=
+github.com/pzqf/zUtil v0.0.1/go.mod h1:cWbGPtzVIgcg9OjDSpi3fY2igTkXoYRZwTK7NI6HsqE=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.7.0 h1:nwc3DEeHmmLAfoZucVR881uASk0Mfjw8xYJ99tb5CcY=

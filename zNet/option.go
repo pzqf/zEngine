@@ -54,6 +54,7 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 			}
 
 			svr.privateKey = prkI //.(*rsa.PrivateKey)
+			LogPrint("rsa encrypt opened")
 		}
 	}
 }
