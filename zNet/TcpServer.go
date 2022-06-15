@@ -15,7 +15,7 @@ import (
 
 type TcpServer struct {
 	sessionPool      sync.Pool
-	clientSIDAtomic  int64
+	clientSIDAtomic  SessionIdType
 	listener         *net.TCPListener
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
@@ -142,7 +142,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *TcpServerSession {
 			}
 		}
 
-		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
+		sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 		newSession.Init(conn, sid, svr.RemoveSession, aesKey)
 
 		svr.clientSessionMap.Store(sid, newSession)

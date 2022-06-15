@@ -5,7 +5,7 @@ import (
 	"runtime/debug"
 )
 
-type SessionIdType int64
+type SessionIdType = uint64
 
 func Recover() {
 	if err := recover(); err != nil {
