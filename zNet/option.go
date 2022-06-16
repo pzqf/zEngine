@@ -12,7 +12,7 @@ func WithMaxClientCount(maxClientCount int32) Options {
 		GConfig.MaxClientCount = maxClientCount
 	}
 }
-func WithSidInitio(sidInitio int64) Options {
+func WithSidInitio(sidInitio uint64) Options {
 	return func(svr *TcpServer) {
 		svr.clientSIDAtomic = sidInitio
 	}
