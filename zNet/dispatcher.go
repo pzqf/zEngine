@@ -13,6 +13,13 @@ var mapHandler = make(map[int32]HandlerFun)
 var defaultPoolSize = 10000
 var workerPool *ants.Pool
 
+func InitDispatcherWorkerPool(n int) {
+	defaultPoolSize = n
+	if defaultPoolSize <= 100 {
+		defaultPoolSize = 10000
+	}
+}
+
 func RegisterHandler(protoId int32, fun HandlerFun) error {
 	if workerPool == nil {
 		p, err := ants.NewPool(defaultPoolSize)
