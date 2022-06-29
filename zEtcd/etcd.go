@@ -64,6 +64,10 @@ func NewEtcdClient(config *ClientConfig) (*Client, error) {
 	}, nil
 }
 
+func (cli *Client) Close() error {
+	return cli.cli.Close()
+}
+
 func (cli *Client) SetLogPrint(lpf LogPrintFunc) *Client {
 	cli.LogPrint = lpf
 	return cli

@@ -72,11 +72,13 @@ func Test(t *testing.T) {
 			time.Sleep(time.Second * 2)
 		}
 	*/
-	err = cli.PutWithNotExist(context.Background(), "/saver-1", "ddd")
+	_, err = cli.PutWithTTL(context.Background(), "/saver-1", "ddd", 100)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
+
+	cli.GetOne(context.Background(), "/saver-1")
 
 	/*
 		str, err := cli.GetOne(context.Background(), "/config/game_server/1")
@@ -107,6 +109,8 @@ func Test(t *testing.T) {
 			}
 		}
 	*/
+
+	cli.Delete(context.Background(), "/saver-1")
 
 	fmt.Println(`game over`)
 	select {}
