@@ -7,7 +7,9 @@ but,It is powerful, stable and efficient
 
 You can refer to the examples in the ./example
 
-or refer to https://github.com/pzqf/zChatRoom
+or  https://github.com/pzqf/zChatRoom
+
+or https://github.com/pzqf/GameServerTemplate
 
 anything, issues.
 
