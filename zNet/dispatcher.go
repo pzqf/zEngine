@@ -3,6 +3,8 @@ package zNet
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 
 	"github.com/panjf2000/ants"
 )
@@ -34,6 +36,8 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 	}
 	mapHandler[protoId] = fun
 
+	LogPrint("Register handler", protoId, runtime.FuncForPC(reflect.ValueOf(fun).Pointer()).Name())
+
 	return nil
 }
 
@@ -53,4 +57,8 @@ func Dispatcher(session Session, netPacket *NetPacket) error {
 		return err
 	}
 	return nil
+}
+
+func GetHandler() map[int32]HandlerFun {
+	return mapHandler
 }

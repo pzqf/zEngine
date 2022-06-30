@@ -17,3 +17,7 @@ func Recover() {
 type LogPrintFunc func(v ...any)
 
 var LogPrint LogPrintFunc = log.Println
+
+func SetLogPrintFunc(f LogPrintFunc) {
+	LogPrint = f
+}

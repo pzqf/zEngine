@@ -53,7 +53,7 @@ func NewEtcdClient(config *ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	log.Println("etcd server ", config.Endpoints, "connect success")
+	log.Println("etcd server", config.Endpoints, "connect success")
 
 	return &Client{
 		cli:       c,
@@ -103,7 +103,6 @@ func (cli *Client) Get(ctx context.Context, key string, isPrefix bool) ([]keyVal
 	}
 	var list []keyValue
 	for _, v := range resp.Kvs {
-
 		list = append(list, keyValue{
 			Key:   string(v.Key),
 			Value: string(v.Value),
@@ -125,7 +124,6 @@ func (cli *Client) Put(ctx context.Context, key, value string) error {
 // ttl (seconds)
 
 func (cli *Client) PutWithTTL(ctx context.Context, key, value string, ttl int64) (int64, error) {
-
 	leaseResponse, err := cli.lease.Grant(ctx, ttl)
 	if err != nil {
 		return 0, err

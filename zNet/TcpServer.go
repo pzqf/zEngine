@@ -73,7 +73,7 @@ func (svr *TcpServer) Start() error {
 	}
 	svr.listener = listener
 
-	LogPrint(fmt.Sprintf("Tcp server listing on %s ", GConfig.ListenAddress))
+	LogPrint(fmt.Sprintf("Tcp server listing on %s", GConfig.ListenAddress))
 
 	go func() {
 		svr.wg.Add(1)

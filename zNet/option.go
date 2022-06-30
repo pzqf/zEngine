@@ -72,9 +72,3 @@ func WithHeartbeat(duration int) Options {
 		GConfig.HeartbeatDuration = duration
 	}
 }
-
-func WithLogPrintFunc(lpf LogPrintFunc) Options {
-	return func(svr *TcpServer) {
-		LogPrint = lpf
-	}
-}
