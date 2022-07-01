@@ -1,20 +1,19 @@
 package zNet
 
 import (
-	"fmt"
 	"net/http"
 )
 
 type HttpServer struct {
 	server *http.Server
 	mux    *http.ServeMux
-	port   int
+	addr   string
 }
 
-func NewHttpServer(port int) *HttpServer {
+func NewHttpServer(addr string) *HttpServer {
 	svr := &HttpServer{
 		mux:  http.NewServeMux(),
-		port: port,
+		addr: addr,
 	}
 
 	return svr
@@ -22,7 +21,7 @@ func NewHttpServer(port int) *HttpServer {
 
 func (svr *HttpServer) Start() error {
 	svr.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", svr.port),
+		Addr:    svr.addr,
 		Handler: svr.mux,
 	}
 

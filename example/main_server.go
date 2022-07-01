@@ -46,11 +46,12 @@ func main() {
 		zNet.WithSidInitio(10000),
 		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
 		zNet.WithRsaEncrypt("rsa_private.key"),
-		zNet.WithHeartbeat(30),
-		zNet.WithLogPrintFunc(func(v ...any) {
-			zLog.Info("zNet info", zap.Any("info", v))
-		}),
-	)
+		zNet.WithHeartbeat(30))
+
+	zNet.SetLogPrintFunc(func(v ...any) {
+		zLog.Info("zNet info", zap.Any("info", v))
+	})
+
 	zNet.GetTcpServerDefault().SetAddSessionCallBack(func(sid zNet.SessionIdType) {
 		zLog.Info("add session", zap.Any("session id", sid))
 	})
