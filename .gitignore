@@ -19,3 +19,4 @@
 *.pprof
 
 example/bin/
+.vscode/
