@@ -5,6 +5,8 @@ import (
 	"runtime/debug"
 )
 
+type SessionIdType = uint64
+
 func Recover() {
 	if err := recover(); err != nil {
 		LogPrint("panic:", err)
@@ -15,3 +17,7 @@ func Recover() {
 type LogPrintFunc func(v ...any)
 
 var LogPrint LogPrintFunc = log.Println
+
+func SetLogPrintFunc(f LogPrintFunc) {
+	LogPrint = f
+}

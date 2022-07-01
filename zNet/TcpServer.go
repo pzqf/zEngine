@@ -15,7 +15,7 @@ import (
 
 type TcpServer struct {
 	sessionPool      sync.Pool
-	clientSIDAtomic  int64
+	clientSIDAtomic  SessionIdType
 	listener         *net.TCPListener
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
@@ -73,7 +73,7 @@ func (svr *TcpServer) Start() error {
 	}
 	svr.listener = listener
 
-	LogPrint(fmt.Sprintf("Tcp server listing on %s ", GConfig.ListenAddress))
+	LogPrint(fmt.Sprintf("Tcp server listing on %s", GConfig.ListenAddress))
 
 	go func() {
 		svr.wg.Add(1)
@@ -142,7 +142,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) *TcpServerSession {
 			}
 		}
 
-		sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
+		sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 		newSession.Init(conn, sid, svr.RemoveSession, aesKey)
 
 		svr.clientSessionMap.Store(sid, newSession)
@@ -166,6 +166,7 @@ func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
 		svr.onRemoveSession(cli.sid)
 	}
 	svr.clientSessionMap.Delete(cli.sid)
+	svr.sessionPool.Put(cli)
 }
 
 func (svr *TcpServer) SetRemoveSessionCallBack(cb SessionCallBackFunc) {

@@ -21,7 +21,7 @@ func main() {
 	begin := time.Now()
 	clientCount := *count
 
-	err := zNet.RegisterHandler(1, HandlerLoginRes)
+	err := zNet.RegisterHandler(1, HandlerUdpTestRes)
 	if err != nil {
 		log.Printf("RegisterHandler error %d", 1)
 		return
@@ -36,9 +36,9 @@ func main() {
 			defer func() {
 				wg.Done()
 			}()
-			cli := zNet.TcpClient{}
+			cli := zNet.UdpClient{}
 
-			err = cli.ConnectToServer(*address, 9160, "rsa_public.key", 30)
+			err = cli.ConnectToServer(*address, 9160)
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
@@ -54,14 +54,14 @@ func main() {
 				Over     []string `json:"over"`
 			}
 
-			for n := 0; n < 1; n++ {
+			for n := 0; n < 100; n++ {
 				newData := loginDataInfo{
 					UserName: fmt.Sprintf("pppp-%d", x),
 					Password: "123456",
 					Time:     time.Now().UnixNano(),
 				}
 				// test
-				for s := 0; s < 0; s++ {
+				for s := 0; s < 5; s++ {
 					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
 				}
 
@@ -75,9 +75,9 @@ func main() {
 					fmt.Println(err)
 					return
 				}
-				//time.Sleep(time.Microsecond * 1)
+				time.Sleep(time.Microsecond * 10)
 			}
-			time.Sleep(time.Second * 10)
+			time.Sleep(time.Second * 5)
 		}(i)
 	}
 	wg.Wait()
@@ -86,7 +86,7 @@ func main() {
 
 }
 
-func HandlerLoginRes(si zNet.Session, protoId int32, data []byte) {
+func HandlerUdpTestRes(si zNet.Session, protoId int32, data []byte) {
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
 		Name  string `json:"name"`

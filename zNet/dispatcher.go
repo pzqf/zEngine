@@ -3,6 +3,8 @@ package zNet
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 
 	"github.com/panjf2000/ants"
 )
@@ -12,6 +14,13 @@ type HandlerFun func(session Session, protoId int32, data []byte)
 var mapHandler = make(map[int32]HandlerFun)
 var defaultPoolSize = 10000
 var workerPool *ants.Pool
+
+func InitDispatcherWorkerPool(n int) {
+	defaultPoolSize = n
+	if defaultPoolSize <= 100 {
+		defaultPoolSize = 10000
+	}
+}
 
 func RegisterHandler(protoId int32, fun HandlerFun) error {
 	if workerPool == nil {
@@ -26,6 +35,8 @@ func RegisterHandler(protoId int32, fun HandlerFun) error {
 		return errors.New(fmt.Sprintf("protoId %d had handlerFun", protoId))
 	}
 	mapHandler[protoId] = fun
+
+	LogPrint("Register handler", protoId, runtime.FuncForPC(reflect.ValueOf(fun).Pointer()).Name())
 
 	return nil
 }
@@ -46,4 +57,8 @@ func Dispatcher(session Session, netPacket *NetPacket) error {
 		return err
 	}
 	return nil
+}
+
+func GetHandler() map[int32]HandlerFun {
+	return mapHandler
 }

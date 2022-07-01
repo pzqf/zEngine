@@ -12,7 +12,7 @@ func WithMaxClientCount(maxClientCount int32) Options {
 		GConfig.MaxClientCount = maxClientCount
 	}
 }
-func WithSidInitio(sidInitio int64) Options {
+func WithSidInitio(sidInitio uint64) Options {
 	return func(svr *TcpServer) {
 		svr.clientSIDAtomic = sidInitio
 	}
@@ -54,6 +54,7 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 			}
 
 			svr.privateKey = prkI //.(*rsa.PrivateKey)
+			LogPrint("rsa encrypt opened")
 		}
 	}
 }
@@ -69,11 +70,5 @@ func WithChanSize(chanSize int32) Options {
 func WithHeartbeat(duration int) Options {
 	return func(svr *TcpServer) {
 		GConfig.HeartbeatDuration = duration
-	}
-}
-
-func WithLogPrintFunc(lpf LogPrintFunc) Options {
-	return func(svr *TcpServer) {
-		LogPrint = lpf
 	}
 }

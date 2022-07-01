@@ -16,11 +16,7 @@
 *.xml
 *.iml
 *.log
-main/bin/client
-main/bin/server
-example/bin/client
-example/bin/server
-!/example/bin/
-example/bin/engine_test_client
-example/bin/engine_test_server
 *.pprof
+
+example/bin/
+.vscode/
