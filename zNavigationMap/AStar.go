@@ -69,11 +69,9 @@ func (nq *NodeQueue) Pop() interface{} {
 }
 
 // FindPathByAStar A*寻路
-func FindPathByAStar(start, end Grid, m *NavigationMap) ([]*Grid, error) {
+func FindPathByAStar(start, end Grid, m *NavigationMap) (road []*Grid, err error) {
 	startNode := newNode(&start, nil, nil)
 	endNode := newNode(&end, nil, nil)
-
-	var road []*Grid
 
 	var nq = NodeQueue{}
 	heap.Init(&nq)

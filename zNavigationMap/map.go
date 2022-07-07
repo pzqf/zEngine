@@ -1,6 +1,7 @@
 package zNavigationMap
 
 import (
+	"errors"
 	"strconv"
 )
 
@@ -28,7 +29,7 @@ type NavigationMap struct {
 // NewNavigationMap 初始化地图，
 // maxX, maxY 地块最大长度和宽度，
 // canReachHeightDifference 可攀爬的高度差
-func NewNavigationMap(maxX, maxY int, canReachHeightDifference float64) *NavigationMap {
+func NewNavigationMap(maxX, maxY int, canReachHeightDifference float64) NavigationMap {
 	m := NavigationMap{
 		maxX:                     maxX,
 		maxY:                     maxY,
@@ -42,11 +43,15 @@ func NewNavigationMap(maxX, maxY int, canReachHeightDifference float64) *Navigat
 		}
 	}
 
-	return &m
+	return m
 }
 
-func (m *NavigationMap) AddGrid(g Grid) {
+func (m *NavigationMap) AddGrid(g Grid) error {
+	if g.x < 0 || g.x >= m.maxX || g.y < 0 || g.y >= m.maxY {
+		return errors.New("grid data error")
+	}
 	m.grids[g.x][g.y] = g
+	return nil
 }
 
 // GetNeighborGrid 获取相邻点,包含不可到达的点

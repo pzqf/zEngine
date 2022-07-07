@@ -38,7 +38,7 @@ func StringToMap(charMap []string) *NavigationMap {
 		}
 	}
 
-	return m
+	return &m
 }
 
 func PrintMap(m *NavigationMap, road []*Grid) {
