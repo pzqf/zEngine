@@ -52,7 +52,7 @@ func NewEtcdClient(config *ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	log.Println("etcd server", config.Endpoints, "connect success")
+	//log.Println("etcd server", config.Endpoints, "connect success")
 
 	return &Client{
 		cli:       c,
