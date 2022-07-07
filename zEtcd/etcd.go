@@ -46,14 +46,13 @@ func NewEtcdClient(config *ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
-	_, err = c.Get(ctx, "/config")
+	_, err = c.Get(context.Background(), "/config")
 	if err != nil {
 		log.Println("can't connect the etcd server", config.Endpoints, err)
 		return nil, err
 	}
 
-	log.Println("etcd server", config.Endpoints, "connect success")
+	//log.Println("etcd server", config.Endpoints, "connect success")
 
 	return &Client{
 		cli:       c,
