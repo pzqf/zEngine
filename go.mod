@@ -5,6 +5,7 @@ go 1.18
 require github.com/pzqf/zUtil v0.0.1
 
 require (
+	github.com/dennwc/graphml v0.0.0-20180609132439-6d40272e8e4b
 	github.com/panjf2000/ants v1.3.0
 	github.com/pkg/profile v1.6.0
 	go.etcd.io/etcd/api/v3 v3.5.4

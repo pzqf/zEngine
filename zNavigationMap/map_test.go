@@ -45,7 +45,7 @@ func PrintMap(m *NavigationMap, road []*Grid) {
 	for x := 0; x < m.maxX; x++ {
 		for y := 0; y < m.maxY; y++ {
 			for i := 0; i < len(road); i++ {
-				if road[i].x == x && road[i].y == y {
+				if road[i].X == x && road[i].Y == y {
 					switch i {
 					case 0:
 						fmt.Print(" " + zColor.LightGreen("E"))
