@@ -23,8 +23,8 @@ func newNode(p *Grid, father *Node, end *Node) *Node {
 func (asp *Node) calcF(end *Node) int {
 	//g
 	if asp.father != nil {
-		deltaX := int(math.Abs(float64(asp.father.x - asp.x)))
-		deltaY := int(math.Abs(float64(asp.father.y - asp.y)))
+		deltaX := int(math.Abs(float64(asp.father.X - asp.X)))
+		deltaY := int(math.Abs(float64(asp.father.Y - asp.Y)))
 		if deltaX == 1 && deltaY == 0 {
 			asp.f = asp.father.f + 10
 		} else if deltaX == 0 && deltaY == 1 {
@@ -37,7 +37,7 @@ func (asp *Node) calcF(end *Node) int {
 		}
 	}
 	//h
-	asp.f += int(math.Abs(float64(end.x-asp.x))+math.Abs(float64(end.y-asp.y))) * 10
+	asp.f += int(math.Abs(float64(end.X-asp.X))+math.Abs(float64(end.Y-asp.Y))) * 10
 
 	return asp.f
 }
