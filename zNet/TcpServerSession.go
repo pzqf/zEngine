@@ -20,13 +20,13 @@ type TcpServerSession struct {
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
-	onClose       CloseCallBackFunc
+	onClose       TcpCloseCallBackFunc
 	aesKey        []byte
 }
 
-type CloseCallBackFunc func(c *TcpServerSession)
+type TcpCloseCallBackFunc func(c *TcpServerSession)
 
-func (s *TcpServerSession) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack CloseCallBackFunc, aesKey []byte) {
+func (s *TcpServerSession) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) {
 	s.conn = conn
 	s.sid = sid
 	s.sendChan = make(chan *NetPacket, GConfig.ChanSize)
