@@ -38,25 +38,29 @@ func main() {
 
 	netCfg := zNet.Config{
 		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
-		ListenAddress:     fmt.Sprintf(":%d", port),
+
+		Tcp: &zNet.TcpConfig{
+			ListenAddress:     fmt.Sprintf(":%d", port),
+			HeartbeatDuration: 0,
+		},
 	}
 
-	zNet.InitTcpServerDefault(&netCfg,
+	zNet.InitPacket(netCfg.MaxPacketDataSize)
+	zNet.InitTcpServerDefault(netCfg.Tcp,
 		zNet.WithMaxClientCount(100000),
-		zNet.WithSidInitio(10000),
 		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
 		zNet.WithRsaEncrypt("rsa_private.key"),
-		zNet.WithHeartbeat(30))
+		zNet.WithHeartbeat(30),
+		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("add session", zap.Any("session id", sid))
+		}),
+		zNet.WithRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("remove session", zap.Any("session id", sid))
+		}),
+	)
 
 	zNet.SetLogPrintFunc(func(v ...any) {
 		zLog.Info("zNet info", zap.Any("info", v))
-	})
-
-	zNet.GetTcpServerDefault().SetAddSessionCallBack(func(sid zNet.SessionIdType) {
-		zLog.Info("add session", zap.Any("session id", sid))
-	})
-	zNet.GetTcpServerDefault().SetRemoveSessionCallBack(func(sid zNet.SessionIdType) {
-		zLog.Info("remove session", zap.Any("session id", sid))
 	})
 
 	err = zNet.RegisterHandler(1, HandlerLogin)

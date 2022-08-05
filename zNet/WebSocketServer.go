@@ -12,19 +12,18 @@ import (
 )
 
 type WebSocketServer struct {
-	clientSIDAtomic SessionIdType
-
+	clientSIDAtomic  SessionIdType
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
-
-	listener net.Listener
-	addr     string
-	upgrade  *websocket.Upgrader
+	listener         net.Listener
+	addr             string
+	upgrade          *websocket.Upgrader
+	config           *WebSocketConfig
 }
 
-func NewWebSocketServer(cfg *Config, addSessionFunc, removeSessionFunc SessionCallBackFunc) *WebSocketServer {
+func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer {
 	svr := &WebSocketServer{
 		clientSIDAtomic:  10000,
 		clientSessionMap: zMap.NewMap(),
@@ -44,12 +43,12 @@ func NewWebSocketServer(cfg *Config, addSessionFunc, removeSessionFunc SessionCa
 				return true
 			},
 		},
-
-		onAddSession:    addSessionFunc,
-		onRemoveSession: removeSessionFunc,
+		config: cfg,
 	}
 
-	GConfig = cfg
+	for _, opt := range opts {
+		opt(svr)
+	}
 
 	return svr
 }
@@ -75,7 +74,7 @@ func (svr *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (svr *WebSocketServer) AddSession(conn *websocket.Conn) *WebSocketServerSession {
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 
-	newSession := NewWebSocketServerSession(conn, sid, GConfig.ChanSize, svr.RemoveSession)
+	newSession := NewWebSocketServerSession(svr.config, conn, sid, svr.RemoveSession)
 
 	svr.clientSessionMap.Store(sid, newSession)
 
@@ -113,7 +112,7 @@ func (svr *WebSocketServer) Start() error {
 	return nil
 }
 
-func (svr *WebSocketServer) Close() error {
+func (svr *WebSocketServer) Close() {
 	_ = svr.listener.Close()
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*WebSocketServerSession)
@@ -124,5 +123,5 @@ func (svr *WebSocketServer) Close() error {
 
 	svr.wg.Wait()
 
-	return nil
+	return
 }

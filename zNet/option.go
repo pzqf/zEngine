@@ -5,32 +5,34 @@ import (
 	"encoding/pem"
 	"io"
 	"os"
+	"reflect"
 )
 
-func WithMaxClientCount(maxClientCount int32) Options {
-	return func(svr *TcpServer) {
-		GConfig.MaxClientCount = maxClientCount
-	}
-}
-func WithSidInitio(sidInitio uint64) Options {
-	return func(svr *TcpServer) {
-		svr.clientSIDAtomic = sidInitio
+type Options func(Server)
+
+func WithMaxClientCount(maxClientCount int) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).config.MaxClientCount = maxClientCount
+		case "*zNet.UdpServer":
+			svr.(*UdpServer).config.MaxClientCount = maxClientCount
+		}
 	}
 }
 
-func WithMaxPacketDataSize(size int32) Options {
-	return func(svr *TcpServer) {
-		GConfig.MaxPacketDataSize = size
-		if GConfig.MaxPacketDataSize == 0 {
-			GConfig.MaxPacketDataSize = DefaultPacketDataSize
+func WithMaxPacketDataSize(size int) Options {
+	return func(svr Server) {
+		if size == 0 {
+			size = DefaultPacketDataSize
 		}
-		InitPacket(GConfig.MaxPacketDataSize)
+		InitPacket(size)
 	}
 }
 
 func WithRsaEncrypt(rsaPrivateFile string) Options {
-	return func(svr *TcpServer) {
-		if rsaPrivateFile != "" {
+	return func(svr Server) {
+		if rsaPrivateFile != "" && reflect.TypeOf(svr).String() == "*zNet.TcpServer" {
 			f, err := os.Open(rsaPrivateFile)
 			if err != nil {
 				return
@@ -53,22 +55,57 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 				return
 			}
 
-			svr.privateKey = prkI //.(*rsa.PrivateKey)
-			LogPrint("rsa encrypt opened")
+			svr.(*TcpServer).privateKey = prkI //.(*rsa.PrivateKey)
+			LogPrint("rsa encrypt opened", prkI)
 		}
 	}
 }
 
-func WithChanSize(chanSize int32) Options {
-	return func(svr *TcpServer) {
-		if chanSize > 0 {
-			GConfig.ChanSize = chanSize
+func WithChanSize(chanSize int) Options {
+	return func(svr Server) {
+		if chanSize <= 0 {
+			return
+		}
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).config.ChanSize = chanSize
+		case "*zNet.UdpServer":
+			svr.(*UdpServer).config.ChanSize = chanSize
+		case "*zNet.WebSocketServer":
+			svr.(*WebSocketServer).config.ChanSize = chanSize
 		}
 	}
 }
 
 func WithHeartbeat(duration int) Options {
-	return func(svr *TcpServer) {
-		GConfig.HeartbeatDuration = duration
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).config.HeartbeatDuration = duration
+		case "*zNet.UdpServer":
+			svr.(*UdpServer).config.HeartbeatDuration = duration
+		}
+	}
+}
+
+func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).onAddSession = cb
+		case "*zNet.WebSocketServer":
+			svr.(*WebSocketServer).onAddSession = cb
+		}
+	}
+}
+
+func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).onRemoveSession = cb
+		case "*zNet.WebSocketServer":
+			svr.(*WebSocketServer).onRemoveSession = cb
+		}
 	}
 }

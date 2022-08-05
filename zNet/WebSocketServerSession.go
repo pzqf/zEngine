@@ -20,18 +20,20 @@ type WebSocketServerSession struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	onClose       WebsocketCloseCallBackFunc
+	config        *WebSocketConfig
 }
 
 type WebsocketCloseCallBackFunc func(c *WebSocketServerSession)
 
-func NewWebSocketServerSession(websocketConn *websocket.Conn, sid SessionIdType, chanSize int32, onClose WebsocketCloseCallBackFunc) *WebSocketServerSession {
+func NewWebSocketServerSession(cfg *WebSocketConfig, websocketConn *websocket.Conn, sid SessionIdType, onClose WebsocketCloseCallBackFunc) *WebSocketServerSession {
 	newSession := &WebSocketServerSession{
 		conn:          websocketConn,
 		sid:           sid,
-		sendChan:      make(chan *NetPacket, chanSize),
-		receiveChan:   make(chan *NetPacket, chanSize),
+		sendChan:      make(chan *NetPacket, cfg.ChanSize),
+		receiveChan:   make(chan *NetPacket, cfg.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       onClose,
+		config:        cfg,
 	}
 
 	return newSession

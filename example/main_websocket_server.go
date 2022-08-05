@@ -33,14 +33,19 @@ func main() {
 
 	netCfg := zNet.Config{
 		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
-		ListenAddress:     fmt.Sprintf(":%d", port),
+		WebSocket: &zNet.WebSocketConfig{
+			ListenAddress: fmt.Sprintf(":%d", port),
+		},
 	}
 
-	wsServer := zNet.NewWebSocketServer(&netCfg, func(sid zNet.SessionIdType) {
-		fmt.Println("add session", sid)
-	}, func(sid zNet.SessionIdType) {
-		fmt.Println("remove session", sid)
-	})
+	wsServer := zNet.NewWebSocketServer(netCfg.WebSocket,
+		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("add session", zap.Any("session id", sid))
+		}),
+		zNet.WithRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("remove session", zap.Any("session id", sid))
+		}),
+	)
 
 	zNet.SetLogPrintFunc(func(v ...any) {
 		zLog.Info("zNet info", zap.Any("info", v))
@@ -62,7 +67,7 @@ func main() {
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	_ = wsServer.Close()
+	wsServer.Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 

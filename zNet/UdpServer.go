@@ -15,14 +15,12 @@ type UdpServer struct {
 	conn             *net.UDPConn
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
+	config           *UdpConfig
 }
 
-func NewUdpServer(cfg *Config) *UdpServer {
+func NewUdpServer(cfg *UdpConfig, opts ...Options) *UdpServer {
 	if cfg.ListenAddress == "" {
 		cfg.ListenAddress = ":9160"
-	}
-	if cfg.MaxPacketDataSize == 0 {
-		cfg.MaxPacketDataSize = DefaultPacketDataSize
 	}
 	if cfg.ChanSize <= 0 {
 		cfg.ChanSize = 2048
@@ -30,19 +28,22 @@ func NewUdpServer(cfg *Config) *UdpServer {
 	if cfg.MaxClientCount <= 0 {
 		cfg.MaxClientCount = 10000
 	}
-	GConfig = cfg
-	InitPacket(cfg.MaxPacketDataSize)
 
 	svr := &UdpServer{
 		clientSIDAtomic:  10000,
 		clientSessionMap: zMap.NewMap(),
+		config:           cfg,
+	}
+
+	for _, opt := range opts {
+		opt(svr)
 	}
 
 	return svr
 }
 
 func (svr *UdpServer) Start() error {
-	udpAddr, err := net.ResolveUDPAddr("udp", GConfig.ListenAddress)
+	udpAddr, err := net.ResolveUDPAddr("udp", svr.config.ListenAddress)
 	if err != nil {
 		return err
 	}
@@ -52,18 +53,18 @@ func (svr *UdpServer) Start() error {
 	}
 	svr.conn = conn
 
-	LogPrint(fmt.Sprintf("Udp server listing on %s ", GConfig.ListenAddress))
+	LogPrint(fmt.Sprintf("Udp server listing on %s ", svr.config.ListenAddress))
 
 	go func() {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
-			if svr.clientSessionMap.Len() >= GConfig.MaxClientCount {
-				LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", GConfig.MaxClientCount))
+			if svr.clientSessionMap.Len() >= int32(svr.config.MaxClientCount) {
+				LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", svr.config.MaxClientCount))
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
-			dataBUf := make([]byte, GConfig.MaxPacketDataSize)
+			dataBUf := make([]byte, maxPacketDataSize)
 			n, addr, err := svr.conn.ReadFromUDP(dataBUf)
 			if err != nil {
 				LogPrint(err)
@@ -73,13 +74,10 @@ func (svr *UdpServer) Start() error {
 			session, ok := svr.clientSessionMap.Get(addr.String())
 			if !ok {
 				sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
-				newSession := &UdpServerSession{}
-				newSession.Init(conn, sid, nil)
-				newSession.addr = addr
+				newSession := NewUdpServerSession(svr.config, conn, addr, sid)
 				svr.clientSessionMap.Store(addr.String(), newSession)
 				session = newSession
 				newSession.Start()
-
 			}
 
 			go session.(*UdpServerSession).Receive(dataBUf[:n])

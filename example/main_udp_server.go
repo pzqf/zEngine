@@ -32,10 +32,12 @@ func main() {
 
 	netCfg := zNet.Config{
 		MaxPacketDataSize: zNet.DefaultPacketDataSize,
-		ListenAddress:     fmt.Sprintf(":%d", port),
+		Udp: &zNet.UdpConfig{
+			ListenAddress: fmt.Sprintf(":%d", port),
+		},
 	}
-
-	udpServer := zNet.NewUdpServer(&netCfg)
+	zNet.InitPacket(netCfg.MaxPacketDataSize)
+	udpServer := zNet.NewUdpServer(netCfg.Udp)
 
 	err = zNet.RegisterHandler(1, HandlerUdpTest)
 	if err != nil {

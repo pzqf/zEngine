@@ -14,7 +14,7 @@ import (
 
 type TcpServerSession struct {
 	conn          *net.TCPConn
-	sid           SessionIdType // session ID
+	sid           SessionIdType
 	sendChan      chan *NetPacket
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
@@ -22,18 +22,23 @@ type TcpServerSession struct {
 	ctxCancel     context.CancelFunc
 	onClose       TcpCloseCallBackFunc
 	aesKey        []byte
+	config        *TcpConfig
 }
 
 type TcpCloseCallBackFunc func(c *TcpServerSession)
 
-func (s *TcpServerSession) Init(conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) {
-	s.conn = conn
-	s.sid = sid
-	s.sendChan = make(chan *NetPacket, GConfig.ChanSize)
-	s.receiveChan = make(chan *NetPacket, GConfig.ChanSize)
-	s.lastHeartBeat = time.Now()
-	s.onClose = closeCallBack
-	s.aesKey = aesKey
+func NewTcpServerSession(cfg *TcpConfig, conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) *TcpServerSession {
+	newSession := TcpServerSession{
+		conn:          conn,
+		sid:           sid,
+		sendChan:      make(chan *NetPacket, cfg.ChanSize),
+		receiveChan:   make(chan *NetPacket, cfg.ChanSize),
+		lastHeartBeat: time.Now(),
+		onClose:       closeCallBack,
+		aesKey:        aesKey,
+		config:        cfg,
+	}
+	return &newSession
 }
 
 func (s *TcpServerSession) Start() {
@@ -45,7 +50,7 @@ func (s *TcpServerSession) Start() {
 
 	go s.receive(ctx)
 	go s.process(ctx)
-	if GConfig.HeartbeatDuration > 0 {
+	if s.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
 	return
@@ -215,8 +220,8 @@ func (s *TcpServerSession) heartbeatUpdate() {
 func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	duration := time.Second * time.Duration(GConfig.HeartbeatDuration)
-	breakDuration := time.Second * time.Duration(GConfig.HeartbeatDuration*2)
+	duration := time.Second * time.Duration(s.config.HeartbeatDuration)
+	breakDuration := time.Second * time.Duration(s.config.HeartbeatDuration*2)
 	for {
 		select {
 		case <-time.After(duration):
