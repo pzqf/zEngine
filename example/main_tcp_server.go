@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
-	"github.com/pkg/profile"
+	"go.uber.org/zap"
+
+	//_ "net/http/pprof"
+
 	"github.com/pzqf/zEngine/zLog"
+
 	"github.com/pzqf/zEngine/zNet"
 	"github.com/pzqf/zEngine/zSignal"
-	"go.uber.org/zap"
+
+	"github.com/pkg/profile"
 )
 
 func main() {
@@ -31,33 +37,51 @@ func main() {
 	port := 9160
 
 	netCfg := zNet.Config{
-		MaxPacketDataSize: zNet.DefaultPacketDataSize,
-		Udp: &zNet.UdpConfig{
-			ListenAddress: fmt.Sprintf(":%d", port),
+		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
+
+		Tcp: &zNet.TcpConfig{
+			ListenAddress:     fmt.Sprintf(":%d", port),
+			HeartbeatDuration: 0,
 		},
 	}
-	zNet.InitPacket(netCfg.MaxPacketDataSize)
-	udpServer := zNet.NewUdpServer(netCfg.Udp)
 
-	err = zNet.RegisterHandler(1, HandlerUdpTest)
+	zNet.InitPacket(netCfg.MaxPacketDataSize)
+	zNet.InitTcpServerDefault(netCfg.Tcp,
+		zNet.WithMaxClientCount(100000),
+		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
+		zNet.WithRsaEncrypt("rsa_private.key"),
+		zNet.WithHeartbeat(30),
+		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("add session", zap.Any("session id", sid))
+		}),
+		zNet.WithRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("remove session", zap.Any("session id", sid))
+		}),
+	)
+
+	zNet.SetLogPrintFunc(func(v ...any) {
+		zLog.Info("zNet info", zap.Any("info", v))
+	})
+
+	err = zNet.RegisterHandler(1, HandlerLogin)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return
 	}
 
-	err = udpServer.Start()
+	err = zNet.GetTcpServerDefault().Start()
 	if err != nil {
-		log.Printf(err.Error())
+		zLog.Error(err.Error())
 		return
 	}
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	udpServer.Close()
+	zNet.GetTcpServerDefault().Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
-func HandlerUdpTest(si zNet.Session, protoId int32, data []byte) {
+func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
 	type loginDataInfo struct {
 		UserName string   `json:"user_name"`
 		Password string   `json:"password"`
@@ -72,9 +96,8 @@ func HandlerUdpTest(si zNet.Session, protoId int32, data []byte) {
 		return
 	}
 
-	//mill := time.Duration(time.Now().UnixNano()-loginData.Time) * time.Nanosecond
-	//zLog.Info(fmt.Sprintf("received:%#v, %s", loginData, mill.String()))
-	//fmt.Printf("received:%#v, %s", loginData, mill.String())
+	mill := time.Duration(time.Now().UnixNano()-loginData.Time) * time.Nanosecond
+	zLog.Info(fmt.Sprintf("received:%#v, %s", loginData, mill.String()))
 
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`

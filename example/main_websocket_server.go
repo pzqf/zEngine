@@ -6,16 +6,11 @@ import (
 	"log"
 	"time"
 
-	"go.uber.org/zap"
-
-	//_ "net/http/pprof"
-
+	"github.com/pkg/profile"
 	"github.com/pzqf/zEngine/zLog"
-
 	"github.com/pzqf/zEngine/zNet"
 	"github.com/pzqf/zEngine/zSignal"
-
-	"github.com/pkg/profile"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -38,46 +33,46 @@ func main() {
 
 	netCfg := zNet.Config{
 		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
-		ListenAddress:     fmt.Sprintf(":%d", port),
+		WebSocket: &zNet.WebSocketConfig{
+			ListenAddress: fmt.Sprintf(":%d", port),
+		},
 	}
 
-	zNet.InitTcpServerDefault(&netCfg,
-		zNet.WithMaxClientCount(100000),
-		zNet.WithSidInitio(10000),
-		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
-		zNet.WithRsaEncrypt("rsa_private.key"),
-		zNet.WithHeartbeat(30))
+	wsServer := zNet.NewWebSocketServer(netCfg.WebSocket,
+		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("add session", zap.Any("session id", sid))
+		}),
+		zNet.WithRemoveSessionCallBack(func(sid zNet.SessionIdType) {
+			zLog.Info("remove session", zap.Any("session id", sid))
+		}),
+	)
 
 	zNet.SetLogPrintFunc(func(v ...any) {
 		zLog.Info("zNet info", zap.Any("info", v))
 	})
 
-	zNet.GetTcpServerDefault().SetAddSessionCallBack(func(sid zNet.SessionIdType) {
-		zLog.Info("add session", zap.Any("session id", sid))
-	})
-	zNet.GetTcpServerDefault().SetRemoveSessionCallBack(func(sid zNet.SessionIdType) {
-		zLog.Info("remove session", zap.Any("session id", sid))
-	})
-
-	err = zNet.RegisterHandler(1, HandlerLogin)
+	err = zNet.RegisterHandler(1001, WebSocketHandlerLogin)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return
 	}
 
-	err = zNet.GetTcpServerDefault().Start()
+	err = wsServer.Start()
 	if err != nil {
 		zLog.Error(err.Error())
 		return
 	}
 
+	log.Printf("websocket server listen on %d", port)
+
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	zNet.GetTcpServerDefault().Close()
+	wsServer.Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
-func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
+func WebSocketHandlerLogin(si zNet.Session, protoId int32, data []byte) {
+	fmt.Println("收到登录消息")
 	type loginDataInfo struct {
 		UserName string   `json:"user_name"`
 		Password string   `json:"password"`
@@ -114,6 +109,6 @@ func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
 		log.Println(err)
 		return
 	}
-
+	zLog.Info(fmt.Sprintf("send:%s", string(marshal)))
 	_ = si.Send(1, marshal)
 }

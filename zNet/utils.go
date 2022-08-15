@@ -5,6 +5,8 @@ import (
 	"runtime/debug"
 )
 
+type SessionCallBackFunc func(sid SessionIdType)
+
 type SessionIdType = uint64
 
 func Recover() {
@@ -21,3 +23,6 @@ var LogPrint LogPrintFunc = log.Println
 func SetLogPrintFunc(f LogPrintFunc) {
 	LogPrint = f
 }
+
+var DefaultChanSize = 512
+var DefaultMaxClientCount = 10000

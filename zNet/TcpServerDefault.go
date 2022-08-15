@@ -2,7 +2,7 @@ package zNet
 
 var TcpServerInstance *TcpServer
 
-func InitTcpServerDefault(cfg *Config, opts ...Options) {
+func InitTcpServerDefault(cfg *TcpConfig, opts ...Options) {
 	TcpServerInstance = NewTcpServer(cfg, opts...)
 	return
 }

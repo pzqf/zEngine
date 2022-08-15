@@ -22,13 +22,18 @@ type UdpServerSession struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	aesKey        []byte
+	config        *UdpConfig
 }
 
-func (s *UdpServerSession) Init(conn *net.UDPConn, sid SessionIdType, aesKey []byte) {
-	s.conn = conn
-	s.sid = sid
-	s.sendChan = make(chan *NetPacket, GConfig.ChanSize)
-	s.lastHeartBeat = time.Now()
+func NewUdpServerSession(cfg *UdpConfig, conn *net.UDPConn, addr *net.UDPAddr, sid SessionIdType) *UdpServerSession {
+	newSession := UdpServerSession{
+		conn:          conn,
+		addr:          addr,
+		sid:           sid,
+		sendChan:      make(chan *NetPacket, cfg.ChanSize),
+		lastHeartBeat: time.Now(),
+	}
+	return &newSession
 }
 
 func (s *UdpServerSession) Start() {
@@ -132,7 +137,7 @@ func (s *UdpServerSession) Send(protoId int32, data []byte) error {
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
-	if netPacket.DataSize > maxPacketDataSize {
+	if netPacket.DataSize > int32(maxPacketDataSize) {
 		return errors.New(fmt.Sprintf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
 			netPacket.DataSize, maxPacketDataSize, protoId))
 	}
