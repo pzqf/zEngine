@@ -115,7 +115,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 			return
 		}
 	} else {
-		_, err := conn.Write([]byte("nokey"))
+		_, err := conn.Write([]byte("noKey"))
 		if err != nil {
 			LogPrint(err)
 			_ = conn.Close()

@@ -25,9 +25,9 @@ type WebSocketServerSession struct {
 
 type WebsocketCloseCallBackFunc func(c *WebSocketServerSession)
 
-func NewWebSocketServerSession(cfg *WebSocketConfig, websocketConn *websocket.Conn, sid SessionIdType, onClose WebsocketCloseCallBackFunc) *WebSocketServerSession {
+func NewWebSocketServerSession(cfg *WebSocketConfig, conn *websocket.Conn, sid SessionIdType, onClose WebsocketCloseCallBackFunc) *WebSocketServerSession {
 	newSession := &WebSocketServerSession{
-		conn:          websocketConn,
+		conn:          conn,
 		sid:           sid,
 		sendChan:      make(chan *NetPacket, cfg.ChanSize),
 		receiveChan:   make(chan *NetPacket, cfg.ChanSize),
