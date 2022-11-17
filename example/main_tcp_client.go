@@ -13,19 +13,13 @@ import (
 
 func main() {
 	address := flag.String("a", "127.0.0.1", "server address")
-	count := flag.Int("n", 1, "client count")
+	count := flag.Int("n", 10, "client count")
 	flag.Parse()
 
 	var wg sync.WaitGroup
 	failedCount := 0
 	begin := time.Now()
 	clientCount := *count
-
-	err := zNet.RegisterHandler(1, HandlerLoginRes)
-	if err != nil {
-		log.Printf("RegisterHandler error %d", 1)
-		return
-	}
 
 	//PS:Same as the server
 	zNet.InitPacket(zNet.DefaultPacketDataSize)
@@ -37,6 +31,11 @@ func main() {
 				wg.Done()
 			}()
 			cli := zNet.TcpClient{}
+			err := cli.RegisterHandler(1, HandlerLoginRes)
+			if err != nil {
+				log.Printf("RegisterHandler error %d", 1)
+				return
+			}
 
 			err = cli.ConnectToServer(*address, 9160, "rsa_public.key", 30)
 			if err != nil {

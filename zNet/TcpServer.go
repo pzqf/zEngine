@@ -14,6 +14,7 @@ import (
 )
 
 type TcpServer struct {
+	Dispatcher
 	clientSIDAtomic  SessionIdType
 	listener         *net.TCPListener
 	clientSessionMap zMap.Map
@@ -124,7 +125,7 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	}
 
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
-	newSession := NewTcpServerSession(svr.config, conn, sid, svr.RemoveSession, aesKey)
+	newSession := NewTcpServerSession(svr.config, conn, sid, svr.RemoveSession, aesKey, svr.DispatcherFun)
 
 	svr.clientSessionMap.Store(sid, newSession)
 

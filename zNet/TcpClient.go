@@ -17,6 +17,7 @@ import (
 )
 
 type TcpClient struct {
+	Dispatcher
 	serverAddr string
 	serverPort int
 	session    *TcpClientSession
@@ -72,7 +73,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		_, _ = conn.Write(v15)
 	}
 
-	cli.session.Init(conn, aesKey, heartbeatDuration)
+	cli.session.Init(conn, aesKey, heartbeatDuration, cli.DispatcherFun)
 	cli.session.Start()
 
 	return nil

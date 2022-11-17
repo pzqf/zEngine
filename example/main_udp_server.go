@@ -39,7 +39,7 @@ func main() {
 	zNet.InitPacket(netCfg.MaxPacketDataSize)
 	udpServer := zNet.NewUdpServer(netCfg.Udp)
 
-	err = zNet.RegisterHandler(1, HandlerUdpTest)
+	err = udpServer.RegisterHandler(1, HandlerUdpTest)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return

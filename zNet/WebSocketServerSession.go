@@ -21,11 +21,13 @@ type WebSocketServerSession struct {
 	ctxCancel     context.CancelFunc
 	onClose       WebsocketCloseCallBackFunc
 	config        *WebSocketConfig
+	dispatcher    DispatcherFunc
 }
 
 type WebsocketCloseCallBackFunc func(c *WebSocketServerSession)
 
-func NewWebSocketServerSession(cfg *WebSocketConfig, conn *websocket.Conn, sid SessionIdType, onClose WebsocketCloseCallBackFunc) *WebSocketServerSession {
+func NewWebSocketServerSession(cfg *WebSocketConfig, conn *websocket.Conn, sid SessionIdType,
+	onClose WebsocketCloseCallBackFunc, dispatcher DispatcherFunc) *WebSocketServerSession {
 	newSession := &WebSocketServerSession{
 		conn:          conn,
 		sid:           sid,
@@ -34,6 +36,7 @@ func NewWebSocketServerSession(cfg *WebSocketConfig, conn *websocket.Conn, sid S
 		lastHeartBeat: time.Now(),
 		onClose:       onClose,
 		config:        cfg,
+		dispatcher:    dispatcher,
 	}
 
 	return newSession
@@ -156,7 +159,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			err := Dispatcher(s, receivePacket)
+			err := s.dispatcher(s, receivePacket)
 			if err != nil {
 				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 			}
@@ -169,7 +172,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					err := Dispatcher(s, receivePacket)
+					err := s.dispatcher(s, receivePacket)
 					if err != nil {
 						LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 					}

@@ -51,7 +51,7 @@ func main() {
 		zLog.Info("zNet info", zap.Any("info", v))
 	})
 
-	err = zNet.RegisterHandler(1001, WebSocketHandlerLogin)
+	err = wsServer.RegisterHandler(1001, WebSocketHandlerLogin)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return

@@ -6,6 +6,7 @@ import (
 )
 
 type UdpClient struct {
+	Dispatcher
 	serverAddr string
 	serverPort int
 	session    *UdpClientSession
@@ -22,7 +23,7 @@ func (cli *UdpClient) ConnectToServer(serverAddr string, serverPort int) error {
 		return err
 	}
 	cli.session = &UdpClientSession{}
-	cli.session.Init(conn, nil)
+	cli.session.Init(conn, nil, cli.DispatcherFun)
 	cli.session.Start()
 
 	return nil

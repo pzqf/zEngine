@@ -11,6 +11,7 @@ import (
 )
 
 type UdpServer struct {
+	Dispatcher
 	clientSIDAtomic  int64
 	conn             *net.UDPConn
 	clientSessionMap zMap.Map
@@ -74,7 +75,7 @@ func (svr *UdpServer) Start() error {
 			session, ok := svr.clientSessionMap.Get(addr.String())
 			if !ok {
 				sid := SessionIdType(atomic.AddInt64(&svr.clientSIDAtomic, 1))
-				newSession := NewUdpServerSession(svr.config, conn, addr, sid)
+				newSession := NewUdpServerSession(svr.config, conn, addr, sid, svr.DispatcherFun)
 				svr.clientSessionMap.Store(addr.String(), newSession)
 				session = newSession
 				newSession.Start()

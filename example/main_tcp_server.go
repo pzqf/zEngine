@@ -63,7 +63,7 @@ func main() {
 		zLog.Info("zNet info", zap.Any("info", v))
 	})
 
-	err = zNet.RegisterHandler(1, HandlerLogin)
+	err = zNet.GetTcpServerDefault().RegisterHandler(1, HandlerLogin)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return

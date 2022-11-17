@@ -20,13 +20,15 @@ type TcpClientSession struct {
 	ctxCancel         context.CancelFunc
 	aesKey            []byte
 	heartbeatDuration int
+	dispatcher        DispatcherFunc
 }
 
-func (s *TcpClientSession) Init(conn *net.TCPConn, aesKey []byte, heartbeatDuration int) {
+func (s *TcpClientSession) Init(conn *net.TCPConn, aesKey []byte, heartbeatDuration int, dispatcher DispatcherFunc) {
 	s.conn = conn
 	s.lastHeartBeat = time.Now()
 	s.aesKey = aesKey
 	s.heartbeatDuration = heartbeatDuration
+	s.dispatcher = dispatcher
 }
 
 func (s *TcpClientSession) Start() {
@@ -114,7 +116,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			netPacket.Data = zAes.DecryptCBC(netPacket.Data, s.aesKey)
 		}
 
-		err = Dispatcher(s, &netPacket)
+		err = s.dispatcher(s, &netPacket)
 		if err != nil {
 			LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
 		}

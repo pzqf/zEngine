@@ -23,15 +23,17 @@ type UdpServerSession struct {
 	ctxCancel     context.CancelFunc
 	aesKey        []byte
 	config        *UdpConfig
+	dispatcher    DispatcherFunc
 }
 
-func NewUdpServerSession(cfg *UdpConfig, conn *net.UDPConn, addr *net.UDPAddr, sid SessionIdType) *UdpServerSession {
+func NewUdpServerSession(cfg *UdpConfig, conn *net.UDPConn, addr *net.UDPAddr, sid SessionIdType, dispatcher DispatcherFunc) *UdpServerSession {
 	newSession := UdpServerSession{
 		conn:          conn,
 		addr:          addr,
 		sid:           sid,
 		sendChan:      make(chan *NetPacket, cfg.ChanSize),
 		lastHeartBeat: time.Now(),
+		dispatcher:    dispatcher,
 	}
 	return &newSession
 }
@@ -82,7 +84,7 @@ func (s *UdpServerSession) Receive(data []byte) {
 	if netPacket.DataSize > 0 && s.aesKey != nil {
 		netPacket.Data = zAes.DecryptCBC(netPacket.Data, s.aesKey)
 	}
-	err := Dispatcher(s, &netPacket)
+	err := s.dispatcher(s, &netPacket)
 	if err != nil {
 		LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
 	}

@@ -20,3 +20,10 @@ func (s *httpSession) Send(protoId int32, data []byte) error {
 func (s *httpSession) GetSid() SessionIdType {
 	return 0
 }
+
+func (s *httpSession) Start() {
+
+}
+func (s *httpSession) Close() {
+
+}

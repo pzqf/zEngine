@@ -12,6 +12,7 @@ import (
 )
 
 type WebSocketServer struct {
+	Dispatcher
 	clientSIDAtomic  SessionIdType
 	clientSessionMap zMap.Map
 	wg               sync.WaitGroup
@@ -74,7 +75,7 @@ func (svr *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (svr *WebSocketServer) AddSession(conn *websocket.Conn) *WebSocketServerSession {
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 
-	newSession := NewWebSocketServerSession(svr.config, conn, sid, svr.RemoveSession)
+	newSession := NewWebSocketServerSession(svr.config, conn, sid, svr.RemoveSession, svr.DispatcherFun)
 
 	svr.clientSessionMap.Store(sid, newSession)
 

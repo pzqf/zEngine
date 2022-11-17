@@ -7,7 +7,7 @@ type Session interface {
 	GetSid() SessionIdType
 }
 
-type Server interface {
+type NetServer interface {
 	Start() error
 	Close()
 }

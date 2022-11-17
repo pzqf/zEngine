@@ -22,10 +22,10 @@ func StringToMap(charMap []string) *NavigationMap {
 			maxY = len(cols)
 		}
 		for y, view := range cols {
-			grids[x][y] = Grid{x, y, 0}
+			grids[x][y] = Grid{x, y, Vector3d{0, 0, 0}}
 			if view != "-" {
 				n, _ := zDataConv.String2Float64(view)
-				grids[x][y].z = n
+				grids[x][y].Pos.Z = n
 
 			}
 		} // end of cols
@@ -34,7 +34,7 @@ func StringToMap(charMap []string) *NavigationMap {
 	m := NewNavigationMap(maxX, maxY, 1)
 	for _, x := range grids {
 		for _, v := range x {
-			m.AddGrid(v)
+			_ = m.AddGrid(v)
 		}
 	}
 
@@ -57,11 +57,11 @@ func PrintMap(m *NavigationMap, road []*Grid) {
 					goto NEXT
 				}
 			}
-			if m.grids[x][y].z > 0 {
-				if m.grids[x][y].z > 9 {
+			if m.grids[x][y].Pos.Z > 0 {
+				if m.grids[x][y].Pos.Z > 9 {
 					fmt.Print(" " + zColor.LightRed("X"))
 				} else {
-					fmt.Print(" " + zColor.LightRed(zDataConv.Float642String(m.grids[x][y].z)))
+					fmt.Print(" " + zColor.LightRed(zDataConv.Float642String(m.grids[x][y].Pos.Z)))
 				}
 
 			} else {
@@ -100,7 +100,7 @@ func Test(t *testing.T) {
 	m := StringToMap(strMap)
 	//PrintMap(m, nil)
 
-	road, err := FindPathByAStar(Grid{0, 0, 0}, Grid{18, 14, 0}, m)
+	road, err := FindPathByAStar(Grid{0, 0, Vector3d{0, 0, 0}}, Grid{18, 14, Vector3d{18, 14, 0}}, m)
 	if err != nil {
 		fmt.Println(err)
 		return

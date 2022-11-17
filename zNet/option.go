@@ -8,10 +8,10 @@ import (
 	"reflect"
 )
 
-type Options func(Server)
+type Options func(NetServer)
 
 func WithMaxClientCount(maxClientCount int) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).config.MaxClientCount = maxClientCount
@@ -22,7 +22,7 @@ func WithMaxClientCount(maxClientCount int) Options {
 }
 
 func WithMaxPacketDataSize(size int) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		if size == 0 {
 			size = DefaultPacketDataSize
 		}
@@ -31,7 +31,7 @@ func WithMaxPacketDataSize(size int) Options {
 }
 
 func WithRsaEncrypt(rsaPrivateFile string) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		if rsaPrivateFile != "" && reflect.TypeOf(svr).String() == "*zNet.TcpServer" {
 			f, err := os.Open(rsaPrivateFile)
 			if err != nil {
@@ -62,7 +62,7 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 }
 
 func WithChanSize(chanSize int) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		if chanSize <= 0 {
 			return
 		}
@@ -78,7 +78,7 @@ func WithChanSize(chanSize int) Options {
 }
 
 func WithHeartbeat(duration int) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).config.HeartbeatDuration = duration
@@ -89,7 +89,7 @@ func WithHeartbeat(duration int) Options {
 }
 
 func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).onAddSession = cb
@@ -100,7 +100,7 @@ func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
 }
 
 func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
-	return func(svr Server) {
+	return func(svr NetServer) {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).onRemoveSession = cb

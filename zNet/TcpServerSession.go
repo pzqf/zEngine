@@ -23,11 +23,13 @@ type TcpServerSession struct {
 	onClose       TcpCloseCallBackFunc
 	aesKey        []byte
 	config        *TcpConfig
+	dispatcher    DispatcherFunc
 }
 
 type TcpCloseCallBackFunc func(c *TcpServerSession)
 
-func NewTcpServerSession(cfg *TcpConfig, conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) *TcpServerSession {
+func NewTcpServerSession(cfg *TcpConfig, conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc,
+	aesKey []byte, dispatcher DispatcherFunc) *TcpServerSession {
 	newSession := TcpServerSession{
 		conn:          conn,
 		sid:           sid,
@@ -37,6 +39,7 @@ func NewTcpServerSession(cfg *TcpConfig, conn *net.TCPConn, sid SessionIdType, c
 		onClose:       closeCallBack,
 		aesKey:        aesKey,
 		config:        cfg,
+		dispatcher:    dispatcher,
 	}
 	return &newSession
 }
@@ -136,7 +139,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			if receivePacket.DataSize > 0 && s.aesKey != nil {
 				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
 			}
-			err := Dispatcher(s, receivePacket)
+			err := s.dispatcher(s, receivePacket)
 			if err != nil {
 				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 			}
@@ -149,7 +152,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					err := Dispatcher(s, receivePacket)
+					err := s.dispatcher(s, receivePacket)
 					if err != nil {
 						LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, receivePacket.ProtoId))
 					}

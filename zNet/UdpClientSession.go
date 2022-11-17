@@ -14,11 +14,13 @@ type UdpClientSession struct {
 	ctxCancel context.CancelFunc
 	//aesKey            []byte
 	heartbeatDuration int
+	dispatcher        DispatcherFunc
 }
 
-func (s *UdpClientSession) Init(conn *net.UDPConn, aesKey []byte) {
+func (s *UdpClientSession) Init(conn *net.UDPConn, aesKey []byte, dispatcher DispatcherFunc) {
 	s.conn = conn
 	//s.aesKey = aesKey
+	s.dispatcher = dispatcher
 }
 
 func (s *UdpClientSession) Start() {
@@ -80,7 +82,7 @@ func (s *UdpClientSession) receive(ctx context.Context) {
 			return
 		}
 
-		err = Dispatcher(s, &netPacket)
+		err = s.dispatcher(s, &netPacket)
 		if err != nil {
 			LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
 		}

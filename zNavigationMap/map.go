@@ -11,6 +11,11 @@ type Vector3d struct {
 	Z float64
 }
 
+type Vector2d struct {
+	X float64
+	Y float64
+}
+
 // Grid 导航地图上的格子， z代表高度， 一定高度差是可以上去的。
 type Grid struct {
 	X   int

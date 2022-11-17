@@ -21,12 +21,6 @@ func main() {
 	begin := time.Now()
 	clientCount := *count
 
-	err := zNet.RegisterHandler(1, HandlerUdpTestRes)
-	if err != nil {
-		log.Printf("RegisterHandler error %d", 1)
-		return
-	}
-
 	//PS:Same as the server
 	zNet.InitPacket(zNet.DefaultPacketDataSize)
 	wg.Add(clientCount)
@@ -37,6 +31,11 @@ func main() {
 				wg.Done()
 			}()
 			cli := zNet.UdpClient{}
+			err := cli.RegisterHandler(1, HandlerUdpTestRes)
+			if err != nil {
+				log.Printf("RegisterHandler error %d", 1)
+				return
+			}
 
 			err = cli.ConnectToServer(*address, 9160)
 			if err != nil {
