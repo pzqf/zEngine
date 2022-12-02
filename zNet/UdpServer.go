@@ -60,15 +60,15 @@ func (svr *UdpServer) Start() error {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
-			if svr.clientSessionMap.Len() >= int32(svr.config.MaxClientCount) {
+			if svr.clientSessionMap.Len() >= int64(svr.config.MaxClientCount) {
 				LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", svr.config.MaxClientCount))
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 			dataBUf := make([]byte, maxPacketDataSize)
-			n, addr, err := svr.conn.ReadFromUDP(dataBUf)
-			if err != nil {
-				LogPrint(err)
+			n, addr, readErr := svr.conn.ReadFromUDP(dataBUf)
+			if readErr != nil {
+				LogPrint(readErr)
 				break
 			}
 

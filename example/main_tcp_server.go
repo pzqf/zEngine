@@ -49,7 +49,7 @@ func main() {
 	zNet.InitTcpServerDefault(netCfg.Tcp,
 		zNet.WithMaxClientCount(100000),
 		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
-		zNet.WithRsaEncrypt("rsa_private.key"),
+		//zNet.WithRsaEncrypt("rsa_private.key"),
 		zNet.WithHeartbeat(30),
 		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
 			zLog.Info("add session", zap.Any("session id", sid))

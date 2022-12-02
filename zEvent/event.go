@@ -18,7 +18,6 @@ func (pe *Events) init() {
 }
 
 func (pe *Events) ResisterEvent(eventId EventId, fun EventFunc) {
-
 	pe.events[eventId] = append(pe.events[eventId], fun)
 }
 

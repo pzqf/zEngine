@@ -107,7 +107,6 @@ func (s *WebSocketServerSession) receive(ctx context.Context) {
 
 			break
 		}
-		//fmt.Println("收到消息：", string(msg))
 
 		if len(msg) < NetPacketHeadSize {
 			LogPrint(fmt.Sprintf("Client conn read error, head size %d, sid:%d, closed", len(msg), s.sid))

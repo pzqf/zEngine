@@ -68,9 +68,9 @@ func (svr *TcpServer) Start() error {
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
-			conn, err := svr.listener.AcceptTCP()
-			if err != nil {
-				LogPrint(err)
+			conn, acceptErr := svr.listener.AcceptTCP()
+			if acceptErr != nil {
+				LogPrint(acceptErr)
 				break
 			}
 

@@ -4,22 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pzqf/zUtil/zAes"
 	"net"
 	"sync"
 )
 
 type UdpClientSession struct {
-	conn      *net.UDPConn
-	wg        sync.WaitGroup
-	ctxCancel context.CancelFunc
-	//aesKey            []byte
+	conn              *net.UDPConn
+	wg                sync.WaitGroup
+	ctxCancel         context.CancelFunc
+	aesKey            []byte
 	heartbeatDuration int
 	dispatcher        DispatcherFunc
 }
 
+//todo aesKey
+
 func (s *UdpClientSession) Init(conn *net.UDPConn, aesKey []byte, dispatcher DispatcherFunc) {
 	s.conn = conn
-	//s.aesKey = aesKey
+	s.aesKey = aesKey
 	s.dispatcher = dispatcher
 }
 
@@ -53,7 +56,7 @@ func (s *UdpClientSession) receive(ctx context.Context) {
 		data := make([]byte, DefaultPacketDataSize)
 		_, _, err := s.conn.ReadFromUDP(data)
 		if err != nil {
-			//LogPrint(err)
+			LogPrint(err)
 			break
 		}
 
@@ -96,7 +99,13 @@ func (s *UdpClientSession) Send(protoId int32, data []byte) error {
 		Version: 0,
 	}
 
-	netPacket.Data = data
+	if data != nil {
+		if s.aesKey != nil {
+			netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+		} else {
+			netPacket.Data = data
+		}
+	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {

@@ -33,7 +33,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 	if err != nil {
 		return err
 	}
-	cli.session = &TcpClientSession{}
+
 	var aesKey []byte
 
 	helloBuf := make([]byte, 5)
@@ -73,6 +73,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		_, _ = conn.Write(v15)
 	}
 
+	cli.session = &TcpClientSession{}
 	cli.session.Init(conn, aesKey, heartbeatDuration, cli.DispatcherFun)
 	cli.session.Start()
 

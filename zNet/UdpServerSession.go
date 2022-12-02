@@ -11,8 +11,6 @@ import (
 	"github.com/pzqf/zUtil/zAes"
 )
 
-//type SessionIdType int64
-
 type UdpServerSession struct {
 	conn          *net.UDPConn
 	sid           SessionIdType // session ID
@@ -26,7 +24,8 @@ type UdpServerSession struct {
 	dispatcher    DispatcherFunc
 }
 
-func NewUdpServerSession(cfg *UdpConfig, conn *net.UDPConn, addr *net.UDPAddr, sid SessionIdType, dispatcher DispatcherFunc) *UdpServerSession {
+func NewUdpServerSession(cfg *UdpConfig, conn *net.UDPConn, addr *net.UDPAddr,
+	sid SessionIdType, dispatcher DispatcherFunc) *UdpServerSession {
 	newSession := UdpServerSession{
 		conn:          conn,
 		addr:          addr,
