@@ -1,6 +1,7 @@
 package zNet
 
 import (
+	"errors"
 	"net/http"
 )
 
@@ -28,7 +29,7 @@ func (svr *HttpServer) Start() error {
 	go func() {
 		err := svr.server.ListenAndServe()
 		if err != nil {
-			if err == http.ErrServerClosed {
+			if errors.Is(err, http.ErrServerClosed) {
 				LogPrint("Server closed under request")
 			} else {
 				LogPrint("Server closed unexpected", err)

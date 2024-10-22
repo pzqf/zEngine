@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -21,14 +20,7 @@ func main() {
 	begin := time.Now()
 	clientCount := *count
 
-	err := zNet.RegisterHandler(1, HandlerLoginRes)
-	if err != nil {
-		log.Printf("RegisterHandler error %d", 1)
-		return
-	}
-
 	//PS:Same as the server
-	zNet.InitPacket(zNet.DefaultPacketDataSize)
 	wg.Add(clientCount)
 	for i := 0; i < clientCount; i++ {
 		time.Sleep(1 * time.Millisecond)
@@ -37,8 +29,12 @@ func main() {
 				wg.Done()
 			}()
 			cli := zNet.TcpClient{}
+			err := cli.RegisterHandler(ClientDispatcherHandler, 10000)
+			if err != nil {
+				return
+			}
 
-			err = cli.ConnectToServer(*address, 9160, "rsa_public.key", 30)
+			err = cli.ConnectToServer(*address, 9160, "rsa_public.key", 30, zNet.DefaultPacketDataSize)
 			if err != nil {
 				fmt.Printf("Connect:%d, err:%s \n", x, err.Error())
 				failedCount += 1
@@ -61,7 +57,7 @@ func main() {
 					Time:     time.Now().UnixNano(),
 				}
 				// test
-				for s := 0; s < 0; s++ {
+				for s := 0; s < 1; s++ {
 					newData.Over = append(newData.Over, "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
 				}
 
@@ -86,7 +82,14 @@ func main() {
 
 }
 
-func HandlerLoginRes(si zNet.Session, protoId int32, data []byte) {
+func ClientDispatcherHandler(session zNet.Session, netPacket *zNet.NetPacket) error {
+	if netPacket.ProtoId == 1 {
+		HandlerLoginRes(session, netPacket.Data)
+	}
+	return nil
+}
+
+func HandlerLoginRes(si zNet.Session, data []byte) {
 	type PlayerInfo struct {
 		Id    int32  `json:"id"`
 		Name  string `json:"name"`
@@ -102,9 +105,9 @@ func HandlerLoginRes(si zNet.Session, protoId int32, data []byte) {
 	}
 	mill := time.Duration(time.Now().UnixNano()-loginResData.Time) * time.Nanosecond
 	if mill > time.Millisecond*1 {
-		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s, loooooooong", protoId, loginResData, mill.String()))
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s, loooooooong", 1, loginResData, mill.String()))
 	} else {
-		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", protoId, loginResData, mill.String()))
+		fmt.Println(fmt.Sprintf("receive player data:%d, %v, time:%s", 1, loginResData, mill.String()))
 	}
 
 }

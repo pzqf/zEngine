@@ -1,10 +1,8 @@
 package zNet
 
 import (
-	"crypto/rand"
 	"crypto/rsa"
-	"fmt"
-	"io"
+	"github.com/panjf2000/ants"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -22,14 +20,14 @@ type TcpServer struct {
 	onRemoveSession  SessionCallBackFunc
 	privateKey       *rsa.PrivateKey
 	config           *TcpConfig
+	dispatcher       HandlerFun
+	workerPool       *ants.Pool
+	workerPoolSize   int
 }
 
 func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	if cfg.ChanSize <= 0 {
 		cfg.ChanSize = DefaultChanSize
-	}
-	if cfg.MaxClientCount <= 0 {
-		cfg.MaxClientCount = DefaultMaxClientCount
 	}
 
 	svr := &TcpServer{
@@ -41,6 +39,16 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
+
+	if svr.workerPoolSize <= 0 {
+		svr.workerPoolSize = DefaultWorkerPoolSize
+	}
+
+	p, err := ants.NewPool(svr.workerPoolSize)
+	if err != nil {
+		panic(err)
+	}
+	svr.workerPool = p
 
 	return svr
 }
@@ -56,20 +64,20 @@ func (svr *TcpServer) Start() error {
 	}
 	svr.listener = listener
 
-	LogPrint(fmt.Sprintf("Tcp server listing on %s", svr.config.ListenAddress))
+	//svr.logger.Println(fmt.Sprintf("Tcp server listing on %s", svr.config.ListenAddress))
 
 	go func() {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
-			if int(svr.clientSessionMap.Len()) >= svr.config.MaxClientCount {
-				LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", svr.config.MaxClientCount))
+			if svr.config.MaxClientCount > 0 && int(svr.clientSessionMap.Len()) >= svr.config.MaxClientCount {
+				//LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", svr.config.MaxClientCount))
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 			conn, err := svr.listener.AcceptTCP()
 			if err != nil {
-				LogPrint(err)
+				//LogPrint(err)
 				break
 			}
 
@@ -81,7 +89,7 @@ func (svr *TcpServer) Start() error {
 }
 
 func (svr *TcpServer) Close() {
-	LogPrint("Close tcp server, session count ", svr.clientSessionMap.Len())
+	//LogPrint("Close tcp server, session count ", svr.clientSessionMap.Len())
 
 	_ = svr.listener.Close()
 
@@ -97,41 +105,39 @@ func (svr *TcpServer) Close() {
 
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	var aesKey []byte
-	if svr.privateKey != nil {
-		_, err := conn.Write([]byte("hello"))
-		if err != nil {
-			LogPrint(err)
-			_ = conn.Close()
-			return
-		}
+	/*
+		if svr.privateKey != nil {
+			_, err := conn.Write([]byte("hello"))
+			if err != nil {
+				//LogPrint(err)
+				_ = conn.Close()
+				return
+			}
 
-		rsaBuf := make([]byte, 256)
-		_, _ = io.ReadFull(conn, rsaBuf)
+			rsaBuf := make([]byte, 256)
+			_, _ = io.ReadFull(conn, rsaBuf)
 
-		aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
-		if err != nil {
-			LogPrint("Decrypt aes key failed", err)
-			_ = conn.Close()
-			return
+			aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
+			if err != nil {
+				//LogPrint("Decrypt aes key failed", err)
+				_ = conn.Close()
+				return
+			}
+		} else {
+			_, err := conn.Write([]byte("noKey"))
+			if err != nil {
+				//LogPrint(err)
+				_ = conn.Close()
+				return
+			}
 		}
-	} else {
-		_, err := conn.Write([]byte("noKey"))
-		if err != nil {
-			LogPrint(err)
-			_ = conn.Close()
-			return
-		}
-	}
-
+	*/
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
-	newSession := NewTcpServerSession(svr.config, conn, sid, svr.RemoveSession, aesKey)
-
+	newSession := NewTcpServerSession(svr, conn, sid, svr.RemoveSession, aesKey)
 	svr.clientSessionMap.Store(sid, newSession)
-
 	if svr.onAddSession != nil {
 		svr.onAddSession(newSession.sid)
 	}
-
 	newSession.Start()
 }
 
@@ -157,4 +163,9 @@ func (svr *TcpServer) GetAllSession() []*TcpServerSession {
 	})
 
 	return sessionList
+}
+
+func (svr *TcpServer) RegisterHandler(fun HandlerFun, n int) error {
+	svr.dispatcher = fun
+	return nil
 }

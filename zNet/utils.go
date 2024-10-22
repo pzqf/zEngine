@@ -1,18 +1,11 @@
 package zNet
 
-import (
-	"log"
-	"runtime/debug"
-)
-
-type SessionCallBackFunc func(sid SessionIdType)
-
-type SessionIdType = uint64
+import "log"
 
 func Recover() {
 	if err := recover(); err != nil {
-		LogPrint("panic:", err)
-		LogPrint(string(debug.Stack()))
+		//LogPrint("panic:", err)
+		//LogPrint(string(debug.Stack()))
 	}
 }
 
@@ -23,6 +16,3 @@ var LogPrint LogPrintFunc = log.Println
 func SetLogPrintFunc(f LogPrintFunc) {
 	LogPrint = f
 }
-
-var DefaultChanSize = 512
-var DefaultMaxClientCount = 10000

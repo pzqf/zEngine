@@ -15,18 +15,25 @@ func WithMaxClientCount(maxClientCount int) Options {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).config.MaxClientCount = maxClientCount
-		case "*zNet.UdpServer":
-			svr.(*UdpServer).config.MaxClientCount = maxClientCount
+			//case "*zNet.UdpServer":
+			//	svr.(*UdpServer).config.MaxClientCount = maxClientCount
 		}
 	}
 }
 
-func WithMaxPacketDataSize(size int) Options {
+func WithMaxPacketDataSize(size int32) Options {
 	return func(svr Server) {
-		if size == 0 {
-			size = DefaultPacketDataSize
+		if size <= 0 {
+			return
 		}
-		InitPacket(size)
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).config.MaxPacketDataSize = size
+			//case "*zNet.UdpServer":
+			//	svr.(*UdpServer).MaxPacketDataSize = size
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).MaxPacketDataSize = size
+		}
 	}
 }
 
@@ -44,19 +51,19 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 
 			block, _ := pem.Decode(all)
 			if block == nil {
-				LogPrint("public key error")
+				//LogPrint("public key error")
 				return
 			}
 
 			//x509.ParsePKCS8PrivateKey()
 			prkI, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err != nil {
-				LogPrint("ParsePKCS1PrivateKey error", err)
+				//LogPrint("ParsePKCS1PrivateKey error", err)
 				return
 			}
 
 			svr.(*TcpServer).privateKey = prkI //.(*rsa.PrivateKey)
-			LogPrint("rsa encrypt opened", prkI)
+			//LogPrint("rsa encrypt opened", prkI)
 		}
 	}
 }
@@ -69,10 +76,10 @@ func WithChanSize(chanSize int) Options {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).config.ChanSize = chanSize
-		case "*zNet.UdpServer":
-			svr.(*UdpServer).config.ChanSize = chanSize
-		case "*zNet.WebSocketServer":
-			svr.(*WebSocketServer).config.ChanSize = chanSize
+			//case "*zNet.UdpServer":
+			//	svr.(*UdpServer).config.ChanSize = chanSize
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).config.ChanSize = chanSize
 		}
 	}
 }
@@ -82,8 +89,8 @@ func WithHeartbeat(duration int) Options {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).config.HeartbeatDuration = duration
-		case "*zNet.UdpServer":
-			svr.(*UdpServer).config.HeartbeatDuration = duration
+			//case "*zNet.UdpServer":
+			//	svr.(*UdpServer).config.HeartbeatDuration = duration
 		}
 	}
 }
@@ -93,8 +100,8 @@ func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).onAddSession = cb
-		case "*zNet.WebSocketServer":
-			svr.(*WebSocketServer).onAddSession = cb
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).onAddSession = cb
 		}
 	}
 }
@@ -104,8 +111,19 @@ func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
 		switch reflect.TypeOf(svr).String() {
 		case "*zNet.TcpServer":
 			svr.(*TcpServer).onRemoveSession = cb
-		case "*zNet.WebSocketServer":
-			svr.(*WebSocketServer).onRemoveSession = cb
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).onRemoveSession = cb
+		}
+	}
+}
+
+func WithWorkerPoolSize(size int) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).workerPoolSize = size
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).onRemoveSession = cb
 		}
 	}
 }

@@ -14,19 +14,20 @@ import (
 )
 
 type TcpClientSession struct {
-	conn              *net.TCPConn
-	wg                sync.WaitGroup
-	lastHeartBeat     time.Time
-	ctxCancel         context.CancelFunc
-	aesKey            []byte
-	heartbeatDuration int
+	conn          *net.TCPConn
+	wg            sync.WaitGroup
+	lastHeartBeat time.Time
+	ctxCancel     context.CancelFunc
+	aesKey        []byte
+
+	cli *TcpClient
 }
 
-func (s *TcpClientSession) Init(conn *net.TCPConn, aesKey []byte, heartbeatDuration int) {
+func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte) {
 	s.conn = conn
 	s.lastHeartBeat = time.Now()
 	s.aesKey = aesKey
-	s.heartbeatDuration = heartbeatDuration
+	s.cli = cli
 }
 
 func (s *TcpClientSession) Start() {
@@ -37,7 +38,7 @@ func (s *TcpClientSession) Start() {
 	s.ctxCancel = ctxCancel
 
 	go s.receive(ctx)
-	if s.heartbeatDuration > 0 {
+	if s.cli.heartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
 
@@ -64,7 +65,8 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		headBuf := make([]byte, NetPacketHeadSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok {
+			var netErr net.Error
+			if errors.As(err, &netErr) {
 				if netErr.Timeout() {
 					continue
 				}
@@ -104,9 +106,9 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			continue
 		}
 
-		if netPacket.DataSize > maxPacketDataSize {
+		if netPacket.DataSize > s.cli.maxPacketDataSize {
 			LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize))
+				netPacket.ProtoId, netPacket.DataSize, s.cli.maxPacketDataSize))
 			continue
 		}
 
@@ -114,10 +116,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			netPacket.Data = zAes.DecryptCBC(netPacket.Data, s.aesKey)
 		}
 
-		err = Dispatcher(s, &netPacket)
-		if err != nil {
-			LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
-		}
+		go func() {
+			err = s.cli.dispatcher(s, &netPacket)
+			if err != nil {
+				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
+			}
+		}()
+
 	}
 	s.ctxCancel()
 }
@@ -139,9 +144,9 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
-	if netPacket.DataSize > maxPacketDataSize {
+	if netPacket.DataSize > s.cli.maxPacketDataSize {
 		return errors.New(fmt.Sprintf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, maxPacketDataSize, protoId))
+			netPacket.DataSize, s.cli.maxPacketDataSize, protoId))
 	}
 
 	_, err := s.conn.Write(netPacket.Marshal())
@@ -159,7 +164,7 @@ func (s *TcpClientSession) heartbeatUpdate() {
 func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	hbd := float64(s.heartbeatDuration)
+	hbd := float64(s.cli.heartbeatDuration)
 	for {
 		select {
 		case <-time.After(30 * time.Second):

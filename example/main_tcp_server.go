@@ -36,20 +36,24 @@ func main() {
 	}
 	port := 9160
 
-	netCfg := zNet.Config{
+	/*netCfg := zNet.Config{
 		MaxPacketDataSize: zNet.DefaultPacketDataSize * 100,
 
 		Tcp: &zNet.TcpConfig{
 			ListenAddress:     fmt.Sprintf(":%d", port),
 			HeartbeatDuration: 0,
 		},
+	}*/
+
+	tcpConfig := zNet.TcpConfig{
+		ListenAddress:     fmt.Sprintf(":%d", port),
+		HeartbeatDuration: 0,
+		MaxPacketDataSize: zNet.DefaultPacketDataSize,
 	}
 
-	zNet.InitPacket(netCfg.MaxPacketDataSize)
-	zNet.InitTcpServerDefault(netCfg.Tcp,
-		zNet.WithMaxClientCount(100000),
+	tcpSvr := zNet.NewTcpServer(&tcpConfig, zNet.WithMaxClientCount(100000),
 		zNet.WithMaxPacketDataSize(zNet.DefaultPacketDataSize),
-		zNet.WithRsaEncrypt("rsa_private.key"),
+		//zNet.WithRsaEncrypt("rsa_private.key"),
 		zNet.WithHeartbeat(30),
 		zNet.WithAddSessionCallBack(func(sid zNet.SessionIdType) {
 			zLog.Info("add session", zap.Any("session id", sid))
@@ -57,19 +61,21 @@ func main() {
 		zNet.WithRemoveSessionCallBack(func(sid zNet.SessionIdType) {
 			zLog.Info("remove session", zap.Any("session id", sid))
 		}),
+		zNet.WithWorkerPoolSize(100000),
+		zNet.WithChanSize(1024),
 	)
 
-	zNet.SetLogPrintFunc(func(v ...any) {
-		zLog.Info("zNet info", zap.Any("info", v))
-	})
+	//zNet.SetLogPrintFunc(func(v ...any) {
+	//	zLog.Info("zNet info", zap.Any("info", v))
+	//})
 
-	err = zNet.RegisterHandler(1, HandlerLogin)
+	err = tcpSvr.RegisterHandler(DispatcherHandler, 1000000)
 	if err != nil {
 		zLog.Error("RegisterHandler error", zap.Error(err))
 		return
 	}
 
-	err = zNet.GetTcpServerDefault().Start()
+	err = tcpSvr.Start()
 	if err != nil {
 		zLog.Error(err.Error())
 		return
@@ -77,11 +83,18 @@ func main() {
 
 	zSignal.GracefulExit()
 	log.Printf("server will be shut off")
-	zNet.GetTcpServerDefault().Close()
+	tcpSvr.Close()
 	log.Printf("====>>> FBI warning, server exit <<<=====")
 }
 
-func HandlerLogin(si zNet.Session, protoId int32, data []byte) {
+func DispatcherHandler(session zNet.Session, netPacket *zNet.NetPacket) error {
+	if netPacket.ProtoId == 1 {
+		HandlerLogin(session, netPacket.Data)
+	}
+	return nil
+}
+
+func HandlerLogin(si zNet.Session, data []byte) {
 	type loginDataInfo struct {
 		UserName string   `json:"user_name"`
 		Password string   `json:"password"`

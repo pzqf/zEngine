@@ -6,9 +6,9 @@ import (
 	"errors"
 )
 
-const DefaultPacketDataSize = 1024 * 1024
+//const DefaultPacketDataSize = 1024 * 1024
 
-var maxPacketDataSize = int32(DefaultPacketDataSize)
+//var maxPacketDataSize = int32(DefaultPacketDataSize)
 
 const HeartbeatProtoId = int32(0)
 const NetPacketHeadSize = 12
@@ -18,13 +18,6 @@ type NetPacket struct {
 	DataSize int32
 	Version  int32
 	Data     []byte
-}
-
-func InitPacket(maxDataSize int) {
-	if maxDataSize <= 0 {
-		maxDataSize = DefaultPacketDataSize
-	}
-	maxPacketDataSize = int32(maxDataSize)
 }
 
 func (p *NetPacket) UnmarshalHead(data []byte) error {

@@ -62,6 +62,6 @@ func (om *ObjectManager) GetAllObject() []Object {
 
 	return list
 }
-func (om *ObjectManager) GetObjectsCount() int32 {
+func (om *ObjectManager) GetObjectsCount() int64 {
 	return om.objects.Len()
 }
