@@ -133,17 +133,20 @@ func (s *TcpServerSession) process(ctx context.Context) {
 				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
 			}
 			if s.svr.dispatcher != nil {
-				//err := s.svr.workerPool.Submit(func() {
-				//	err := s.svr.dispatcher(s, receivePacket)
-				//	if err != nil {
-				//		return
-				//	}
-				//})
-				go func() {
+				err := s.svr.workerPool.Submit(func() {
 					err := s.svr.dispatcher(s, receivePacket)
 					if err != nil {
+						return
 					}
-				}()
+				})
+				if err != nil {
+					break
+				}
+				//go func() {
+				//	err := s.svr.dispatcher(s, receivePacket)
+				//	if err != nil {
+				//	}
+				//}()
 			}
 
 		case sendPacket := <-s.sendChan:
@@ -163,6 +166,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 							}
 						})
 						if err != nil {
+							break
 						}
 					}
 

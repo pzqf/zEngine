@@ -69,11 +69,7 @@ func main() {
 	//	zLog.Info("zNet info", zap.Any("info", v))
 	//})
 
-	err = tcpSvr.RegisterHandler(DispatcherHandler, 1000000)
-	if err != nil {
-		zLog.Error("RegisterHandler error", zap.Error(err))
-		return
-	}
+	tcpSvr.RegisterHandler(DispatcherHandler, 1000000)
 
 	err = tcpSvr.Start()
 	if err != nil {

@@ -9,8 +9,6 @@ You can refer to the examples in the ./example
 
 or  https://github.com/pzqf/zChatRoom
 
-or https://github.com/pzqf/GameServerTemplate
-
 anything, issues.
 
 

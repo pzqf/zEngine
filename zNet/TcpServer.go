@@ -165,7 +165,7 @@ func (svr *TcpServer) GetAllSession() []*TcpServerSession {
 	return sessionList
 }
 
-func (svr *TcpServer) RegisterHandler(fun HandlerFun, n int) error {
+func (svr *TcpServer) RegisterHandler(fun HandlerFun, n int) {
 	svr.dispatcher = fun
-	return nil
+	svr.workerPoolSize = n
 }
