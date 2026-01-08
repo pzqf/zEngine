@@ -1,6 +1,9 @@
 package zLog
 
 import (
+	"fmt"
+	"os"
+
 	"go.uber.org/zap"
 )
 
@@ -23,7 +26,12 @@ func getDefaultLogger() *zap.Logger {
 			Console:  true,
 			Filename: "./logs/log.log",
 		}
-		_ = InitLogger(&cfg)
+		if err := InitLogger(&cfg); err != nil {
+			// 处理错误，记录到标准错误
+			fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+			// 返回一个无操作的logger，避免nil指针
+			return zap.NewNop()
+		}
 	}
 
 	return gl
@@ -51,4 +59,9 @@ func Panic(msg string, fields ...zap.Field) {
 
 func Fatal(msg string, fields ...zap.Field) {
 	getDefaultLogger().Fatal(msg, fields...)
+}
+
+// GetLogger 获取全局日志记录器实例
+func GetLogger() *zap.Logger {
+	return getDefaultLogger()
 }

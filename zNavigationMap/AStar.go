@@ -22,22 +22,28 @@ func newNode(p *Grid, father *Node, end *Node) *Node {
 
 func (asp *Node) calcF(end *Node) int {
 	//g
+	g := 0
 	if asp.father != nil {
 		deltaX := int(math.Abs(float64(asp.father.X - asp.X)))
 		deltaY := int(math.Abs(float64(asp.father.Y - asp.Y)))
-		if deltaX == 1 && deltaY == 0 {
-			asp.f = asp.father.f + 10
-		} else if deltaX == 0 && deltaY == 1 {
-			asp.f = asp.father.f + 10
+		// 只允许上下左右和对角线移动
+		if (deltaX == 1 && deltaY == 0) || (deltaX == 0 && deltaY == 1) {
+			g = asp.father.f - int(math.Abs(float64(end.X-asp.father.X))+math.Abs(float64(end.Y-asp.father.Y)))*10 + 10
 		} else if deltaX == 1 && deltaY == 1 {
-			asp.f = asp.father.f + 14
+			g = asp.father.f - int(math.Abs(float64(end.X-asp.father.X))+math.Abs(float64(end.Y-asp.father.Y)))*10 + 14
 		} else {
-			//panic("father node is invalid!")
-			asp.f = math.MaxInt
+			// 无效的父节点位置，使用曼哈顿距离作为备选
+			g = int(math.Abs(float64(end.X-asp.X))+math.Abs(float64(end.Y-asp.Y))) * 10
 		}
+	} else {
+		// 起点g值为0
+		g = 0
 	}
 	//h
-	asp.f += int(math.Abs(float64(end.X-asp.X))+math.Abs(float64(end.Y-asp.Y))) * 10
+	h := int(math.Abs(float64(end.X-asp.X))+math.Abs(float64(end.Y-asp.Y))) * 10
+	
+	//f = g + h
+	asp.f = g + h
 
 	return asp.f
 }

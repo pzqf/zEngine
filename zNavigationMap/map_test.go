@@ -12,31 +12,30 @@ import (
 )
 
 func StringToMap(charMap []string) *NavigationMap {
-	grids := make([][]Grid, len(charMap))
-	maxX := len(grids)
+	maxX := len(charMap)
 	maxY := 0
-	for x, row := range charMap {
+
+	// 计算maxY
+	for _, row := range charMap {
 		cols := strings.Split(row, " ")
-		grids[x] = make([]Grid, len(cols))
-		if maxY < len(cols) {
+		if len(cols) > maxY {
 			maxY = len(cols)
 		}
-		for y, view := range cols {
-			grids[x][y] = Grid{x, y, 0}
-			if view != "-" {
-				n, _ := zDataConv.String2Float64(view)
-				grids[x][y].z = n
-
-			}
-		} // end of cols
-	} // end of row
+	}
 
 	m := NewNavigationMap(maxX, maxY, 1)
-	for _, x := range grids {
-		for _, v := range x {
-			m.AddGrid(v)
-		}
-	}
+
+	for x, row := range charMap {
+		cols := strings.Split(row, " ")
+		for y, view := range cols {
+			grid := Grid{X: x, Y: y, Pos: Vector3d{Z: 0}}
+			if view != "-" {
+				n, _ := zDataConv.String2Float64(view)
+				grid.Pos.Z = n
+			}
+			m.AddGrid(grid)
+		} // end of cols
+	} // end of row
 
 	return &m
 }
@@ -57,11 +56,11 @@ func PrintMap(m *NavigationMap, road []*Grid) {
 					goto NEXT
 				}
 			}
-			if m.grids[x][y].z > 0 {
-				if m.grids[x][y].z > 9 {
+			if m.grids[x][y].Pos.Z > 0 {
+				if m.grids[x][y].Pos.Z > 9 {
 					fmt.Print(" " + zColor.LightRed("X"))
 				} else {
-					fmt.Print(" " + zColor.LightRed(zDataConv.Float642String(m.grids[x][y].z)))
+					fmt.Print(" " + zColor.LightRed(zDataConv.Float642String(m.grids[x][y].Pos.Z)))
 				}
 
 			} else {
@@ -73,7 +72,7 @@ func PrintMap(m *NavigationMap, road []*Grid) {
 	}
 }
 
-func Test(t *testing.T) {
+func TestAStar(t *testing.T) {
 	strMap := []string{
 		"- - - - - - - - - - - - - - - - - - - - - - - - - - -",
 		"5 5 5 5 5 5 5 5 5 5 5 - 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5",
@@ -100,11 +99,11 @@ func Test(t *testing.T) {
 	m := StringToMap(strMap)
 	//PrintMap(m, nil)
 
-	road, err := FindPathByAStar(Grid{0, 0, 0}, Grid{18, 14, 0}, m)
+	road, err := FindPathByAStar(Grid{X: 0, Y: 0, Pos: Vector3d{}}, Grid{X: 18, Y: 14, Pos: Vector3d{}}, m)
 	if err != nil {
-		fmt.Println(err)
+		t.Logf("Error finding path: %v", err)
 		return
 	}
 	PrintMap(m, road)
-	fmt.Println("cost:", time.Now().Sub(begin).String())
+	t.Logf("cost: %v", time.Now().Sub(begin).String())
 }

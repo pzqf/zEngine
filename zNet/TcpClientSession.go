@@ -141,7 +141,7 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
+	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
 	if netPacket.DataSize > s.cli.maxPacketDataSize {

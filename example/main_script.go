@@ -10,10 +10,11 @@ import (
 
 func main() {
 
-	scriptFile := `.\zScript\test.graphml`
+	scriptFile := `..\zScript\test.graphml`
 
 	err := zScript.LoadScriptFile(scriptFile)
 	if err != nil {
+		fmt.Println("Failed to load script file:", err)
 		return
 	}
 
@@ -30,6 +31,7 @@ func main() {
 	holder := zScript.ScriptHolder{}
 	err = holder.BindScript(scriptFile)
 	if err != nil {
+		fmt.Println("Failed to bind script:", err)
 		return
 	}
 

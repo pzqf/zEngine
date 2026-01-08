@@ -14,7 +14,7 @@ import (
 type TcpServer struct {
 	clientSIDAtomic  SessionIdType
 	listener         *net.TCPListener
-	clientSessionMap zMap.Map
+	clientSessionMap *zMap.Map
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc

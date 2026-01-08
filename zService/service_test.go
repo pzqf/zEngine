@@ -33,7 +33,7 @@ func (ts *TestService) Serve() {
 }
 
 func Test(t *testing.T) {
-	sm := ServiceManager{}
+	sm := NewServiceManager()
 	ts := NewTestService("test_server")
 	if err := sm.AddService(ts); err != nil {
 		fmt.Println("add service TestService failed ", err)

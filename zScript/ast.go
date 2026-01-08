@@ -26,16 +26,43 @@ func astParser(str string) *ast.ExprStmt {
 	fSet := token.NewFileSet()
 	f, err := parser.ParseFile(fSet, "", src, 0)
 	if err != nil {
-		fmt.Printf("err = %s", err)
+		log.Printf("Parse error: %s", err)
+		return nil
 	}
 
-	_ = ast.Print(fSet, f.Decls[0].(*ast.FuncDecl).Body.List[0])
+	if f == nil || len(f.Decls) == 0 {
+		log.Println("Parse result is nil or empty")
+		return nil
+	}
 
-	return f.Decls[0].(*ast.FuncDecl).Body.List[0].(*ast.ExprStmt)
+	funcDecl, ok := f.Decls[0].(*ast.FuncDecl)
+	if !ok {
+		log.Println("Failed to get FuncDecl")
+		return nil
+	}
+
+	if funcDecl.Body == nil || len(funcDecl.Body.List) == 0 {
+		log.Println("FuncDecl body is nil or empty")
+		return nil
+	}
+
+	exprStmt, ok := funcDecl.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		log.Println("Failed to get ExprStmt")
+		return nil
+	}
+
+	_ = ast.Print(fSet, exprStmt)
+
+	return exprStmt
 }
 
 func expressionEval(holder *ScriptHolder, e interface{}) interface{} {
-	switch e.(type) {
+	if e == nil {
+		log.Println("expressionEval: e is nil")
+		return nil
+	}
+		switch e.(type) {
 	case *ast.Ident:
 		t := e.(*ast.Ident)
 		if t.Name == "true" {
@@ -55,42 +82,72 @@ func expressionEval(holder *ScriptHolder, e interface{}) interface{} {
 			v, _ := strconv.ParseFloat(lit.Value, 64)
 			return v
 		case token.CHAR:
-			return lit.Value[0]
+			if len(lit.Value) > 0 {
+				return lit.Value[0]
+			} else {
+				log.Println("Empty char value")
+				return 0
+			}
 		default:
 			log.Println(fmt.Sprintf("This kind of operation:%s is not supported, in *ast.BasicLit", reflect.TypeOf(lit).String()))
 		}
 	case *ast.CompositeLit:
 		log.Println("This kind of CompositeLit is not supported")
 	case *ast.ParenExpr:
-		return expressionEval(holder, e.(*ast.ParenExpr).X)
-	case *ast.CallExpr:
-		call := e.(*ast.CallExpr)
-		funcName := call.Fun.(*ast.Ident).Name
-		var funArgList []interface{}
-		for i := 0; i < len(call.Args); i++ {
-			funArgList = append(funArgList, expressionEval(holder, call.Args[i]))
+		if parenExpr, ok := e.(*ast.ParenExpr); ok {
+			return expressionEval(holder, parenExpr.X)
+		} else {
+			log.Println("Failed to cast to *ast.ParenExpr")
+			return nil
 		}
-		return functionCall(holder, funcName, funArgList)
-	case *ast.UnaryExpr:
-		ue := e.(*ast.UnaryExpr)
-		if ue.Op == token.NOT {
-			ret := expressionEval(holder, ue.X)
-			if reflect.TypeOf(ret).Name() == "bool" {
-				return !ret.(bool)
+	case *ast.CallExpr:
+		if callExpr, ok := e.(*ast.CallExpr); ok {
+			if funcIdent, ok := callExpr.Fun.(*ast.Ident); ok {
+				funcName := funcIdent.Name
+				var funArgList []interface{}
+				for i := 0; i < len(callExpr.Args); i++ {
+					funArgList = append(funArgList, expressionEval(holder, callExpr.Args[i]))
+				}
+				return functionCall(holder, funcName, funArgList)
 			} else {
-				log.Println("This kind of unary operation is not supported")
+				log.Println("Failed to get function name from CallExpr")
+				return nil
 			}
 		} else {
-			log.Println("This kind of unary operation is not supported," + ue.Op.String())
+			log.Println("Failed to cast to *ast.CallExpr")
+			return nil
+		}
+	case *ast.UnaryExpr:
+		if ue, ok := e.(*ast.UnaryExpr); ok {
+			if ue.Op == token.NOT {
+				ret := expressionEval(holder, ue.X)
+				if ret != nil && reflect.TypeOf(ret).Name() == "bool" {
+					return !ret.(bool)
+				} else {
+					log.Println("This kind of unary operation is not supported")
+				}
+			} else {
+				log.Println("This kind of unary operation is not supported," + ue.Op.String())
+			}
+		} else {
+			log.Println("Failed to cast to *ast.UnaryExpr")
 		}
 	case *ast.BinaryExpr:
-		be := e.(*ast.BinaryExpr)
-		x := expressionEval(holder, be.X)
-		y := expressionEval(holder, be.Y)
-		return binaryExprEval(x, y, be.Op)
+		if be, ok := e.(*ast.BinaryExpr); ok {
+			x := expressionEval(holder, be.X)
+			y := expressionEval(holder, be.Y)
+			return binaryExprEval(x, y, be.Op)
+		} else {
+			log.Println("Failed to cast to *ast.BinaryExpr")
+			return nil
+		}
 	case *ast.ExprStmt:
-		es := e.(*ast.ExprStmt)
-		return expressionEval(holder, es.X)
+		if es, ok := e.(*ast.ExprStmt); ok {
+			return expressionEval(holder, es.X)
+		} else {
+			log.Println("Failed to cast to *ast.ExprStmt")
+			return nil
+		}
 	default:
 		log.Println(fmt.Sprintf("This kind of operation:%s is not supported", reflect.TypeOf(e).String()))
 
@@ -112,6 +169,12 @@ func binaryExprEval(x, y interface{}, op token.Token) interface{} {
 	//fmt.Println(x)
 	//fmt.Println(y)
 	//fmt.Println(op)
+
+	// 检查x或y是否为nil
+	if x == nil || y == nil {
+		log.Println("binaryExprEval: x or y is nil")
+		return nil
+	}
 
 	errInfo := fmt.Sprintf("invalid operation: x %s y (mismatched types %s and %s)", op.String(), reflect.TypeOf(x).String(), reflect.TypeOf(y).String())
 

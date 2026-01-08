@@ -10,12 +10,26 @@ type MyObject struct {
 	Name string
 }
 
+func (obj *MyObject) Init() error {
+	return nil
+}
+
+func (obj *MyObject) Close() error {
+	return nil
+}
+
+func (obj *MyObject) Serve() {
+	// Do nothing for test
+}
+
 type MyObjectMgr struct {
 	ObjectManager
 }
 
 func Test(t *testing.T) {
-	mgr := MyObjectMgr{}
+	mgr := MyObjectMgr{
+		ObjectManager: *NewObjectManager(),
+	}
 	obj := &MyObject{
 		Name: "abc",
 	}

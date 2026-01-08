@@ -7,14 +7,18 @@ import (
 )
 
 type Service interface {
-	zObject.Object
-	Init() error
-	Close() error
-	Serve()
+	zObject.ManagedObject
 }
 
 type ServiceManager struct {
 	zObject.ObjectManager
+}
+
+// NewServiceManager 创建一个新的服务管理器
+func NewServiceManager() *ServiceManager {
+	return &ServiceManager{
+		ObjectManager: *zObject.NewObjectManager(),
+	}
 }
 
 func (sm *ServiceManager) InitServices() {
@@ -29,15 +33,19 @@ func (sm *ServiceManager) InitServices() {
 
 func (sm *ServiceManager) CloseServices() {
 	sm.ObjectsRange(func(key, value interface{}) bool {
-		_ = value.(Service).Close()
+		err := value.(Service).Close()
+		if err != nil {
+			panic(err)
+		}
 		return true
 	})
-	sm.ClearAllObject()
 }
 
 func (sm *ServiceManager) ServeServices() {
 	sm.ObjectsRange(func(key, value interface{}) bool {
-		value.(Service).Serve()
+		go func(s Service) {
+			s.Serve()
+		}(value.(Service))
 		return true
 	})
 }

@@ -210,7 +210,7 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 		netPacket.Data = data
 	}
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.ProtoId <= 0 && netPacket.DataSize < 0 {
+	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
 	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
