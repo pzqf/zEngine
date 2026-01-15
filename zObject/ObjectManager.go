@@ -15,13 +15,13 @@ type ManagedObject interface {
 }
 
 type ObjectManager struct {
-	objects zMap.Map
+	objects *zMap.Map
 }
 
 // NewObjectManager 创建一个新的对象管理器
 func NewObjectManager() *ObjectManager {
 	return &ObjectManager{
-		objects: *zMap.NewMap(),
+		objects: zMap.NewMap(),
 	}
 }
 
