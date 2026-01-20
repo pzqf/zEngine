@@ -10,7 +10,7 @@ import (
 var gl *zap.Logger
 
 func InitLogger(cfg *Config, options ...zap.Option) error {
-	options = append(options, zap.AddCallerSkip(1))
+	options = append(options, zap.AddCallerSkip(0))
 	var err error
 	gl, err = NewLogger(cfg, options...)
 	if err != nil {

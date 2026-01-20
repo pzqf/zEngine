@@ -168,7 +168,7 @@ func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 	for {
 		select {
 		case <-time.After(30 * time.Second):
-			if time.Now().Sub(s.lastHeartBeat).Seconds() >= hbd {
+			if time.Since(s.lastHeartBeat).Seconds() >= hbd {
 				_ = s.Send(HeartbeatProtoId, nil)
 			}
 		case <-ctx.Done():

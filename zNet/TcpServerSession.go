@@ -242,9 +242,9 @@ func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 	for {
 		select {
 		case <-time.After(duration):
-			if time.Now().Sub(s.lastHeartBeat) > breakDuration {
+			if time.Since(s.lastHeartBeat) > breakDuration {
 				s.ctxCancel()
-				break
+				return
 			}
 		case <-ctx.Done():
 			return
