@@ -11,13 +11,14 @@ import (
 //var maxPacketDataSize = int32(DefaultPacketDataSize)
 
 const HeartbeatProtoId = int32(0)
-const NetPacketHeadSize = 12
+const NetPacketHeadSize = 16
 
 type NetPacket struct {
-	ProtoId  int32
-	DataSize int32
-	Version  int32
-	Data     []byte
+	ProtoId      int32
+	DataSize     int32
+	Version      int32
+	IsCompressed bool
+	Data         []byte
 }
 
 func (p *NetPacket) UnmarshalHead(data []byte) error {
@@ -31,6 +32,9 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 	if err := binary.Read(buf, binary.LittleEndian, &p.DataSize); err != nil {
 		return errors.New("NetPacket head field DataSize error:" + err.Error())
 	}
+	if err := binary.Read(buf, binary.LittleEndian, &p.IsCompressed); err != nil {
+		return errors.New("NetPacket head field IsCompressed error:" + err.Error())
+	}
 	return nil
 }
 
@@ -39,6 +43,7 @@ func (p *NetPacket) Marshal() []byte {
 	_ = binary.Write(sendBuf, binary.LittleEndian, p.ProtoId)
 	_ = binary.Write(sendBuf, binary.LittleEndian, p.Version)
 	_ = binary.Write(sendBuf, binary.LittleEndian, p.DataSize)
+	_ = binary.Write(sendBuf, binary.LittleEndian, p.IsCompressed)
 	if p.Data != nil {
 		_ = binary.Write(sendBuf, binary.LittleEndian, p.Data)
 	}

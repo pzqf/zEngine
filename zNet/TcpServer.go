@@ -2,11 +2,12 @@ package zNet
 
 import (
 	"crypto/rsa"
-	"github.com/panjf2000/ants"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/panjf2000/ants"
 
 	"github.com/pzqf/zUtil/zMap"
 )
@@ -23,6 +24,7 @@ type TcpServer struct {
 	dispatcher       HandlerFun
 	workerPool       *ants.Pool
 	workerPoolSize   int
+	logger           Logger
 }
 
 func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
@@ -56,28 +58,40 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 func (svr *TcpServer) Start() error {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", svr.config.ListenAddress)
 	if err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Failed to resolve TCP address: %v", err)
+		}
 		return err
 	}
 	listener, err := net.ListenTCP("tcp4", tcpAddr)
 	if err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Failed to listen TCP: %v", err)
+		}
 		return err
 	}
 	svr.listener = listener
 
-	//svr.logger.Println(fmt.Sprintf("Tcp server listing on %s", svr.config.ListenAddress))
+	if svr.logger != nil {
+		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
+	}
 
 	go func() {
 		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
 			if svr.config.MaxClientCount > 0 && int(svr.clientSessionMap.Len()) >= svr.config.MaxClientCount {
-				//LogPrint(fmt.Sprintf("Maximum connections exceeded, max:%d", svr.config.MaxClientCount))
+				if svr.logger != nil {
+					svr.logger.Warn("Maximum connections exceeded, max:%d", svr.config.MaxClientCount)
+				}
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 			conn, err := svr.listener.AcceptTCP()
 			if err != nil {
-				//LogPrint(err)
+				if svr.logger != nil {
+					svr.logger.Error("Failed to accept TCP connection: %v", err)
+				}
 				break
 			}
 
@@ -89,9 +103,15 @@ func (svr *TcpServer) Start() error {
 }
 
 func (svr *TcpServer) Close() {
-	//LogPrint("Close tcp server, session count ", svr.clientSessionMap.Len())
+	if svr.logger != nil {
+		svr.logger.Info("Close tcp server, session count: %d", svr.clientSessionMap.Len())
+	}
 
-	_ = svr.listener.Close()
+	if err := svr.listener.Close(); err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Failed to close listener: %v", err)
+		}
+	}
 
 	svr.clientSessionMap.Range(func(key, value interface{}) bool {
 		session := value.(*TcpServerSession)
@@ -101,6 +121,10 @@ func (svr *TcpServer) Close() {
 	})
 
 	svr.wg.Wait()
+
+	if svr.logger != nil {
+		svr.logger.Info("Tcp server closed")
+	}
 }
 
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
@@ -165,7 +189,7 @@ func (svr *TcpServer) GetAllSession() []*TcpServerSession {
 	return sessionList
 }
 
-func (svr *TcpServer) RegisterHandler(fun HandlerFun, n int) {
+func (svr *TcpServer) RegisterDispatcher(fun HandlerFun, workerPoolSize int) {
 	svr.dispatcher = fun
-	svr.workerPoolSize = n
+	svr.workerPoolSize = workerPoolSize
 }

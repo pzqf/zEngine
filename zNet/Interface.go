@@ -1,5 +1,10 @@
 package zNet
 
+import "github.com/pzqf/zEngine/zLog"
+
+// Logger 日志接口
+type Logger zLog.Logger
+
 type Session interface {
 	Start()
 	Close()

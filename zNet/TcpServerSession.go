@@ -76,18 +76,24 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 		headBuf := make([]byte, NetPacketHeadSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
-			//LogPrint(fmt.Sprintf("Client conn read error, error:%v, sid:%d, closed", err, s.sid))
+			if s.svr.logger != nil {
+				s.svr.logger.Error("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+			}
 			break
 		}
 
 		if n != NetPacketHeadSize {
-			//LogPrint(fmt.Sprintf("Client conn read error, head size %d, sid:%d, closed", n, s.sid))
+			if s.svr.logger != nil {
+				s.svr.logger.Error("Client conn read error, head size %d, sid:%d, closed", n, s.sid)
+			}
 			break
 		}
 
 		netPacket := NetPacket{}
 		if err = netPacket.UnmarshalHead(headBuf); err != nil {
-			//LogPrint("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+			if s.svr.logger != nil {
+				s.svr.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
+			}
 			break
 		}
 
@@ -95,20 +101,26 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
 			if err != nil {
-				//LogPrint(fmt.Sprintf("Client conn read data error,%v,  sid:%d, closed", err, s.sid))
+				if s.svr.logger != nil {
+					s.svr.logger.Error("Client conn read data error:%v, sid:%d, closed", err, s.sid)
+				}
 				break
 			}
 
 			if netPacket.DataSize != int32(n) {
-				//LogPrint(fmt.Sprintf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-				//	netPacket.ProtoId, netPacket.DataSize, n))
+				if s.svr.logger != nil {
+					s.svr.logger.Error("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+						netPacket.ProtoId, netPacket.DataSize, n)
+				}
 				break
 			}
 		}
 
 		if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-			//LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-			//	netPacket.ProtoId, netPacket.DataSize, maxPacketDataSize))
+			if s.svr.logger != nil {
+				s.svr.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+					netPacket.ProtoId, netPacket.DataSize, s.svr.config.MaxPacketDataSize)
+			}
 			continue
 		}
 
@@ -136,23 +148,26 @@ func (s *TcpServerSession) process(ctx context.Context) {
 				err := s.svr.workerPool.Submit(func() {
 					err := s.svr.dispatcher(s, receivePacket)
 					if err != nil {
+						if s.svr.logger != nil {
+							s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
+						}
 						return
 					}
 				})
 				if err != nil {
+					if s.svr.logger != nil {
+						s.svr.logger.Error("Failed to submit task to worker pool: %v", err)
+					}
 					break
 				}
-				//go func() {
-				//	err := s.svr.dispatcher(s, receivePacket)
-				//	if err != nil {
-				//	}
-				//}()
 			}
 
 		case sendPacket := <-s.sendChan:
 			_, err := s.send(sendPacket)
 			if err != nil {
-				//LogPrint(fmt.Sprintf("Send NetPacket error,%v, ProtoId:%d", err, sendPacket.ProtoId))
+				if s.svr.logger != nil {
+					s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+				}
 			}
 		case <-ctx.Done():
 			for {
@@ -162,10 +177,16 @@ func (s *TcpServerSession) process(ctx context.Context) {
 						err := s.svr.workerPool.Submit(func() {
 							err := s.svr.dispatcher(s, receivePacket)
 							if err != nil {
+								if s.svr.logger != nil {
+									s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
+								}
 								return
 							}
 						})
 						if err != nil {
+							if s.svr.logger != nil {
+								s.svr.logger.Error("Failed to submit task to worker pool: %v", err)
+							}
 							break
 						}
 					}
@@ -179,7 +200,9 @@ func (s *TcpServerSession) process(ctx context.Context) {
 					sendPacket := <-s.sendChan
 					_, err := s.send(sendPacket)
 					if err != nil {
-						//LogPrint(err)
+						if s.svr.logger != nil {
+							s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+						}
 						break
 					}
 					continue
@@ -194,7 +217,11 @@ func (s *TcpServerSession) process(ctx context.Context) {
 		}
 	}
 
-	_ = s.conn.Close()
+	if err := s.conn.Close(); err != nil {
+		if s.svr.logger != nil {
+			s.svr.logger.Error("Failed to close connection: %v, sid: %d", err, s.sid)
+		}
+	}
 	if s.onClose != nil {
 		s.onClose(s)
 	}
@@ -211,11 +238,18 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	}
 	netPacket.DataSize = int32(len(netPacket.Data))
 	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
+		if s.svr.logger != nil {
+			s.svr.logger.Error("Send packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
+		}
 		return errors.New("send packet illegal")
 	}
 	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-		return errors.New(fmt.Sprintf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId))
+		if s.svr.logger != nil {
+			s.svr.logger.Error("Send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
+				netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
+		}
+		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
+			netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
 	}
 
 	s.sendChan <- &netPacket
@@ -225,6 +259,9 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
 	n, err := s.conn.Write(netPacket.Marshal())
 	if err != nil {
+		if s.svr.logger != nil {
+			s.svr.logger.Error("Failed to write to connection: %v, ProtoId: %d", err, netPacket.ProtoId)
+		}
 		return 0, err
 	}
 	return n, nil

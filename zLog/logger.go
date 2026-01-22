@@ -9,6 +9,15 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// Logger 标准日志接口
+type Logger interface {
+	Debug(format string, args ...interface{})
+	Info(format string, args ...interface{})
+	Warn(format string, args ...interface{})
+	Error(format string, args ...interface{})
+	Fatal(format string, args ...interface{})
+}
+
 type Config struct {
 	Level    int    `toml:"level" json:"level"`
 	Console  bool   `toml:"console" json:"console"`
@@ -26,6 +35,46 @@ const (
 	PanicLevel
 	FatalLevel
 )
+
+// ZapLoggerAdapter 适配zap.Logger到标准Logger接口
+type ZapLoggerAdapter struct {
+	logger *zap.Logger
+}
+
+// NewZapLoggerAdapter 创建一个新的ZapLoggerAdapter
+func NewZapLoggerAdapter(logger *zap.Logger) *ZapLoggerAdapter {
+	return &ZapLoggerAdapter{logger: logger}
+}
+
+// Debug 记录调试级别的日志
+func (l *ZapLoggerAdapter) Debug(format string, args ...interface{}) {
+	l.logger.Sugar().Debugf(format, args...)
+}
+
+// Info 记录信息级别的日志
+func (l *ZapLoggerAdapter) Info(format string, args ...interface{}) {
+	l.logger.Sugar().Infof(format, args...)
+}
+
+// Warn 记录警告级别的日志
+func (l *ZapLoggerAdapter) Warn(format string, args ...interface{}) {
+	l.logger.Sugar().Warnf(format, args...)
+}
+
+// Error 记录错误级别的日志
+func (l *ZapLoggerAdapter) Error(format string, args ...interface{}) {
+	l.logger.Sugar().Errorf(format, args...)
+}
+
+// Fatal 记录致命级别的日志
+func (l *ZapLoggerAdapter) Fatal(format string, args ...interface{}) {
+	l.logger.Sugar().Fatalf(format, args...)
+}
+
+// GetStandardLogger 获取标准日志接口实例
+func GetStandardLogger() Logger {
+	return NewZapLoggerAdapter(GetLogger())
+}
 
 func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 	level := zap.NewAtomicLevel()

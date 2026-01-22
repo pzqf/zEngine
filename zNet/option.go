@@ -127,3 +127,16 @@ func WithWorkerPoolSize(size int) Options {
 		}
 	}
 }
+
+func WithLogger(logger Logger) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).logger = logger
+			//case "*zNet.UdpServer":
+			//	svr.(*UdpServer).logger = logger
+			//case "*zNet.WebSocketServer":
+			//	svr.(*WebSocketServer).logger = logger
+		}
+	}
+}
