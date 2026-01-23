@@ -4,45 +4,43 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/pzqf/zUtil/zAes"
 )
 
-type TcpServerSession struct {
-	conn          *net.TCPConn
+type WebSocketServerSession struct {
+	conn          *websocket.Conn
 	sid           SessionIdType
 	sendChan      chan *NetPacket
 	receiveChan   chan *NetPacket
 	wg            sync.WaitGroup
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
-	onClose       TcpCloseCallBackFunc
+	onClose       WebSocketCloseCallBackFunc
 	aesKey        []byte
-	svr           *TcpServer
+	svr           *WebSocketServer
 	obj           interface{}
 }
 
-type TcpCloseCallBackFunc func(c *TcpServerSession)
+type WebSocketCloseCallBackFunc func(c *WebSocketServerSession)
 
-func NewTcpServerSession(svr *TcpServer, conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) *TcpServerSession {
-	newSession := TcpServerSession{
+func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid SessionIdType, closeCallBack WebSocketCloseCallBackFunc) *WebSocketServerSession {
+	newSession := WebSocketServerSession{
 		conn:          conn,
 		sid:           sid,
 		sendChan:      make(chan *NetPacket, svr.config.ChanSize),
 		receiveChan:   make(chan *NetPacket, svr.config.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       closeCallBack,
-		aesKey:        aesKey,
 		svr:           svr,
 	}
 	return &newSession
 }
 
-func (s *TcpServerSession) Start() {
+func (s *WebSocketServerSession) Start() {
 	if s.conn == nil {
 		return
 	}
@@ -54,15 +52,14 @@ func (s *TcpServerSession) Start() {
 	if s.svr.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
-	return
 }
 
-func (s *TcpServerSession) Close() {
+func (s *WebSocketServerSession) Close() {
 	s.ctxCancel()
 	s.wg.Wait()
 }
 
-func (s *TcpServerSession) receive(ctx context.Context) {
+func (s *WebSocketServerSession) receive(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
@@ -77,83 +74,49 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 		}
 	}()
 
-	headBuf := make([]byte, NetPacketHeadSize)
-	clientIP := s.conn.RemoteAddr().(*net.TCPAddr).IP.String()
 	for {
 		if ctx.Err() != nil {
 			break
 		}
 
-		n, err := io.ReadFull(s.conn, headBuf)
+		_, data, err := s.conn.ReadMessage()
 		if err != nil {
 			if s.svr.logger != nil {
-				s.svr.logger.Error("Client conn read error, error:%v, sid:%d, closed", err, s.sid)
+				s.svr.logger.Error("WebSocket read error: %v, sid:%d, closed", err, s.sid)
 			}
 			break
 		}
 
-		if n != NetPacketHeadSize {
+		// 解析数据包
+		if len(data) < NetPacketHeadSize {
 			if s.svr.logger != nil {
-				s.svr.logger.Error("Client conn read error, head size %d, sid:%d, closed", n, s.sid)
+				s.svr.logger.Error("WebSocket packet too small: %d bytes", len(data))
 			}
-			break
-		}
-
-		// 检查流量是否超过限制
-		if !s.svr.ddosProtection.AllowTraffic(clientIP, int64(n)) {
-			if s.svr.logger != nil {
-				s.svr.logger.Warn("Traffic limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
-			}
-			break
+			continue
 		}
 
 		netPacket := NetPacket{}
-		if err = netPacket.UnmarshalHead(headBuf); err != nil {
+		if err := netPacket.UnmarshalHead(data[:NetPacketHeadSize]); err != nil {
 			if s.svr.logger != nil {
-				s.svr.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
+				s.svr.logger.Error("WebSocket packet unmarshal head error: %v", err)
 			}
-			break
+			continue
 		}
 
 		if netPacket.DataSize > 0 {
-			netPacket.Data = make([]byte, int(netPacket.DataSize))
-			n, err = io.ReadFull(s.conn, netPacket.Data)
-			if err != nil {
+			dataSize := int(netPacket.DataSize)
+			if len(data) < NetPacketHeadSize+dataSize {
 				if s.svr.logger != nil {
-					s.svr.logger.Error("Client conn read data error:%v, sid:%d, closed", err, s.sid)
+					s.svr.logger.Error("WebSocket packet data size mismatch: expected %d, got %d", dataSize, len(data)-NetPacketHeadSize)
 				}
-				break
+				continue
 			}
-
-			if netPacket.DataSize != int32(n) {
-				if s.svr.logger != nil {
-					s.svr.logger.Error("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-						netPacket.ProtoId, netPacket.DataSize, n)
-				}
-				break
-			}
-
-			// 检查流量是否超过限制
-			if !s.svr.ddosProtection.AllowTraffic(clientIP, int64(n)) {
-				if s.svr.logger != nil {
-					s.svr.logger.Warn("Traffic limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
-				}
-				break
-			}
-		}
-
-		// 检查数据包频率是否超过限制
-		if !s.svr.ddosProtection.AllowPacket(clientIP) {
-			if s.svr.logger != nil {
-				s.svr.logger.Warn("Packet rate limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
-			}
-			break
+			netPacket.Data = data[NetPacketHeadSize : NetPacketHeadSize+dataSize]
 		}
 
 		if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
 			if s.svr.logger != nil {
-				s.svr.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-					netPacket.ProtoId, netPacket.DataSize, s.svr.config.MaxPacketDataSize)
+				s.svr.logger.Warn("WebSocket packet data size over max size: %d, max: %d", netPacket.DataSize, s.svr.config.MaxPacketDataSize)
 			}
 			continue
 		}
@@ -167,7 +130,7 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 	s.ctxCancel()
 }
 
-func (s *TcpServerSession) process(ctx context.Context) {
+func (s *WebSocketServerSession) process(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
@@ -209,7 +172,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			_, err := s.send(sendPacket)
 			if err != nil {
 				if s.svr.logger != nil {
-					s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+					s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.ProtoId)
 				}
 			}
 		case <-ctx.Done():
@@ -244,7 +207,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 					_, err := s.send(sendPacket)
 					if err != nil {
 						if s.svr.logger != nil {
-							s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+							s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.ProtoId)
 						}
 						break
 					}
@@ -262,7 +225,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 
 	if err := s.conn.Close(); err != nil {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Failed to close connection: %v, sid: %d", err, s.sid)
+			s.svr.logger.Error("Failed to close WebSocket connection: %v, sid: %d", err, s.sid)
 		}
 	}
 	if s.onClose != nil {
@@ -270,7 +233,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 	}
 }
 
-func (s *TcpServerSession) Send(protoId int32, data []byte) error {
+func (s *WebSocketServerSession) Send(protoId int32, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
@@ -282,16 +245,16 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	netPacket.DataSize = int32(len(netPacket.Data))
 	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Send packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
+			s.svr.logger.Error("Send WebSocket packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
 		}
-		return errors.New("send packet illegal")
+		return errors.New("send WebSocket packet illegal")
 	}
 	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
+			s.svr.logger.Error("Send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
 				netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
 		}
-		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
+		return fmt.Errorf("send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
 			netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
 	}
 
@@ -299,22 +262,23 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	return nil
 }
 
-func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
-	n, err := s.conn.Write(netPacket.Marshal())
+func (s *WebSocketServerSession) send(netPacket *NetPacket) (int, error) {
+	data := netPacket.Marshal()
+	err := s.conn.WriteMessage(websocket.BinaryMessage, data)
 	if err != nil {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Failed to write to connection: %v, ProtoId: %d", err, netPacket.ProtoId)
+			s.svr.logger.Error("Failed to write to WebSocket: %v, ProtoId: %d", err, netPacket.ProtoId)
 		}
 		return 0, err
 	}
-	return n, nil
+	return len(data), nil
 }
 
-func (s *TcpServerSession) heartbeatUpdate() {
+func (s *WebSocketServerSession) heartbeatUpdate() {
 	s.lastHeartBeat = time.Now()
 }
 
-func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
+func (s *WebSocketServerSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	duration := time.Second * time.Duration(s.svr.config.HeartbeatDuration)
@@ -332,14 +296,14 @@ func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 	}
 }
 
-func (s *TcpServerSession) GetSid() SessionIdType {
+func (s *WebSocketServerSession) GetSid() SessionIdType {
 	return s.sid
 }
 
-func (s *TcpServerSession) GetObj() interface{} {
+func (s *WebSocketServerSession) GetObj() interface{} {
 	return s.obj
 }
 
-func (s *TcpServerSession) SetObj(obj interface{}) {
+func (s *WebSocketServerSession) SetObj(obj interface{}) {
 	s.obj = obj
 }

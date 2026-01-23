@@ -2,6 +2,7 @@ package zLog
 
 import (
 	"os"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -46,6 +47,17 @@ func NewZapLoggerAdapter(logger *zap.Logger) *ZapLoggerAdapter {
 	return &ZapLoggerAdapter{logger: logger}
 }
 
+// LoggerManager 日志管理器
+type LoggerManager struct {
+	loggers      map[string]*zap.Logger
+	levelManager zap.AtomicLevel
+	mu           sync.RWMutex
+}
+
+// 全局日志管理器
+var loggerManager *LoggerManager
+var once sync.Once
+
 // Debug 记录调试级别的日志
 func (l *ZapLoggerAdapter) Debug(format string, args ...interface{}) {
 	l.logger.Sugar().Debugf(format, args...)
@@ -76,6 +88,56 @@ func GetStandardLogger() Logger {
 	return NewZapLoggerAdapter(GetLogger())
 }
 
+// InitLoggerManager 初始化日志管理器
+func InitLoggerManager() {
+	once.Do(func() {
+		loggerManager = &LoggerManager{
+			loggers:      make(map[string]*zap.Logger),
+			levelManager: zap.NewAtomicLevel(),
+		}
+	})
+}
+
+// GetLoggerManager 获取日志管理器实例
+func GetLoggerManager() *LoggerManager {
+	if loggerManager == nil {
+		InitLoggerManager()
+	}
+	return loggerManager
+}
+
+// GetLogger 获取指定名称的日志器
+func (lm *LoggerManager) GetLogger(name string) *zap.Logger {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	if logger, ok := lm.loggers[name]; ok {
+		return logger
+	}
+
+	// 如果不存在，返回默认日志器
+	return GetLogger()
+}
+
+// AddLogger 添加一个新的日志器
+func (lm *LoggerManager) AddLogger(name string, logger *zap.Logger) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	lm.loggers[name] = logger
+}
+
+// SetLevel 设置全局日志级别
+func (lm *LoggerManager) SetLevel(level int) {
+	lm.levelManager.SetLevel(zapcore.Level(level))
+}
+
+// GetLevel 获取当前全局日志级别
+func (lm *LoggerManager) GetLevel() int {
+	return int(lm.levelManager.Level())
+}
+
+// NewLogger 创建一个新的日志器
 func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 	level := zap.NewAtomicLevel()
 	level.SetLevel(zapcore.Level(cfg.Level))
@@ -93,7 +155,6 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 		encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 
 		consoleCore := zapcore.NewCore(zapcore.NewConsoleEncoder(encoderConfig), output, level)
-
 		cores = append(cores, consoleCore)
 	}
 
@@ -124,7 +185,28 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 	}
 
 	options = append(options, zap.AddCaller())
+	options = append(options, zap.AddCallerSkip(1))
+	options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))
+	options = append(options, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+		return zapcore.NewSamplerWithOptions(c, time.Second, 100, 10) // 每秒最多采样100条日志，超过后每10条采样1条
+	}))
+
 	core := zapcore.NewTee(cores...)
 
-	return zap.New(core, options...), nil
+	logger := zap.New(core, options...)
+
+	// 添加到日志管理器
+	GetLoggerManager().AddLogger("default", logger)
+
+	return logger, nil
+}
+
+// SetGlobalLogLevel 设置全局日志级别
+func SetGlobalLogLevel(level int) {
+	GetLoggerManager().SetLevel(level)
+}
+
+// GetGlobalLogLevel 获取当前全局日志级别
+func GetGlobalLogLevel() int {
+	return GetLoggerManager().GetLevel()
 }

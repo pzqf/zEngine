@@ -3,18 +3,16 @@ package zService
 import (
 	"fmt"
 	"testing"
-
-	"github.com/pzqf/zEngine/zObject"
 )
 
 type TestService struct {
-	zObject.BaseObject
+	BaseService
 	Name string
 }
 
 func NewTestService(serviceId interface{}) *TestService {
-	a := &TestService{}
-	a.SetId(serviceId)
+	bs := NewBaseService(serviceId)
+	a := &TestService{BaseService: *bs}
 	return a
 }
 

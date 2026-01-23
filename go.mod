@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/dennwc/graphml v0.0.0-20180609132439-6d40272e8e4b
+	github.com/gorilla/websocket v1.5.3
 	github.com/panjf2000/ants v1.3.0
 	github.com/pkg/profile v1.7.0
 	github.com/pzqf/zUtil v0.0.1
@@ -30,4 +31,5 @@ require (
 	google.golang.org/grpc v1.71.1 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )
+
 replace github.com/pzqf/zUtil => ../zUtil

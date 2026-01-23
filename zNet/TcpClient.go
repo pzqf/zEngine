@@ -12,6 +12,7 @@ type TcpClient struct {
 	dispatcher        HandlerFun
 	heartbeatDuration int
 	maxPacketDataSize int32
+	logger            Logger
 }
 
 func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string, heartbeatDuration int, maxPacketDataSize int32) error {

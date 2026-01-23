@@ -54,7 +54,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
-	defer Recover()
+	defer func() {
+		if err := recover(); err != nil {
+			if s.cli.logger != nil {
+				s.cli.logger.Error("process panic:%v, closed", err)
+			}
+		}
+	}()
 	for {
 		if ctx.Err() != nil {
 			break
@@ -71,18 +77,24 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 					continue
 				}
 			}
-			LogPrint(fmt.Sprintf("Client conn read error, error:%v, closed", err))
+			if s.cli.logger != nil {
+				s.cli.logger.Error("Client conn read error, error:%v, closed", err)
+			}
 			break
 		}
 
 		if n != NetPacketHeadSize {
-			LogPrint(fmt.Sprintf("Client conn read error, error:head size error %d, closed", n))
+			if s.cli.logger != nil {
+				s.cli.logger.Error("Client conn read error, error:head size error %d, closed", n)
+			}
 			break
 		}
 
 		netPacket := NetPacket{}
 		if err = netPacket.UnmarshalHead(headBuf); err != nil {
-			LogPrint("Receive NetPacket,Unmarshal head error", err, len(headBuf))
+			if s.cli.logger != nil {
+				s.cli.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
+			}
 			break
 		}
 
@@ -90,13 +102,17 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
 			if err != nil {
-				LogPrint(fmt.Sprintf("Client conn read data error,%v,  closed", err))
+				if s.cli.logger != nil {
+					s.cli.logger.Error("Client conn read data error:%v, closed", err)
+				}
 				break
 			}
 
 			if netPacket.DataSize != int32(n) {
-				LogPrint(fmt.Sprintf("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
-					netPacket.ProtoId, netPacket.DataSize, n))
+				if s.cli.logger != nil {
+					s.cli.logger.Error("Receive NetPacket, Data size error,protoid:%d, DataSize:%d, received:%d",
+						netPacket.ProtoId, netPacket.DataSize, n)
+				}
 				break
 			}
 		}
@@ -107,8 +123,10 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		}
 
 		if netPacket.DataSize > s.cli.maxPacketDataSize {
-			LogPrint(fmt.Sprintf("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-				netPacket.ProtoId, netPacket.DataSize, s.cli.maxPacketDataSize))
+			if s.cli.logger != nil {
+				s.cli.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
+					netPacket.ProtoId, netPacket.DataSize, s.cli.maxPacketDataSize)
+			}
 			continue
 		}
 
@@ -119,7 +137,9 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		go func() {
 			err = s.cli.dispatcher(s, &netPacket)
 			if err != nil {
-				LogPrint(fmt.Sprintf("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId))
+				if s.cli.logger != nil {
+					s.cli.logger.Error("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId)
+				}
 			}
 		}()
 

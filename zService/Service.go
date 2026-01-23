@@ -1,68 +1,71 @@
 package zService
 
 import (
-	"errors"
+	"sync"
 
 	"github.com/pzqf/zEngine/zObject"
 )
 
+// ServiceState 服务状态
+type ServiceState int
+
+const (
+	ServiceStateUnknown  ServiceState = 0
+	ServiceStateCreated  ServiceState = 1
+	ServiceStateInit     ServiceState = 2
+	ServiceStateRunning  ServiceState = 3
+	ServiceStateStopping ServiceState = 4
+	ServiceStateStopped  ServiceState = 5
+)
+
+// Service 服务接口
 type Service interface {
 	zObject.ManagedObject
+	GetState() ServiceState
+	SetState(state ServiceState)
 }
 
-type ServiceManager struct {
-	zObject.ObjectManager
+// BaseService 基础服务实现
+type BaseService struct {
+	zObject.BaseObject
+	state ServiceState
+	mu    sync.RWMutex
 }
 
-// NewServiceManager 创建一个新的服务管理器
-func NewServiceManager() *ServiceManager {
-	return &ServiceManager{
-		ObjectManager: *zObject.NewObjectManager(),
+// NewBaseService 创建基础服务实例
+func NewBaseService(id interface{}) *BaseService {
+	return &BaseService{
+		BaseObject: zObject.BaseObject{Id: id},
+		state:      ServiceStateCreated,
 	}
 }
 
-func (sm *ServiceManager) InitServices() {
-	sm.ObjectsRange(func(key, value interface{}) bool {
-		err := value.(Service).Init()
-		if err != nil {
-			panic(err)
-		}
-		return true
-	})
+// GetState 获取服务状态
+func (bs *BaseService) GetState() ServiceState {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+	return bs.state
 }
 
-func (sm *ServiceManager) CloseServices() {
-	sm.ObjectsRange(func(key, value interface{}) bool {
-		err := value.(Service).Close()
-		if err != nil {
-			panic(err)
-		}
-		return true
-	})
+// SetState 设置服务状态
+func (bs *BaseService) SetState(state ServiceState) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.state = state
 }
 
-func (sm *ServiceManager) ServeServices() {
-	sm.ObjectsRange(func(key, value interface{}) bool {
-		go func(s Service) {
-			s.Serve()
-		}(value.(Service))
-		return true
-	})
-}
-
-func (sm *ServiceManager) AddService(s Service) error {
-	if s.GetId() == nil {
-		return errors.New("service must had id")
-	}
-	_ = sm.AddObject(s.GetId(), s)
+// Init 初始化服务
+func (bs *BaseService) Init() error {
 	return nil
 }
 
-func (sm *ServiceManager) GetService(id interface{}) (Service, error) {
-	object, err := sm.GetObject(id)
-	if err != nil {
-		return nil, err
-	}
-
-	return object.(Service), nil
+// Close 关闭服务
+func (bs *BaseService) Close() error {
+	return nil
 }
+
+// Serve 运行服务
+func (bs *BaseService) Serve() {
+	// 空实现，子类可以重写
+}
+

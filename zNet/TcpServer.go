@@ -25,6 +25,8 @@ type TcpServer struct {
 	workerPool       *ants.Pool
 	workerPoolSize   int
 	logger           Logger
+	// 防DDoS相关
+	ddosProtection *DDoSProtection
 }
 
 func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
@@ -36,6 +38,8 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 		clientSIDAtomic:  10000,
 		clientSessionMap: zMap.NewMap(),
 		config:           cfg,
+		// 初始化防DDoS攻击机制
+		ddosProtection: NewDDoSProtection(),
 	}
 
 	for _, opt := range opts {
@@ -48,7 +52,11 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 
 	p, err := ants.NewPool(svr.workerPoolSize)
 	if err != nil {
-		panic(err)
+		if svr.logger != nil {
+			svr.logger.Error("Failed to create worker pool: %v", err)
+		}
+		// 即使worker pool创建失败，也返回服务器实例，让调用者决定如何处理
+		return svr
 	}
 	svr.workerPool = p
 
@@ -95,6 +103,18 @@ func (svr *TcpServer) Start() error {
 				break
 			}
 
+			// 防DDoS攻击检查
+			clientIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+
+			// 检查是否允许新连接
+			if !svr.ddosProtection.AllowConnection(clientIP) {
+				if svr.logger != nil {
+					svr.logger.Warn("Connection denied by DDoS protection: %s", clientIP)
+				}
+				conn.Close()
+				continue
+			}
+
 			go svr.AddSession(conn)
 		}
 	}()
@@ -129,33 +149,6 @@ func (svr *TcpServer) Close() {
 
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	var aesKey []byte
-	/*
-		if svr.privateKey != nil {
-			_, err := conn.Write([]byte("hello"))
-			if err != nil {
-				//LogPrint(err)
-				_ = conn.Close()
-				return
-			}
-
-			rsaBuf := make([]byte, 256)
-			_, _ = io.ReadFull(conn, rsaBuf)
-
-			aesKey, err = rsa.DecryptPKCS1v15(rand.Reader, svr.privateKey, rsaBuf)
-			if err != nil {
-				//LogPrint("Decrypt aes key failed", err)
-				_ = conn.Close()
-				return
-			}
-		} else {
-			_, err := conn.Write([]byte("noKey"))
-			if err != nil {
-				//LogPrint(err)
-				_ = conn.Close()
-				return
-			}
-		}
-	*/
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 	newSession := NewTcpServerSession(svr, conn, sid, svr.RemoveSession, aesKey)
 	svr.clientSessionMap.Store(sid, newSession)
