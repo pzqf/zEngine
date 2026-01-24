@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/panjf2000/ants"
-
 	"github.com/pzqf/zUtil/zMap"
 )
 
@@ -23,8 +21,6 @@ type HttpServer struct {
 	privateKey       *rsa.PrivateKey
 	config           *HttpConfig
 	dispatcher       HandlerFun
-	workerPool       *ants.Pool
-	workerPoolSize   int
 	logger           Logger
 	// 防DDoS相关
 	ddosProtection *DDoSProtection
@@ -43,20 +39,6 @@ func NewHttpServer(cfg *HttpConfig, opts ...Options) *HttpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
-
-	if svr.workerPoolSize <= 0 {
-		svr.workerPoolSize = DefaultWorkerPoolSize
-	}
-
-	p, err := ants.NewPool(svr.workerPoolSize)
-	if err != nil {
-		if svr.logger != nil {
-			svr.logger.Error("Failed to create worker pool: %v", err)
-		}
-		// 即使worker pool创建失败，也返回服务器实例，让调用者决定如何处理
-		return svr
-	}
-	svr.workerPool = p
 
 	// 注册默认的HTTP处理器
 	svr.mux.HandleFunc("/", svr.handleHTTP)
@@ -168,32 +150,23 @@ func (svr *HttpServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 处理请求
 	if svr.dispatcher != nil {
-		err := svr.workerPool.Submit(func() {
-			// 这里需要根据实际情况解析HTTP请求，提取ProtoId和Data
-			// 这里只是一个示例，实际实现需要根据你的协议格式来解析
-			// 例如，从URL参数、请求体或头部中提取信息
-			protoId := int32(0) // 示例值
-			data := []byte{}
+		// 这里需要根据实际情况解析HTTP请求，提取ProtoId和Data
+		// 这里只是一个示例，实际实现需要根据你的协议格式来解析
+		// 例如，从URL参数、请求体或头部中提取信息
+		protoId := int32(0) // 示例值
+		data := []byte{}
 
-			netPacket := &NetPacket{
-				ProtoId:  protoId,
-				Data:     data,
-				DataSize: int32(len(data)),
-			}
+		netPacket := &NetPacket{
+			ProtoId:  protoId,
+			Data:     data,
+			DataSize: int32(len(data)),
+		}
 
-			err := svr.dispatcher(session, netPacket)
-			if err != nil {
-				if svr.logger != nil {
-					svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, protoId)
-				}
-				return
-			}
-		})
+		err := svr.dispatcher(session, netPacket)
 		if err != nil {
 			if svr.logger != nil {
-				svr.logger.Error("Failed to submit task to worker pool: %v", err)
+				svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, protoId)
 			}
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -224,7 +197,6 @@ func (svr *HttpServer) GetAllSession() []*HttpSession {
 	return sessionList
 }
 
-func (svr *HttpServer) RegisterDispatcher(fun HandlerFun, workerPoolSize int) {
+func (svr *HttpServer) RegisterDispatcher(fun HandlerFun) {
 	svr.dispatcher = fun
-	svr.workerPoolSize = workerPoolSize
 }

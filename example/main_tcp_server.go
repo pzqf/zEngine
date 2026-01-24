@@ -69,7 +69,7 @@ func main() {
 	//	zLog.Info("zNet info", zap.Any("info", v))
 	//})
 
-	tcpSvr.RegisterDispatcher(DispatcherHandler, 1000000)
+	tcpSvr.RegisterDispatcher(DispatcherHandler)
 
 	err = tcpSvr.Start()
 	if err != nil {

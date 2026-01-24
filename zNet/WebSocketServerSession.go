@@ -151,20 +151,12 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
 			}
 			if s.svr.dispatcher != nil {
-				err := s.svr.workerPool.Submit(func() {
-					err := s.svr.dispatcher(s, receivePacket)
-					if err != nil {
-						if s.svr.logger != nil {
-							s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-						}
-						return
-					}
-				})
+				err := s.svr.dispatcher(s, receivePacket)
 				if err != nil {
 					if s.svr.logger != nil {
-						s.svr.logger.Error("Failed to submit task to worker pool: %v", err)
+						s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
 					}
-					break
+					return
 				}
 			}
 
@@ -179,21 +171,13 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					if s.svr.dispatcher != nil && s.svr.workerPool != nil {
-						err := s.svr.workerPool.Submit(func() {
-							err := s.svr.dispatcher(s, receivePacket)
-							if err != nil {
-								if s.svr.logger != nil {
-									s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-								}
-								return
-							}
-						})
+					if s.svr.dispatcher != nil {
+						err := s.svr.dispatcher(s, receivePacket)
 						if err != nil {
 							if s.svr.logger != nil {
-								s.svr.logger.Error("Failed to submit task to worker pool: %v", err)
+								s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
 							}
-							break
+							return
 						}
 					}
 

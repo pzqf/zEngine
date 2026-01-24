@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
-	"github.com/panjf2000/ants"
 
 	"github.com/pzqf/zUtil/zMap"
 )
@@ -22,8 +21,6 @@ type WebSocketServer struct {
 	privateKey       *rsa.PrivateKey
 	config           *WebSocketConfig
 	dispatcher       HandlerFun
-	workerPool       *ants.Pool
-	workerPoolSize   int
 	logger           Logger
 	// 防DDoS相关
 	ddosProtection *DDoSProtection
@@ -50,20 +47,6 @@ func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer 
 	for _, opt := range opts {
 		opt(svr)
 	}
-
-	if svr.workerPoolSize <= 0 {
-		svr.workerPoolSize = DefaultWorkerPoolSize
-	}
-
-	p, err := ants.NewPool(svr.workerPoolSize)
-	if err != nil {
-		if svr.logger != nil {
-			svr.logger.Error("Failed to create worker pool: %v", err)
-		}
-		// 即使worker pool创建失败，也返回服务器实例，让调用者决定如何处理
-		return svr
-	}
-	svr.workerPool = p
 
 	return svr
 }
@@ -202,7 +185,6 @@ func (svr *WebSocketServer) GetAllSession() []*WebSocketServerSession {
 	return sessionList
 }
 
-func (svr *WebSocketServer) RegisterDispatcher(fun HandlerFun, workerPoolSize int) {
+func (svr *WebSocketServer) RegisterDispatcher(fun HandlerFun) {
 	svr.dispatcher = fun
-	svr.workerPoolSize = workerPoolSize
 }

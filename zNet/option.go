@@ -132,16 +132,8 @@ func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
 
 func WithWorkerPoolSize(size int) Options {
 	return func(svr Server) {
-		switch reflect.TypeOf(svr).String() {
-		case "*zNet.TcpServer":
-			svr.(*TcpServer).workerPoolSize = size
-		case "*zNet.UdpServer":
-			svr.(*UdpServer).workerPoolSize = size
-		case "*zNet.WebSocketServer":
-			svr.(*WebSocketServer).workerPoolSize = size
-		case "*zNet.HttpServer":
-			svr.(*HttpServer).workerPoolSize = size
-		}
+		// Worker pool has been removed to ensure FIFO packet processing
+		// This function is kept for backward compatibility
 	}
 }
 

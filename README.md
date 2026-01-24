@@ -33,6 +33,11 @@ zEngine/
 - **WebSocket**：基于HTTP的双向通信协议，适合Web应用
 - **HTTP**：标准的HTTP协议，适合RESTful API等场景
 
+**DDoS保护**：
+- **ConnectionLimiter**：限制每个IP的最大连接数
+- **PacketLimiter**：限制每个IP的最大数据包数
+- **TrafficLimiter**：限制每个IP的最大流量
+
 **使用示例**：
 
 ```go
@@ -310,34 +315,78 @@ func main() {
 
 ### 8. zService - 服务管理
 
-服务管理模块提供了服务的注册、发现和管理功能，适用于微服务架构。
+服务管理模块提供了服务的注册、发现和管理功能，适用于微服务架构。支持服务的初始化、启动、关闭和状态管理。
 
 **使用示例**：
 
 ```go
 import "github.com/pzqf/zEngine/zService"
 
-func main() {
-    // 创建服务管理器
-    svcMgr := zService.NewServiceManager()
-
-    // 注册服务
-    svcMgr.RegisterService("user", func() interface{} {
-        return &UserService{}
-    })
-
-    // 获取服务
-    userService := svcMgr.GetService("user").(*UserService)
-    userService.RegisterUser("john", "password")
+// 定义用户服务
+type UserService struct {
+    zService.BaseService
+    users map[string]string
 }
 
-// 用户服务
-type UserService struct {
-    users map[string]string
+func NewUserService() *UserService {
+    return &UserService{
+        BaseService: *zService.NewBaseService("user"),
+        users:       make(map[string]string),
+    }
+}
+
+func (s *UserService) Init() error {
+    s.SetState(zService.ServiceStateInit)
+    // 初始化服务资源
+    return nil
+}
+
+func (s *UserService) Serve() {
+    s.SetState(zService.ServiceStateRunning)
+    // 启动服务逻辑，可启动后台协程
+    // 注意：Serve()方法返回后，服务状态不会自动设置为停止，需要手动管理
+}
+
+func (s *UserService) Close() error {
+    s.SetState(zService.ServiceStateStopping)
+    // 清理服务资源
+    s.SetState(zService.ServiceStateStopped)
+    return nil
 }
 
 func (s *UserService) RegisterUser(username, password string) {
     s.users[username] = password
+}
+
+func main() {
+    // 创建服务管理器
+    svcMgr := zService.NewServiceManager()
+
+    // 添加服务
+    userService := NewUserService()
+    if err := svcMgr.AddService(userService); err != nil {
+        panic(err)
+    }
+
+    // 初始化所有服务
+    if err := svcMgr.InitServices(); err != nil {
+        panic(err)
+    }
+
+    // 启动所有服务
+    svcMgr.ServeServices()
+
+    // 获取服务
+    userService, err := svcMgr.GetService("user")
+    if err != nil {
+        panic(err)
+    }
+    userService.(*UserService).RegisterUser("john", "password")
+
+    // 关闭所有服务
+    if err := svcMgr.CloseServices(); err != nil {
+        panic(err)
+    }
 }
 ```
 

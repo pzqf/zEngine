@@ -6,8 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/panjf2000/ants"
-
 	"github.com/pzqf/zUtil/zMap"
 )
 
@@ -21,8 +19,6 @@ type UdpServer struct {
 	privateKey       *rsa.PrivateKey
 	config           *UdpConfig
 	dispatcher       HandlerFun
-	workerPool       *ants.Pool
-	workerPoolSize   int
 	logger           Logger
 	// 防DDoS相关
 	ddosProtection *DDoSProtection
@@ -44,20 +40,6 @@ func NewUdpServer(cfg *UdpConfig, opts ...Options) *UdpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
-
-	if svr.workerPoolSize <= 0 {
-		svr.workerPoolSize = DefaultWorkerPoolSize
-	}
-
-	p, err := ants.NewPool(svr.workerPoolSize)
-	if err != nil {
-		if svr.logger != nil {
-			svr.logger.Error("Failed to create worker pool: %v", err)
-		}
-		// 即使worker pool创建失败，也返回服务器实例，让调用者决定如何处理
-		return svr
-	}
-	svr.workerPool = p
 
 	return svr
 }
@@ -234,7 +216,6 @@ func (svr *UdpServer) GetAllSession() []*UdpServerSession {
 	return sessionList
 }
 
-func (svr *UdpServer) RegisterDispatcher(fun HandlerFun, workerPoolSize int) {
+func (svr *UdpServer) RegisterDispatcher(fun HandlerFun) {
 	svr.dispatcher = fun
-	svr.workerPoolSize = workerPoolSize
 }
