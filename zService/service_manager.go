@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/pzqf/zEngine/zInject"
 	"github.com/pzqf/zEngine/zLog"
 	"github.com/pzqf/zEngine/zObject"
 	"go.uber.org/zap"
@@ -19,6 +20,8 @@ type ServiceInfo struct {
 type ServiceManager struct {
 	zObject.ObjectManager
 	serviceInfos map[interface{}]*ServiceInfo
+	container    zInject.Container
+	registry     ServiceRegistry
 	mu           sync.RWMutex
 }
 
@@ -27,6 +30,8 @@ func NewServiceManager() *ServiceManager {
 	return &ServiceManager{
 		ObjectManager: *zObject.NewObjectManager(),
 		serviceInfos:  make(map[interface{}]*ServiceInfo),
+		container:     zInject.NewContainer(),
+		registry:      NewServiceRegistry(),
 	}
 }
 
@@ -215,4 +220,49 @@ func (sm *ServiceManager) ListServices() []Service {
 	})
 
 	return services
+}
+
+// RegisterDependency 注册依赖
+func (sm *ServiceManager) RegisterDependency(name string, factory interface{}) {
+	sm.container.Register(name, factory)
+}
+
+// RegisterSingleton 注册单例依赖
+func (sm *ServiceManager) RegisterSingleton(name string, instance interface{}) {
+	sm.container.RegisterSingleton(name, instance)
+}
+
+// ResolveDependency 解析依赖
+func (sm *ServiceManager) ResolveDependency(name string) (interface{}, error) {
+	return sm.container.Resolve(name)
+}
+
+// ResolveDependencyWithArgs 带参数解析依赖
+func (sm *ServiceManager) ResolveDependencyWithArgs(name string, args ...interface{}) (interface{}, error) {
+	return sm.container.ResolveWithArgs(name, args...)
+}
+
+// HasDependency 检查依赖是否存在
+func (sm *ServiceManager) HasDependency(name string) bool {
+	return sm.container.Has(name)
+}
+
+// GetContainer 获取依赖注入容器
+func (sm *ServiceManager) GetContainer() zInject.Container {
+	return sm.container
+}
+
+// RegisterService 注册服务到服务注册器
+func (sm *ServiceManager) RegisterService(factory ServiceFactory, deps ...interface{}) error {
+	return sm.registry.RegisterServiceWithDeps(factory, deps...)
+}
+
+// AutoRegisterServices 自动注册所有已注册的服务
+func (sm *ServiceManager) AutoRegisterServices() error {
+	return AutoRegisterServices(sm.registry, sm)
+}
+
+// GetRegistry 获取服务注册器
+func (sm *ServiceManager) GetRegistry() ServiceRegistry {
+	return sm.registry
 }

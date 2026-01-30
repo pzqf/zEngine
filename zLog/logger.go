@@ -19,12 +19,32 @@ type Logger interface {
 	Fatal(format string, args ...interface{})
 }
 
+// Config 日志配置结构体
 type Config struct {
-	Level    int    `toml:"level" json:"level"`
-	Console  bool   `toml:"console" json:"console"`
+	// Level 日志级别，可选值：DebugLevel(-1), InfoLevel(0), WarnLevel(1), ErrorLevel(2), DPanicLevel(3), PanicLevel(4), FatalLevel(5)
+	Level int `toml:"level" json:"level"`
+	// Console 是否输出到控制台
+	Console bool `toml:"console" json:"console"`
+	// Filename 日志文件路径
 	Filename string `toml:"filename" json:"filename"`
-	MaxSize  int    `toml:"max-size" json:"max-size"`
-	MaxDays  int    `toml:"max-days" json:"max-days"`
+	// MaxSize 单个日志文件最大大小（MB），默认1024MB
+	MaxSize int `toml:"max-size" json:"max-size"`
+	// MaxDays 日志文件最大保留天数
+	MaxDays int `toml:"max-days" json:"max-days"`
+	// MaxBackups 日志文件最大备份数，默认5个
+	MaxBackups int `toml:"max-backups" json:"max-backups"`
+	// Compress 是否压缩日志文件
+	Compress bool `toml:"compress" json:"compress"`
+	// ShowCaller 是否显示调用者信息
+	ShowCaller bool `toml:"show-caller" json:"show-caller"`
+	// Stacktrace 在什么级别添加堆栈跟踪，可选值同Level，默认ErrorLevel(2)
+	Stacktrace int `toml:"stacktrace" json:"stacktrace"`
+	// Sampling 是否启用日志采样
+	Sampling bool `toml:"sampling" json:"sampling"`
+	// SamplingInitial 采样初始数量，默认100
+	SamplingInitial int `toml:"sampling-initial" json:"sampling-initial"`
+	// SamplingThereafter 采样后续数量，默认10
+	SamplingThereafter int `toml:"sampling-thereafter" json:"sampling-thereafter"`
 }
 
 const (
@@ -169,11 +189,17 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 			cfg.MaxSize = 1024 //mb
 		}
 
+		if cfg.MaxBackups == 0 {
+			cfg.MaxBackups = 5 // 默认保留5个备份
+		}
+
 		output := zapcore.AddSync(&lumberjack.Logger{
-			Filename:  cfg.Filename,
-			MaxSize:   cfg.MaxSize,
-			MaxAge:    cfg.MaxDays,
-			LocalTime: true,
+			Filename:   cfg.Filename,
+			MaxSize:    cfg.MaxSize,
+			MaxAge:     cfg.MaxDays,
+			MaxBackups: cfg.MaxBackups,
+			Compress:   cfg.Compress,
+			LocalTime:  true,
 		})
 
 		encoderConfig := zap.NewProductionEncoderConfig()
@@ -184,12 +210,33 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 		cores = append(cores, fileCore)
 	}
 
-	options = append(options, zap.AddCaller())
-	options = append(options, zap.AddCallerSkip(1))
-	options = append(options, zap.AddStacktrace(zapcore.ErrorLevel))
-	options = append(options, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
-		return zapcore.NewSamplerWithOptions(c, time.Second, 100, 10) // 每秒最多采样100条日志，超过后每10条采样1条
-	}))
+	// 根据配置决定是否添加调用者信息
+	if cfg.ShowCaller {
+		options = append(options, zap.AddCaller())
+		options = append(options, zap.AddCallerSkip(1))
+	}
+
+	// 根据配置决定在什么级别添加堆栈跟踪
+	stacktraceLevel := zapcore.ErrorLevel
+	if cfg.Stacktrace >= DebugLevel && cfg.Stacktrace <= FatalLevel {
+		stacktraceLevel = zapcore.Level(cfg.Stacktrace)
+	}
+	options = append(options, zap.AddStacktrace(stacktraceLevel))
+
+	// 根据配置决定是否启用采样
+	if cfg.Sampling {
+		samplingInitial := 100
+		samplingThereafter := 10
+		if cfg.SamplingInitial > 0 {
+			samplingInitial = cfg.SamplingInitial
+		}
+		if cfg.SamplingThereafter > 0 {
+			samplingThereafter = cfg.SamplingThereafter
+		}
+		options = append(options, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+			return zapcore.NewSamplerWithOptions(c, time.Second, samplingInitial, samplingThereafter)
+		}))
+	}
 
 	core := zapcore.NewTee(cores...)
 

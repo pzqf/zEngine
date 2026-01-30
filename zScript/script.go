@@ -1,16 +1,12 @@
 package zScript
 
 import (
-	"encoding/xml"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"log"
 	"os"
-	"reflect"
-	"strings"
-
-	"github.com/dennwc/graphml"
 )
 
 type Edge struct {
@@ -18,6 +14,7 @@ type Edge struct {
 	Content string `json:"content"`
 	Stmt    *ast.ExprStmt
 	Target  string `json:"target"`
+	Source  string `json:"source"`
 }
 
 type Node struct {
@@ -27,19 +24,20 @@ type Node struct {
 	Edges   []Edge `json:"edges"`
 }
 
-// ScriptData map[node.id]*node
-type ScriptData map[string]*Node
+type ScriptData struct {
+	Nodes []Node `json:"nodes"`
+	Edges []Edge `json:"edges"`
+}
 
-func (sn ScriptData) getEntry() *Node {
-	for _, v := range sn {
-		if v.Content == "Entry" {
-			return v
+func (sd ScriptData) GetEntry() *Node {
+	for i := range sd.Nodes {
+		if sd.Nodes[i].Content == "Entry" {
+			return &sd.Nodes[i]
 		}
 	}
 	return nil
 }
 
-// ScriptFileList  map[filename]*ScriptData
 var scriptFileList = make(map[string]*ScriptData)
 
 func LoadScriptFile(filename string) error {
@@ -49,70 +47,29 @@ func LoadScriptFile(filename string) error {
 		return errors.New(fmt.Sprintf("script file %s had load", filename))
 	}
 
-	var nodes = make(ScriptData)
 	r, err := os.Open(filename)
 	if err != nil {
 		log.Println(err)
 		return err
 	}
+	defer r.Close()
 
-	decode, err := graphml.Decode(r)
-	if err != nil {
+	var script ScriptData
+	decoder := json.NewDecoder(r)
+	if err := decoder.Decode(&script); err != nil {
 		log.Println(err)
 		return err
 	}
 
-	for _, v := range decode.Graphs {
-		for _, node := range v.Nodes {
-			//log.Println("==node id:", node.ID)
-			n := Node{Id: node.ID}
-			for _, data := range node.Data {
-				for _, t := range data.Data {
-					if reflect.TypeOf(t).String() == "xml.CharData" {
-						content := string(t.(xml.CharData))
-
-						if !strings.Contains(content, "\n") {
-							//log.Println("node:", node.ID, "value:", content)
-							n.Content = content
-						}
-
-					}
-				}
-			}
-			n.Stmt = astParser(n.Content)
-			nodes[node.ID] = &n
-		}
-
-		for _, edge := range v.Edges {
-			//log.Println("===edge id:", edge.ID, "line:", edge.Source, "-->", edge.Target)
-			_, ok := nodes[edge.Source]
-			if !ok {
-				//log.Println("edge error, no source node =====")
-				continue
-			}
-
-			e := Edge{
-				Id:     edge.ID,
-				Target: edge.Target,
-			}
-
-			for _, data := range edge.Data {
-				for _, t := range data.Data {
-					if reflect.TypeOf(t).String() == "xml.CharData" {
-						content := string(t.(xml.CharData))
-						if !strings.Contains(content, "\n") {
-							//log.Println("edge:", edge.ID, "value:", content)
-							e.Content = content
-						}
-					}
-				}
-			}
-			e.Stmt = astParser(e.Content)
-			nodes[edge.Source].Edges = append(nodes[edge.Source].Edges, e)
-		}
+	for i := range script.Nodes {
+		script.Nodes[i].Stmt = astParser(script.Nodes[i].Content)
 	}
 
-	scriptFileList[filename] = &nodes
+	for i := range script.Edges {
+		script.Edges[i].Stmt = astParser(script.Edges[i].Content)
+	}
+
+	scriptFileList[filename] = &script
 
 	return nil
 }

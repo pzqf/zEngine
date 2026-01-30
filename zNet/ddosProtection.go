@@ -188,7 +188,7 @@ func NewDDoSProtection(cfg ...*DDoSConfig) *DDoSProtection {
 	}
 
 	return &DDoSProtection{
-		connectionLimiter: NewConnectionLimiter(ddosCfg.MaxConnPerIP, time.Duration(ddosCfg.ConnTimeWindow)*time.Second),
+		connectionLimiter: NewConnectionLimiter(ddosCfg.MaxPacketsPerIP, time.Duration(ddosCfg.ConnTimeWindow)*time.Second),
 		packetLimiter:     NewPacketLimiter(ddosCfg.MaxPacketsPerIP, time.Duration(ddosCfg.PacketTimeWindow)*time.Second),
 		ipBlacklist:       NewIPBlacklist(time.Duration(ddosCfg.BanDuration) * time.Second),
 		trafficLimiter:    NewTrafficLimiter(ddosCfg.MaxBytesPerIP, time.Duration(ddosCfg.TrafficTimeWindow)*time.Second),

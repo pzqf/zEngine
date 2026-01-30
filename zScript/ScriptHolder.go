@@ -23,7 +23,7 @@ func (sh *ScriptHolder) BindScript(scriptFilename string) error {
 
 	sh.script, _ = GetScriptData(scriptFilename)
 
-	if sh.script.getEntry() == nil {
+	if sh.script.GetEntry() == nil {
 		return errors.New("the script " + scriptFilename + " no entry node")
 	}
 
@@ -33,7 +33,7 @@ func (sh *ScriptHolder) BindScript(scriptFilename string) error {
 }
 
 func (sh *ScriptHolder) ResetScript() {
-	sh.currScriptNodeId = sh.script.getEntry().Id
+	sh.currScriptNodeId = sh.script.GetEntry().Id
 }
 
 func (sh *ScriptHolder) Update(deltaTime int) {
@@ -41,15 +41,19 @@ func (sh *ScriptHolder) Update(deltaTime int) {
 		sh.ResetScript()
 	}
 
-	script := *sh.script
+	if sh.getNodeById(sh.currScriptNodeId) == nil {
+		return
+	}
 
-	if script[sh.currScriptNodeId].Content == "Exit" {
+	if sh.getNodeById(sh.currScriptNodeId).Content == "Exit" {
 		return
 	}
 
 	newNodeId := sh.currScriptNodeId
 	fmt.Println("===current node:", sh.currScriptNodeId)
-	for _, edge := range script[sh.currScriptNodeId].Edges {
+
+	edges := sh.getEdgesFromNode(sh.currScriptNodeId)
+	for _, edge := range edges {
 		fmt.Print("    |check edge:", edge.Id, ", condition:", edge.Content)
 		if edge.Stmt == nil {
 			newNodeId = edge.Target
@@ -64,10 +68,32 @@ func (sh *ScriptHolder) Update(deltaTime int) {
 	}
 
 	if newNodeId != sh.currScriptNodeId {
-		fmt.Println("-->to node:", newNodeId, ", exec:", script[newNodeId].Content)
-		sh.currScriptNodeId = newNodeId
-		if script[newNodeId].Content != "Exit" && script[newNodeId].Stmt != nil {
-			expressionEval(sh, script[newNodeId].Stmt)
+		targetNode := sh.getNodeById(newNodeId)
+		if targetNode != nil {
+			fmt.Println("-->to node:", newNodeId, ", exec:", targetNode.Content)
+			sh.currScriptNodeId = newNodeId
+			if targetNode.Content != "Exit" && targetNode.Stmt != nil {
+				expressionEval(sh, targetNode.Stmt)
+			}
 		}
 	}
+}
+
+func (sh *ScriptHolder) getNodeById(id string) *Node {
+	for i := range sh.script.Nodes {
+		if sh.script.Nodes[i].Id == id {
+			return &sh.script.Nodes[i]
+		}
+	}
+	return nil
+}
+
+func (sh *ScriptHolder) getEdgesFromNode(nodeId string) []Edge {
+	var edges []Edge
+	for i := range sh.script.Edges {
+		if sh.script.Edges[i].Source == nodeId {
+			edges = append(edges, sh.script.Edges[i])
+		}
+	}
+	return edges
 }

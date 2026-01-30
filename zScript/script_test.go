@@ -10,7 +10,7 @@ import (
 
 func Test(t *testing.T) {
 
-	scriptFile := `test.graphml`
+	scriptFile := `test.json`
 
 	err := LoadScriptFile(scriptFile)
 	if err != nil {
@@ -54,41 +54,41 @@ func RegisterFunc() {
 }
 
 func MoveToTarget(holder *ScriptHolder, args ...interface{}) interface{} {
-	//objectIndex := args[0]
-	//fmt.Println("call MoveToTarget:", objectIndex)
+	objectIndex := args[0]
+	fmt.Println("call MoveToTarget:", objectIndex)
 	return nil
 }
 
 func CastSpell(holder *ScriptHolder, args ...interface{}) interface{} {
-	//objectIndex := args[0]
-	//fmt.Println("call CastSpell:", objectIndex)
+	objectIndex := args[0]
+	fmt.Println("call CastSpell:", objectIndex)
 	return nil
 }
 
 func IsMoveInControl(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call IsMoveInControl:", args)
+	fmt.Println("call IsMoveInControl:", args)
 	return true
 }
 
 func ShouldRefreshMoveToTarget(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call ShouldRefreshMoveToTarget:")
+	fmt.Println("call ShouldRefreshMoveToTarget:")
 	return false
 }
 func IsAttackInRange(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call ShouldRefreshMoveToTarget:", args)
+	fmt.Println("call ShouldRefreshMoveToTarget:", args)
 	return true
 }
 
 func StartTimer(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call StartTimer:", len(args), args)
+	fmt.Println("call StartTimer:", len(args), args)
 	return true
 }
 
 func IsTargetDead(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call StartTimer:", len(args), args)
+	fmt.Println("call StartTimer:", len(args), args)
 	return false
 }
 func IsDead(holder *ScriptHolder, args ...interface{}) interface{} {
-	//fmt.Println("call StartTimer:", len(args), args)
+	fmt.Println("call StartTimer:", len(args), args)
 	return true
 }
