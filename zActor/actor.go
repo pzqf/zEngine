@@ -42,23 +42,23 @@ type Actor interface {
 
 // BaseActor 基础Actor实现
 type BaseActor struct {
-	id        int64
-	msgChan   chan ActorMessage
-	isRunning bool
-	mu        sync.Mutex
-	logger    *zap.Logger
+	id           int64
+	ActorMsgChan chan ActorMessage
+	isRunning    bool
+	mu           sync.Mutex
+	logger       *zap.Logger
 }
 
 // NewBaseActor 创建基础Actor实例
 func NewBaseActor(id int64, chanSize int) *BaseActor {
 	if chanSize <= 0 {
-		chanSize = 100
+		chanSize = 1024
 	}
 	return &BaseActor{
-		id:        id,
-		msgChan:   make(chan ActorMessage, chanSize),
-		isRunning: false,
-		logger:    zLog.GetLogger(),
+		id:           id,
+		ActorMsgChan: make(chan ActorMessage, chanSize),
+		isRunning:    false,
+		logger:       zLog.GetLogger(),
 	}
 }
 
@@ -91,7 +91,7 @@ func (a *BaseActor) Stop() error {
 	}
 
 	a.isRunning = false
-	close(a.msgChan)
+	close(a.ActorMsgChan)
 	return nil
 }
 
@@ -103,7 +103,7 @@ func (a *BaseActor) SendMessage(msg ActorMessage) {
 	}
 
 	select {
-	case a.msgChan <- msg:
+	case a.ActorMsgChan <- msg:
 		// 消息发送成功
 	default:
 		// 消息队列已满，丢弃消息或进行其他处理
@@ -128,7 +128,7 @@ func (a *BaseActor) IsRunning() bool {
 func (a *BaseActor) run() {
 	a.logger.Info("Actor started", zap.Int64("actor_id", a.id))
 
-	for msg := range a.msgChan {
+	for msg := range a.ActorMsgChan {
 		a.ProcessMessage(msg)
 	}
 
@@ -146,11 +146,11 @@ type ActorSystem struct {
 
 // 全局Actor系统实例
 var globalActorSystem *ActorSystem
-var globalActorSystemOnce sync.Once
+var once sync.Once
 
 // GetGlobalActorSystem 获取全局Actor系统实例
 func GetGlobalActorSystem() *ActorSystem {
-	globalActorSystemOnce.Do(func() {
+	once.Do(func() {
 		globalActorSystem = NewActorSystem()
 		if err := globalActorSystem.Start(); err != nil {
 			panic(fmt.Sprintf("Failed to start global actor system: %v", err))

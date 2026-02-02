@@ -9,6 +9,7 @@ import (
 type ScriptHolder struct {
 	script           *ScriptData
 	currScriptNodeId string
+	context          interface{}
 }
 
 func (sh *ScriptHolder) BindScript(scriptFilename string) error {
@@ -86,6 +87,16 @@ func (sh *ScriptHolder) getNodeById(id string) *Node {
 		}
 	}
 	return nil
+}
+
+// GetContext 获取上下文
+func (sh *ScriptHolder) GetContext() interface{} {
+	return sh.context
+}
+
+// SetContext 设置上下文
+func (sh *ScriptHolder) SetContext(ctx interface{}) {
+	sh.context = ctx
 }
 
 func (sh *ScriptHolder) getEdgesFromNode(nodeId string) []Edge {

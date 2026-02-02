@@ -33,11 +33,19 @@ type BaseService struct {
 }
 
 // NewBaseService 创建基础服务实例
-func NewBaseService(id interface{}) *BaseService {
+func NewBaseService(serviceId string) *BaseService {
 	return &BaseService{
-		BaseObject: zObject.BaseObject{Id: id},
+		BaseObject: zObject.BaseObject{Id: serviceId},
 		state:      ServiceStateCreated,
 	}
+}
+
+// ServiceId 获取服务ID
+func (bs *BaseService) ServiceId() string {
+	if id := bs.GetId(); id != nil {
+		return id.(string)
+	}
+	return ""
 }
 
 // GetState 获取服务状态
@@ -68,4 +76,3 @@ func (bs *BaseService) Close() error {
 func (bs *BaseService) Serve() {
 	// 空实现，子类可以重写
 }
-

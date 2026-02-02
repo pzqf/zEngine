@@ -10,7 +10,7 @@ type TestService struct {
 	Name string
 }
 
-func NewTestService(serviceId interface{}) *TestService {
+func NewTestService(serviceId string) *TestService {
 	bs := NewBaseService(serviceId)
 	a := &TestService{BaseService: *bs}
 	return a
@@ -39,20 +39,20 @@ func Test(t *testing.T) {
 	}
 
 	ts.Name = "lalalalala"
-	fmt.Println(fmt.Sprintf("%#v", ts))
+	fmt.Printf("%#v\n", ts)
 
 	service, err := sm.GetService("test_server")
 	if err != nil {
 		return
 	}
-	fmt.Println(fmt.Sprintf("%#v", service))
+	fmt.Printf("%#v\n", service)
 
 	service.(*TestService).Name = "dddddddd"
-	fmt.Println(fmt.Sprintf("%#v", service))
+	fmt.Printf("%#v\n", service)
 
 	service, err = sm.GetService("test_server")
 	if err != nil {
 		return
 	}
-	fmt.Println(fmt.Sprintf("%#v", service))
+	fmt.Printf("%#v\n", service)
 }
