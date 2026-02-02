@@ -54,7 +54,6 @@ func (s *TcpServerSession) Start() {
 	if s.svr.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
-	return
 }
 
 func (s *TcpServerSession) Close() {
