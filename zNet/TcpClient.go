@@ -28,46 +28,19 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		return err
 	}
 	cli.session = &TcpClientSession{}
-	var aesKey []byte
 
-	/*
-		helloBuf := make([]byte, 5)
-		_, err = io.ReadFull(conn, helloBuf)
-		if err != nil {
-			return err
-		}
+	// 执行DH密钥协商
+	aesKey, err := PerformKeyExchange(conn)
+	if err != nil {
+		conn.Close()
+		return err
+	}
 
-		if string(helloBuf) == "hello" {
-			h := md5.New()
-			h.Write([]byte(fmt.Sprintf("aes%d", time.Now().UnixNano())))
-			aesKey = []byte(hex.EncodeToString(h.Sum(nil)))
+	if cli.logger != nil {
+		cli.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+	}
 
-			f, err := os.Open(rsaPublicFile)
-			if err != nil {
-				return err
-			}
-			all, err := io.ReadAll(f)
-			if err != nil {
-				return err
-			}
-
-			block, _ := pem.Decode(all)
-			if block == nil {
-				return errors.New("public key error")
-			}
-			prkI, err := x509.ParsePKIXPublicKey(block.Bytes)
-			if err != nil {
-				return err
-			}
-			priKey := prkI.(*rsa.PublicKey)
-			v15, err := rsa.EncryptPKCS1v15(rand.Reader, priKey, aesKey)
-			if err != nil {
-				return err
-			}
-
-			_, _ = conn.Write(v15)
-		}
-	*/
+	// 步骤3：初始化会话，传递协商得到的 AES 密钥
 	cli.session.Init(cli, conn, aesKey)
 	cli.session.Start()
 

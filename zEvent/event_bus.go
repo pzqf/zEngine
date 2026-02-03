@@ -14,9 +14,9 @@ type EventHandler func(event *Event)
 // EventBus 事件总线
 type EventBus struct {
 	handlers map[EventType][]EventHandler // 事件处理器映射
-	mu       sync.RWMutex                // 保护handlers的读写锁
-	running  atomic.Bool                 // 事件总线运行状态
-	logger   *zap.Logger                 // 日志记录器
+	mu       sync.RWMutex                 // 保护handlers的读写锁
+	running  atomic.Bool                  // 事件总线运行状态
+	logger   *zap.Logger                  // 日志记录器
 }
 
 // 全局事件总线实例

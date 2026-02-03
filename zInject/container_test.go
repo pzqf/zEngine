@@ -83,4 +83,3 @@ func TestContainer_ErrorHandling(t *testing.T) {
 		t.Error("Expected error when resolving invalid factory")
 	}
 }
-

@@ -41,7 +41,7 @@ func (asp *Node) calcF(end *Node) int {
 	}
 	//h
 	h := int(math.Abs(float64(end.X-asp.X))+math.Abs(float64(end.Y-asp.Y))) * 10
-	
+
 	//f = g + h
 	asp.f = g + h
 

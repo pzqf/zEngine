@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pzqf/zUtil/zAes"
+	"github.com/pzqf/zUtil/zCrypto"
 )
 
 type TcpClientSession struct {
@@ -131,7 +131,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		}
 
 		if netPacket.DataSize > 0 && s.aesKey != nil {
-			netPacket.Data = zAes.DecryptCBC(netPacket.Data, s.aesKey)
+			if decrypted, err := zCrypto.AESDecrypt(netPacket.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+				netPacket.Data = decrypted
+			} else {
+				if s.cli.logger != nil {
+					s.cli.logger.Error("AES-GCM decrypt error: %v", err)
+				}
+			}
 		}
 
 		go func() {
@@ -154,7 +160,14 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 
 	if data != nil {
 		if s.aesKey != nil {
-			netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+			if encrypted, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+				netPacket.Data = encrypted
+			} else {
+				if s.cli.logger != nil {
+					s.cli.logger.Error("AES-GCM encrypt error: %v", err)
+				}
+				return err
+			}
 		} else {
 			netPacket.Data = data
 		}
@@ -165,8 +178,8 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 		return errors.New("send packet illegal")
 	}
 	if netPacket.DataSize > s.cli.maxPacketDataSize {
-		return errors.New(fmt.Sprintf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.cli.maxPacketDataSize, protoId))
+		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
+			netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
 	}
 
 	_, err := s.conn.Write(netPacket.Marshal())

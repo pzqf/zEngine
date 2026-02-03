@@ -132,4 +132,3 @@ func (c *SimpleContainer) Clear() {
 
 	c.dependencies = make(map[string]*DependencyInfo)
 }
-

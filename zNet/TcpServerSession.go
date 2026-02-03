@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pzqf/zUtil/zAes"
+	"github.com/pzqf/zUtil/zCrypto"
 )
 
 type TcpServerSession struct {
@@ -184,7 +184,13 @@ func (s *TcpServerSession) process(ctx context.Context) {
 		select {
 		case receivePacket := <-s.receiveChan:
 			if receivePacket.DataSize > 0 && s.aesKey != nil {
-				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
+				if decrypted, err := zCrypto.AESDecrypt(receivePacket.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+					receivePacket.Data = decrypted
+				} else {
+					if s.svr.logger != nil {
+						s.svr.logger.Error("AES-GCM decrypt error: %v, sid:%d", err, s.sid)
+					}
+				}
 			}
 			if s.svr.dispatcher != nil {
 				err := s.svr.dispatcher(s, receivePacket)
@@ -258,7 +264,14 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 		ProtoId: protoId,
 	}
 	if s.aesKey != nil {
-		netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+		if encrypted, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+			netPacket.Data = encrypted
+		} else {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("AES-GCM encrypt error: %v, ProtoId:%d", err, protoId)
+			}
+			return err
+		}
 	} else {
 		netPacket.Data = data
 	}

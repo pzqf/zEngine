@@ -12,7 +12,7 @@ import (
 type UdpServer struct {
 	clientSIDAtomic  SessionIdType
 	listener         *net.UDPConn
-	clientSessionMap *zMap.Map
+	clientSessionMap *zMap.TypedMap[SessionIdType, *UdpServerSession]
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
@@ -31,7 +31,7 @@ func NewUdpServer(cfg *UdpConfig, opts ...Options) *UdpServer {
 
 	svr := &UdpServer{
 		clientSIDAtomic:  10000,
-		clientSessionMap: zMap.NewMap(),
+		clientSessionMap: zMap.NewTypedMap[SessionIdType, *UdpServerSession](),
 		config:           cfg,
 		// 初始化防DDoS攻击机制
 		ddosProtection: NewDDoSProtection(),
@@ -66,8 +66,8 @@ func (svr *UdpServer) Start() error {
 		svr.logger.Info("Udp server listing on %s", svr.config.ListenAddress)
 	}
 
+	svr.wg.Add(1)
 	go func() {
-		svr.wg.Add(1)
 		defer svr.wg.Done()
 
 		buffer := make([]byte, 65535) // UDP最大包大小
@@ -141,10 +141,9 @@ func (svr *UdpServer) getSessionByAddr(addr *net.UDPAddr) (*UdpServerSession, bo
 	var targetSession *UdpServerSession
 	found := false
 
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*UdpServerSession)
-		if session.addr.String() == addr.String() {
-			targetSession = session
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *UdpServerSession) bool {
+		if value.addr.String() == addr.String() {
+			targetSession = value
 			found = true
 			return false
 		}
@@ -155,8 +154,21 @@ func (svr *UdpServer) getSessionByAddr(addr *net.UDPAddr) (*UdpServerSession, bo
 }
 
 func (svr *UdpServer) createSession(addr *net.UDPAddr) *UdpServerSession {
+	// 初始化ECDH密钥交换
+	dhExchange, err := NewDHKeyExchange()
+	if err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Failed to initialize DH key exchange for UDP session: %v", err)
+		}
+		dhExchange = nil
+	} else {
+		if svr.logger != nil {
+			svr.logger.Info("Initialized ECDH key exchange for new UDP session")
+		}
+	}
+
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
-	newSession := NewUdpServerSession(svr, addr, sid, svr.RemoveSession)
+	newSession := NewUdpServerSession(svr, addr, sid, svr.RemoveSession, nil, dhExchange)
 	svr.clientSessionMap.Store(sid, newSession)
 
 	if svr.onAddSession != nil {
@@ -178,8 +190,8 @@ func (svr *UdpServer) Close() {
 		}
 	}
 
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*UdpServerSession)
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *UdpServerSession) bool {
+		session := value
 		session.Close()
 		svr.clientSessionMap.Delete(session.sid)
 		return true
@@ -199,17 +211,17 @@ func (svr *UdpServer) RemoveSession(cli *UdpServerSession) {
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
-func (svr *UdpServer) GetSession(sid int64) *UdpServerSession {
-	if client, ok := svr.clientSessionMap.Get(sid); ok {
-		return client.(*UdpServerSession)
+func (svr *UdpServer) GetSession(sid SessionIdType) *UdpServerSession {
+	if client, ok := svr.clientSessionMap.Load(sid); ok {
+		return client
 	}
 	return nil
 }
 
 func (svr *UdpServer) GetAllSession() []*UdpServerSession {
 	var sessionList []*UdpServerSession
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		sessionList = append(sessionList, value.(*UdpServerSession))
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *UdpServerSession) bool {
+		sessionList = append(sessionList, value)
 		return true
 	})
 

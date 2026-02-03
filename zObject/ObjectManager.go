@@ -32,7 +32,7 @@ func (om *ObjectManager) AddObject(key interface{}, obj ManagedObject) error {
 	if obj == nil {
 		return errors.New("object can't be nil")
 	}
-	_, ok := om.objects.Get(key)
+	_, ok := om.objects.Load(key)
 	if ok {
 		return errors.New("object had exist")
 	}
@@ -43,7 +43,7 @@ func (om *ObjectManager) AddObject(key interface{}, obj ManagedObject) error {
 }
 
 func (om *ObjectManager) GetObject(key interface{}) (interface{}, error) {
-	v, ok := om.objects.Get(key)
+	v, ok := om.objects.Load(key)
 	if !ok {
 		return nil, errors.New("object not exist")
 	}
@@ -51,7 +51,7 @@ func (om *ObjectManager) GetObject(key interface{}) (interface{}, error) {
 }
 
 func (om *ObjectManager) RemoveObject(key interface{}) error {
-	_, ok := om.objects.Get(key)
+	_, ok := om.objects.Load(key)
 	if !ok {
 		return errors.New("object not exist")
 	}
@@ -62,20 +62,17 @@ func (om *ObjectManager) RemoveObject(key interface{}) error {
 }
 
 func (om *ObjectManager) ClearAllObject() {
-	om.objects.Range(func(key, value interface{}) bool {
-		om.objects.Delete(key)
-		return true
-	})
+	om.objects.Clear()
 }
 
 func (om *ObjectManager) ObjectsRange(f func(key, value interface{}) bool) {
 	om.objects.Range(f)
 }
 
-func (om *ObjectManager) GetAllObject() []Object {
-	objs := make([]Object, 0)
+func (om *ObjectManager) GetAllObject() []ManagedObject {
+	objs := make([]ManagedObject, 0)
 	om.objects.Range(func(key, value interface{}) bool {
-		objs = append(objs, value.(Object))
+		objs = append(objs, value.(ManagedObject))
 		return true
 	})
 	return objs

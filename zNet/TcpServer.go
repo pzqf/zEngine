@@ -13,7 +13,7 @@ import (
 type TcpServer struct {
 	clientSIDAtomic  SessionIdType
 	listener         *net.TCPListener
-	clientSessionMap *zMap.Map
+	clientSessionMap *zMap.TypedMap[SessionIdType, *TcpServerSession]
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
@@ -32,7 +32,7 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 
 	svr := &TcpServer{
 		clientSIDAtomic:  10000,
-		clientSessionMap: zMap.NewMap(),
+		clientSessionMap: zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
 		config:           cfg,
 		// 初始化防DDoS攻击机制
 		ddosProtection: NewDDoSProtection(),
@@ -66,8 +66,8 @@ func (svr *TcpServer) Start() error {
 		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
 	}
 
+	svr.wg.Add(1)
 	go func() {
-		svr.wg.Add(1)
 		defer svr.wg.Done()
 		for {
 			if svr.config.MaxClientCount > 0 && int(svr.clientSessionMap.Len()) >= svr.config.MaxClientCount {
@@ -115,8 +115,8 @@ func (svr *TcpServer) Close() {
 		}
 	}
 
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*TcpServerSession)
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *TcpServerSession) bool {
+		session := value
 		session.Close()
 		svr.clientSessionMap.Delete(session.sid)
 		return true
@@ -130,7 +130,20 @@ func (svr *TcpServer) Close() {
 }
 
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
-	var aesKey []byte
+	// 执行DH密钥协商
+	aesKey, err := PerformKeyExchange(conn)
+	if err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("DH key exchange failed: %v", err)
+		}
+		conn.Close()
+		return
+	}
+
+	if svr.logger != nil {
+		svr.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+	}
+
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 	newSession := NewTcpServerSession(svr, conn, sid, svr.RemoveSession, aesKey)
 	svr.clientSessionMap.Store(sid, newSession)
@@ -147,17 +160,17 @@ func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
-func (svr *TcpServer) GetSession(sid int64) *TcpServerSession {
-	if client, ok := svr.clientSessionMap.Get(sid); ok {
-		return client.(*TcpServerSession)
+func (svr *TcpServer) GetSession(sid SessionIdType) *TcpServerSession {
+	if client, ok := svr.clientSessionMap.Load(sid); ok {
+		return client
 	}
 	return nil
 }
 
 func (svr *TcpServer) GetAllSession() []*TcpServerSession {
 	var sessionList []*TcpServerSession
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		sessionList = append(sessionList, value.(*TcpServerSession))
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *TcpServerSession) bool {
+		sessionList = append(sessionList, value)
 		return true
 	})
 

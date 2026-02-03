@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pzqf/zUtil/zAes"
+	"github.com/pzqf/zUtil/zCrypto"
 )
 
 type WebSocketServerSession struct {
@@ -27,7 +27,7 @@ type WebSocketServerSession struct {
 
 type WebSocketCloseCallBackFunc func(c *WebSocketServerSession)
 
-func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid SessionIdType, closeCallBack WebSocketCloseCallBackFunc) *WebSocketServerSession {
+func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid SessionIdType, closeCallBack WebSocketCloseCallBackFunc, aesKey []byte) *WebSocketServerSession {
 	newSession := WebSocketServerSession{
 		conn:          conn,
 		sid:           sid,
@@ -35,6 +35,7 @@ func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid S
 		receiveChan:   make(chan *NetPacket, svr.config.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       closeCallBack,
+		aesKey:        aesKey,
 		svr:           svr,
 	}
 	return &newSession
@@ -148,7 +149,15 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 		select {
 		case receivePacket := <-s.receiveChan:
 			if receivePacket.DataSize > 0 && s.aesKey != nil {
-				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
+				// 使用GCM模式解密
+				plaintext, err := zCrypto.AESDecrypt(receivePacket.Data, s.aesKey, nil, zCrypto.AESModeGCM)
+				if err != nil {
+					if s.svr.logger != nil {
+						s.svr.logger.Error("AESDecrypt error: %v", err)
+					}
+					continue
+				}
+				receivePacket.Data = plaintext
 			}
 			if s.svr.dispatcher != nil {
 				err := s.svr.dispatcher(s, receivePacket)
@@ -222,7 +231,14 @@ func (s *WebSocketServerSession) Send(protoId int32, data []byte) error {
 		ProtoId: protoId,
 	}
 	if s.aesKey != nil {
-		netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+		encryptedData, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM)
+		if err != nil {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("AESEncrypt error: %v", err)
+			}
+			return err
+		}
+		netPacket.Data = encryptedData
 	} else {
 		netPacket.Data = data
 	}

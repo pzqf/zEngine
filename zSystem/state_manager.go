@@ -11,8 +11,8 @@ type IState interface {
 
 // StateManager 状态管理器
 type StateManager struct {
-	mu      sync.RWMutex
-	states  map[uint64]map[string]interface{}
+	mu     sync.RWMutex
+	states map[uint64]map[string]interface{}
 }
 
 // NewStateManager 创建状态管理器
@@ -26,11 +26,11 @@ func NewStateManager() *StateManager {
 func (sm *StateManager) SetState(ownerID uint64, key string, value interface{}) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	if _, exists := sm.states[ownerID]; !exists {
 		sm.states[ownerID] = make(map[string]interface{})
 	}
-	
+
 	sm.states[ownerID][key] = value
 }
 
@@ -38,7 +38,7 @@ func (sm *StateManager) SetState(ownerID uint64, key string, value interface{}) 
 func (sm *StateManager) GetState(ownerID uint64, key string) (interface{}, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	if ownerStates, exists := sm.states[ownerID]; exists {
 		if value, ok := ownerStates[key]; ok {
 			return value, true
@@ -56,10 +56,10 @@ func (sm *StateManager) GetStateWithType(ownerID uint64, key string) (interface{
 func (sm *StateManager) RemoveState(ownerID uint64, key string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	if ownerStates, exists := sm.states[ownerID]; exists {
 		delete(ownerStates, key)
-		
+
 		if len(ownerStates) == 0 {
 			delete(sm.states, ownerID)
 		}
@@ -70,7 +70,7 @@ func (sm *StateManager) RemoveState(ownerID uint64, key string) {
 func (sm *StateManager) RemoveAllStates(ownerID uint64) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	delete(sm.states, ownerID)
 }
 
@@ -78,7 +78,7 @@ func (sm *StateManager) RemoveAllStates(ownerID uint64) {
 func (sm *StateManager) GetAllStates(ownerID uint64) map[string]interface{} {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	if ownerStates, exists := sm.states[ownerID]; exists {
 		result := make(map[string]interface{}, len(ownerStates))
 		for k, v := range ownerStates {
@@ -93,7 +93,7 @@ func (sm *StateManager) GetAllStates(ownerID uint64) map[string]interface{} {
 func (sm *StateManager) HasState(ownerID uint64, key string) bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	if ownerStates, exists := sm.states[ownerID]; exists {
 		_, ok := ownerStates[key]
 		return ok
@@ -105,7 +105,7 @@ func (sm *StateManager) HasState(ownerID uint64, key string) bool {
 func (sm *StateManager) GetOwnerCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	return len(sm.states)
 }
 
@@ -113,6 +113,6 @@ func (sm *StateManager) GetOwnerCount() int {
 func (sm *StateManager) Clear() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	sm.states = make(map[uint64]map[string]interface{})
 }

@@ -8,13 +8,14 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/pzqf/zUtil/zCrypto"
 	"github.com/pzqf/zUtil/zMap"
 )
 
 type WebSocketServer struct {
 	clientSIDAtomic  SessionIdType
 	upgrader         websocket.Upgrader
-	clientSessionMap *zMap.Map
+	clientSessionMap *zMap.TypedMap[SessionIdType, *WebSocketServerSession]
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
@@ -33,7 +34,7 @@ func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer 
 
 	svr := &WebSocketServer{
 		clientSIDAtomic:  10000,
-		clientSessionMap: zMap.NewMap(),
+		clientSessionMap: zMap.NewTypedMap[SessionIdType, *WebSocketServerSession](),
 		config:           cfg,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -54,8 +55,8 @@ func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer 
 func (svr *WebSocketServer) Start() error {
 	http.HandleFunc("/ws", svr.handleWebSocket)
 
+	svr.wg.Add(1)
 	go func() {
-		svr.wg.Add(1)
 		defer svr.wg.Done()
 
 		if svr.logger != nil {
@@ -131,8 +132,32 @@ func (svr *WebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reque
 }
 
 func (svr *WebSocketServer) AddSession(conn *websocket.Conn) {
+	// 执行ECDH密钥交换
+	aesKey, err := PerformKeyExchange(&websocketReaderWriter{conn})
+	if err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Failed to perform ECDH key exchange for WebSocket session: %v", err)
+		}
+		// 如果密钥交换失败，生成随机密钥作为备选方案
+		aesKey, err = zCrypto.GenerateAESKey(zCrypto.AESKeySize16)
+		if err != nil {
+			if svr.logger != nil {
+				svr.logger.Error("Failed to generate fallback AES key for WebSocket session: %v", err)
+			}
+			aesKey = nil
+		} else {
+			if svr.logger != nil {
+				svr.logger.Info("Generated fallback AES key for WebSocket session, key length: %d", len(aesKey))
+			}
+		}
+	} else {
+		if svr.logger != nil {
+			svr.logger.Info("ECDH key exchange successful for new WebSocket session, key length: %d", len(aesKey))
+		}
+	}
+
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
-	newSession := NewWebSocketServerSession(svr, conn, sid, svr.RemoveSession)
+	newSession := NewWebSocketServerSession(svr, conn, sid, svr.RemoveSession, aesKey)
 	svr.clientSessionMap.Store(sid, newSession)
 
 	if svr.onAddSession != nil {
@@ -142,13 +167,36 @@ func (svr *WebSocketServer) AddSession(conn *websocket.Conn) {
 	newSession.Start()
 }
 
+// websocketReaderWriter 实现 io.ReadWriter 接口，用于WebSocket连接
+
+type websocketReaderWriter struct {
+	conn *websocket.Conn
+}
+
+func (w *websocketReaderWriter) Read(p []byte) (n int, err error) {
+	_, message, err := w.conn.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	copy(p, message)
+	return len(message), nil
+}
+
+func (w *websocketReaderWriter) Write(p []byte) (n int, err error) {
+	err = w.conn.WriteMessage(websocket.BinaryMessage, p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 func (svr *WebSocketServer) Close() {
 	if svr.logger != nil {
 		svr.logger.Info("Close WebSocket server, session count: %d", svr.clientSessionMap.Len())
 	}
 
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		session := value.(*WebSocketServerSession)
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *WebSocketServerSession) bool {
+		session := value
 		session.Close()
 		svr.clientSessionMap.Delete(session.sid)
 		return true
@@ -168,17 +216,17 @@ func (svr *WebSocketServer) RemoveSession(cli *WebSocketServerSession) {
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
-func (svr *WebSocketServer) GetSession(sid int64) *WebSocketServerSession {
-	if client, ok := svr.clientSessionMap.Get(sid); ok {
-		return client.(*WebSocketServerSession)
+func (svr *WebSocketServer) GetSession(sid SessionIdType) *WebSocketServerSession {
+	if client, ok := svr.clientSessionMap.Load(sid); ok {
+		return client
 	}
 	return nil
 }
 
 func (svr *WebSocketServer) GetAllSession() []*WebSocketServerSession {
 	var sessionList []*WebSocketServerSession
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		sessionList = append(sessionList, value.(*WebSocketServerSession))
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *WebSocketServerSession) bool {
+		sessionList = append(sessionList, value)
 		return true
 	})
 

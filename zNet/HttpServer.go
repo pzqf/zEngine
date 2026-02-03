@@ -14,7 +14,7 @@ type HttpServer struct {
 	clientSIDAtomic  SessionIdType
 	server           *http.Server
 	mux              *http.ServeMux
-	clientSessionMap *zMap.Map
+	clientSessionMap *zMap.TypedMap[SessionIdType, *HttpSession]
 	wg               sync.WaitGroup
 	onAddSession     SessionCallBackFunc
 	onRemoveSession  SessionCallBackFunc
@@ -29,7 +29,7 @@ type HttpServer struct {
 func NewHttpServer(cfg *HttpConfig, opts ...Options) *HttpServer {
 	svr := &HttpServer{
 		clientSIDAtomic:  10000,
-		clientSessionMap: zMap.NewMap(),
+		clientSessionMap: zMap.NewTypedMap[SessionIdType, *HttpSession](),
 		config:           cfg,
 		mux:              http.NewServeMux(),
 		// 初始化防DDoS攻击机制
@@ -52,8 +52,8 @@ func (svr *HttpServer) Start() error {
 		Handler: svr.mux,
 	}
 
+	svr.wg.Add(1)
 	go func() {
-		svr.wg.Add(1)
 		defer svr.wg.Done()
 
 		if svr.logger != nil {
@@ -180,17 +180,17 @@ func (svr *HttpServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (svr *HttpServer) GetSession(sid int64) *HttpSession {
-	if client, ok := svr.clientSessionMap.Get(sid); ok {
-		return client.(*HttpSession)
+func (svr *HttpServer) GetSession(sid SessionIdType) *HttpSession {
+	if client, ok := svr.clientSessionMap.Load(sid); ok {
+		return client
 	}
 	return nil
 }
 
 func (svr *HttpServer) GetAllSession() []*HttpSession {
 	var sessionList []*HttpSession
-	svr.clientSessionMap.Range(func(key, value interface{}) bool {
-		sessionList = append(sessionList, value.(*HttpSession))
+	svr.clientSessionMap.Range(func(sid SessionIdType, value *HttpSession) bool {
+		sessionList = append(sessionList, value)
 		return true
 	})
 

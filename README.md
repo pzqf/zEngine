@@ -30,6 +30,7 @@ zEngine是一个**模块化、高性能、可扩展**的服务器引擎框架，
 - **核心依赖**：zap、sync.Map、context
 - **网络协议**：TCP、UDP、WebSocket、HTTP
 - **数据格式**：Protobuf、JSON、XML
+- **加密技术**：AES-GCM、ECDH (Elliptic Curve Diffie-Hellman)
 
 ### 项目特点
 
@@ -566,6 +567,11 @@ func (s *ConnectedState) Send(conn *Connection, data []byte) error {
    - 多goroutine处理请求
    - 动态调整工作者数量
    - 负载均衡
+
+4. **类型安全**
+   - 使用 TypedMap 实现类型安全的连接管理
+   - 编译时检查类型，避免运行时panic
+   - 无需类型断言，代码更简洁
 
 #### 实现方式
 
@@ -2058,3 +2064,262 @@ func (lm *LogMonitor) Monitor(logger *zLog.Logger) {
 ---
 
 **zEngine** - 简单高效的服务器引擎
+
+---
+
+## 📚 高级特性
+
+### 1. TypedMap 使用说明
+
+zEngine 现在全面使用 zUtil/zMap 提供的 TypedMap，实现类型安全的并发 Map。
+
+#### TypedMap 优势
+
+1. **类型安全** - 编译时检查类型，避免运行时panic
+2. **无需类型断言** - 直接使用类型化的值
+3. **性能提升** - 避免了反射和类型转换的开销
+4. **代码更清晰** - 类型明确，可读性强
+
+#### 使用示例
+
+```go
+// 创建类型安全的Map
+m := zMap.NewTypedMap[string, int]()
+
+// 存储元素（类型安全）
+m.Store("key1", 123)
+
+// 获取元素（类型安全）
+value, exists := m.Load("key1")
+// value 是 int 类型，可以直接使用
+
+// 遍历元素
+m.Range(func(key string, value int) bool {
+    fmt.Println(key, value)
+    return true
+})
+
+// 获取长度
+length := m.Len()
+
+// 清空Map
+m.Clear()
+```
+
+#### 在网络服务器中的使用
+
+```go
+type TcpServer struct {
+    // 使用 TypedMap 实现类型安全
+    clientSessionMap *zMap.TypedMap[uint64, *TcpServerSession]
+}
+
+// 查找会话（类型安全）
+func (svr *TcpServer) GetSession(sid uint64) *TcpServerSession {
+    if client, ok := svr.clientSessionMap.Load(sid); ok {
+        return client
+    }
+    return nil
+}
+
+// 获取所有会话
+func (svr *TcpServer) GetAllSession() []*TcpServerSession {
+    var sessionList []*TcpServerSession
+    svr.clientSessionMap.Range(func(sid uint64, value *TcpServerSession) bool {
+        sessionList = append(sessionList, value)
+        return true
+    })
+    return sessionList
+}
+```
+
+#### 完整接口列表
+
+```go
+// 核心接口
+Load(key K) (V, bool)              // 获取元素
+Store(key K, value V)              // 存储元素
+Delete(key K)                      // 删除元素
+Len() int64                        // 获取元素数量
+Range(f func(key K, value V) bool) // 遍历元素
+Clear()                            // 清空Map
+LoadOrStore(key K, value V) (V, bool)   // 加载或存储
+LoadAndDelete(key K) (V, bool)           // 加载并删除
+CompareAndDelete(key K, oldValue V) bool // 比较并删除
+CompareAndSwap(key K, oldValue V, newValue V) bool // 比较并替换
+```
+
+#### 迁移指南
+
+如果您正在从旧的 Map 迁移到 TypedMap：
+
+1. **修改声明**
+```go
+// 旧版本
+clientSessionMap *zMap.Map
+
+// 新版本
+clientSessionMap *zMap.TypedMap[uint64, *TcpServerSession]
+```
+
+2. **修改初始化**
+```go
+// 旧版本
+clientSessionMap: zMap.NewMap(),
+
+// 新版本
+clientSessionMap: zMap.NewTypedMap[uint64, *TcpServerSession](),
+```
+
+3. **修改方法调用**
+```go
+// 旧版本
+client, ok := svr.clientSessionMap.Get(sid)
+if ok {
+    return client.(*TcpServerSession)
+}
+
+// 新版本（更简洁、更安全）
+client, ok := svr.clientSessionMap.Load(sid)
+if ok {
+    return client
+}
+```
+
+4. **修改 Range 回调**
+```go
+// 旧版本
+svr.clientSessionMap.Range(func(key, value interface{}) bool {
+    session := value.(*TcpServerSession)
+    // ...
+    return true
+})
+
+// 新版本
+svr.clientSessionMap.Range(func(sid uint64, value *TcpServerSession) bool {
+    // ...
+    return true
+})
+```
+
+### 2. 加密功能说明
+
+zEngine 的 zNet 模块现在提供了完整的加密支持，包括 ECDH 密钥交换和 AES-GCM 加密。
+
+#### 加密原理
+
+1. **ECDH 密钥交换**
+   - 基于椭圆曲线密码学
+   - 服务器和客户端各自生成密钥对
+   - 交换公钥并计算共享密钥
+   - 无需传输实际的加密密钥
+
+2. **AES-GCM 加密**
+   - 认证加密模式，同时提供保密性和完整性
+   - 自动处理初始化向量 (IV) 和认证标签
+   - 高效的加密解密性能
+
+#### 加密流程
+
+```
+┌─────────────────────┐                     ┌─────────────────────┐
+│       服务器         │                     │       客户端         │
+└─────────┬───────────┘                     └─────────┬───────────┘
+          │                                           │
+          │  1. 生成 ECDH 密钥对                       │  1. 生成 ECDH 密钥对
+          │                                           │
+          │  2. 发送公钥给客户端                        │  2. 发送公钥给服务器
+          │ ─────────────────────────────────────────> │
+          │ <───────────────────────────────────────── │
+          │                                           │
+          │  3. 计算共享密钥                           │  3. 计算共享密钥
+          │    sharedKey = privKey * clientPubKey      │    sharedKey = privKey * serverPubKey
+          │                                           │
+          │  4. 派生 AES 密钥                          │  4. 派生 AES 密钥
+          │                                           │
+          └─────────────────────┐                     └─────────────────────┐
+                                │                                           │
+                                ▼                                           ▼
+                        ┌─────────────────────┐                     ┌─────────────────────┐
+                        │     AES-GCM 加密     │                     │     AES-GCM 加密     │
+                        └─────────────────────┘                     └─────────────────────┘
+```
+
+#### 安全优势
+
+1. **密钥安全** - 密钥通过 ECDH 协商，无需明文传输
+2. **数据完整性** - AES-GCM 提供认证，防止数据篡改
+3. **前向保密** - 每次连接生成新的密钥对
+4. **高效性能** - AES-GCM 比传统的 AES-CBC 更高效
+
+#### 加密配置
+
+加密功能默认启用，无需额外配置。如果需要禁用加密（仅用于测试环境），可以通过以下方式：
+
+```go
+// 创建TCP服务器时禁用加密
+server := zNet.NewTcpServer(config,
+    zNet.WithLogger(logger),
+    zNet.WithEncryptionDisabled(), // 禁用加密（仅测试环境）
+)
+```
+
+### 3. 多协议客户端支持
+
+zEngine 现在提供了统一的客户端 API，支持 TCP、UDP 和 WebSocket 协议。
+
+#### 客户端特性
+
+1. **统一的 API** - 所有客户端实现相同的接口
+2. **自动重连** - 支持网络中断后的自动重连
+3. **加密支持** - 所有协议都支持 ECDH + AES-GCM 加密
+4. **消息分发** - 支持注册多个消息处理器
+
+#### 客户端创建示例
+
+```go
+// TCP客户端
+ tcpClient := zNet.NewTcpClient(
+    zNet.WithClientLogger(logger),
+    zNet.WithClientAutoReconnect(true),
+ )
+
+// UDP客户端
+ udpClient := zNet.NewUdpClient(
+    zNet.WithClientLogger(logger),
+ )
+
+// WebSocket客户端
+ wsClient := zNet.NewWebSocketClient(
+    zNet.WithClientLogger(logger),
+ )
+```
+
+#### 客户端使用示例
+
+```go
+// 连接到服务器
+ if err := client.ConnectToServer(address); err != nil {
+    panic(err)
+ }
+
+// 注册消息处理器
+ client.RegisterDispatcher(func(session interface{}, packet *zNet.NetPacket) error {
+    // 处理接收到的消息
+    return nil
+ }, 100)
+
+// 发送消息
+ packet := &zNet.NetPacket{
+    Cmd:  100,
+    Data: []byte("Hello Server!"),
+ }
+ if err := client.Send(packet); err != nil {
+    panic(err)
+ }
+
+// 关闭连接
+ defer client.Close()
+```
+
+---

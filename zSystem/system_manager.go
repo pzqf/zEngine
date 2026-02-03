@@ -29,12 +29,12 @@ func NewSystemManager() *SystemManager {
 func (sm *SystemManager) RegisterSystem(system ISystem) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	name := system.GetSystemName()
 	if _, exists := sm.systems[name]; exists {
 		return nil
 	}
-	
+
 	sm.systems[name] = system
 	return nil
 }
@@ -43,7 +43,7 @@ func (sm *SystemManager) RegisterSystem(system ISystem) error {
 func (sm *SystemManager) UnregisterSystem(name string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	delete(sm.systems, name)
 }
 
@@ -51,7 +51,7 @@ func (sm *SystemManager) UnregisterSystem(name string) {
 func (sm *SystemManager) GetSystem(name string) (ISystem, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	system, ok := sm.systems[name]
 	return system, ok
 }
@@ -64,13 +64,13 @@ func (sm *SystemManager) InitializeAll() error {
 		systems = append(systems, system)
 	}
 	sm.mu.RUnlock()
-	
+
 	for _, system := range systems {
 		if err := system.Initialize(); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -82,7 +82,7 @@ func (sm *SystemManager) UpdateAll(deltaTime float64) {
 		systems = append(systems, system)
 	}
 	sm.mu.RUnlock()
-	
+
 	for _, system := range systems {
 		system.Update(deltaTime)
 	}
@@ -96,13 +96,13 @@ func (sm *SystemManager) ShutdownAll() error {
 		systems = append(systems, system)
 	}
 	sm.mu.RUnlock()
-	
+
 	for _, system := range systems {
 		if err := system.Shutdown(); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -110,7 +110,7 @@ func (sm *SystemManager) ShutdownAll() error {
 func (sm *SystemManager) GetSystemCount() int {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	return len(sm.systems)
 }
 
@@ -118,7 +118,7 @@ func (sm *SystemManager) GetSystemCount() int {
 func (sm *SystemManager) GetSystemNames() []string {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	names := make([]string, 0, len(sm.systems))
 	for name := range sm.systems {
 		names = append(names, name)
@@ -130,7 +130,7 @@ func (sm *SystemManager) GetSystemNames() []string {
 func (sm *SystemManager) HasSystem(name string) bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	_, ok := sm.systems[name]
 	return ok
 }
@@ -139,6 +139,6 @@ func (sm *SystemManager) HasSystem(name string) bool {
 func (sm *SystemManager) Clear() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	sm.systems = make(map[string]ISystem)
 }

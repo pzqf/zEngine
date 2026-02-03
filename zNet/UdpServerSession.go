@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pzqf/zUtil/zAes"
+	"github.com/pzqf/zUtil/zCrypto"
 )
 
 type UdpServerSession struct {
@@ -21,13 +21,14 @@ type UdpServerSession struct {
 	ctxCancel     context.CancelFunc
 	onClose       UdpCloseCallBackFunc
 	aesKey        []byte
+	dhExchange    *DHKeyExchange
 	svr           *UdpServer
 	obj           interface{}
 }
 
 type UdpCloseCallBackFunc func(c *UdpServerSession)
 
-func NewUdpServerSession(svr *UdpServer, addr *net.UDPAddr, sid SessionIdType, closeCallBack UdpCloseCallBackFunc) *UdpServerSession {
+func NewUdpServerSession(svr *UdpServer, addr *net.UDPAddr, sid SessionIdType, closeCallBack UdpCloseCallBackFunc, aesKey []byte, dhExchange *DHKeyExchange) *UdpServerSession {
 	newSession := UdpServerSession{
 		addr:          addr,
 		sid:           sid,
@@ -35,6 +36,8 @@ func NewUdpServerSession(svr *UdpServer, addr *net.UDPAddr, sid SessionIdType, c
 		receiveChan:   make(chan *NetPacket, svr.config.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       closeCallBack,
+		aesKey:        aesKey,
+		dhExchange:    dhExchange,
 		svr:           svr,
 	}
 	return &newSession
@@ -51,7 +54,6 @@ func (s *UdpServerSession) Start() {
 	if s.svr.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
-	return
 }
 
 func (s *UdpServerSession) Close() {
@@ -60,6 +62,46 @@ func (s *UdpServerSession) Close() {
 }
 
 func (s *UdpServerSession) handlePacket(data []byte) {
+	// 处理ECDH密钥交换
+	if s.dhExchange != nil && s.aesKey == nil {
+		if len(data) == 64 {
+			// 收到客户端的公钥，执行密钥交换
+			aesKey, err := s.dhExchange.ComputeSharedSecret(data)
+			if err != nil {
+				if s.svr.logger != nil {
+					s.svr.logger.Error("Failed to compute shared secret for UDP session: %v", err)
+				}
+			} else {
+				s.aesKey = aesKey
+				if s.svr.logger != nil {
+					s.svr.logger.Info("ECDH key exchange successful for UDP session, key length: %d", len(aesKey))
+				}
+				// 发送服务器的公钥给客户端
+				serverPublicKey := s.dhExchange.GetPublicKey()
+				if _, err := s.svr.listener.WriteToUDP(serverPublicKey, s.addr); err != nil {
+					if s.svr.logger != nil {
+						s.svr.logger.Error("Failed to send server public key to UDP client: %v", err)
+					}
+				}
+			}
+			// 密钥交换完成，清理资源
+			s.dhExchange = nil
+			return
+		} else {
+			// 第一次收到数据包，发送服务器的公钥给客户端
+			serverPublicKey := s.dhExchange.GetPublicKey()
+			if _, err := s.svr.listener.WriteToUDP(serverPublicKey, s.addr); err != nil {
+				if s.svr.logger != nil {
+					s.svr.logger.Error("Failed to send server public key to UDP client: %v", err)
+				}
+			}
+			if s.svr.logger != nil {
+				s.svr.logger.Info("Sent server public key to UDP client for key exchange")
+			}
+			return
+		}
+	}
+
 	// 解析数据包
 	if len(data) < NetPacketHeadSize {
 		if s.svr.logger != nil {
@@ -119,7 +161,15 @@ func (s *UdpServerSession) process(ctx context.Context) {
 		select {
 		case receivePacket := <-s.receiveChan:
 			if receivePacket.DataSize > 0 && s.aesKey != nil {
-				receivePacket.Data = zAes.DecryptCBC(receivePacket.Data, s.aesKey)
+				// 使用GCM模式解密
+				plaintext, err := zCrypto.AESDecrypt(receivePacket.Data, s.aesKey, nil, zCrypto.AESModeGCM)
+				if err != nil {
+					if s.svr.logger != nil {
+						s.svr.logger.Error("AESDecrypt error: %v", err)
+					}
+					continue
+				}
+				receivePacket.Data = plaintext
 			}
 			if s.svr.dispatcher != nil {
 				err := s.svr.dispatcher(s, receivePacket)
@@ -188,7 +238,14 @@ func (s *UdpServerSession) Send(protoId int32, data []byte) error {
 		ProtoId: protoId,
 	}
 	if s.aesKey != nil {
-		netPacket.Data = zAes.EncryptCBC(data, s.aesKey)
+		encryptedData, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM)
+		if err != nil {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("AESEncrypt error: %v", err)
+			}
+			return err
+		}
+		netPacket.Data = encryptedData
 	} else {
 		netPacket.Data = data
 	}
