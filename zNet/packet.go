@@ -6,21 +6,29 @@ import (
 	"errors"
 )
 
-//const DefaultPacketDataSize = 1024 * 1024
-
-//var maxPacketDataSize = int32(DefaultPacketDataSize)
-
+// HeartbeatProtoId 心跳协议ID，用于连接保活
 const HeartbeatProtoId = int32(0)
+
+// NetPacketHeadSize 网络包头部大小（字节）
+// 包含: ProtoId(4) + Version(4) + DataSize(4) + IsCompressed(4) = 16字节
 const NetPacketHeadSize = 16
 
+// NetPacket 网络数据包结构
+// 用于在网络层传输协议数据，包含协议ID、版本号、数据大小、压缩标志和实际数据
 type NetPacket struct {
-	ProtoId      int32
-	DataSize     int32
-	Version      int32
-	IsCompressed bool
-	Data         []byte
+	ProtoId      int32  // 协议ID，用于标识消息类型
+	DataSize     int32  // 数据体大小（字节）
+	Version      int32  // 协议版本号，用于版本兼容
+	IsCompressed bool   // 数据是否压缩
+	Data         []byte // 实际数据内容（序列化后的协议数据）
 }
 
+// UnmarshalHead 从字节数组解析数据包头部
+// 参数:
+//   - data: 头部数据字节数组，长度必须 >= NetPacketHeadSize
+//
+// 返回:
+//   - error: 解析失败时返回错误信息
 func (p *NetPacket) UnmarshalHead(data []byte) error {
 	buf := bytes.NewReader(data)
 	if err := binary.Read(buf, binary.LittleEndian, &p.ProtoId); err != nil {
@@ -38,6 +46,12 @@ func (p *NetPacket) UnmarshalHead(data []byte) error {
 	return nil
 }
 
+// Marshal 将数据包序列化为字节数组
+// 格式: [ProtoId][Version][DataSize][IsCompressed][Data...]
+// 所有字段使用小端序编码
+//
+// 返回:
+//   - []byte: 序列化后的字节数组
 func (p *NetPacket) Marshal() []byte {
 	sendBuf := new(bytes.Buffer)
 	_ = binary.Write(sendBuf, binary.LittleEndian, p.ProtoId)

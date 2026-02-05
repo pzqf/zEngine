@@ -13,16 +13,23 @@ import (
 	"github.com/pzqf/zUtil/zCrypto"
 )
 
+// TcpClientSession TCP客户端会话
+// 管理与服务器的TCP连接，负责数据收发、心跳检测、加密解密
 type TcpClientSession struct {
-	conn          *net.TCPConn
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	aesKey        []byte
+	conn          *net.TCPConn       // TCP连接
+	wg            sync.WaitGroup     // 等待组
+	lastHeartBeat time.Time          // 最后心跳时间
+	ctxCancel     context.CancelFunc // 上下文取消函数
+	aesKey        []byte             // AES加密密钥
 
-	cli *TcpClient
+	cli *TcpClient // 所属客户端
 }
 
+// Init 初始化会话
+// 参数:
+//   - cli: 所属客户端
+//   - conn: TCP连接
+//   - aesKey: AES加密密钥
 func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte) {
 	s.conn = conn
 	s.lastHeartBeat = time.Now()
@@ -30,6 +37,8 @@ func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte
 	s.cli = cli
 }
 
+// Start 启动会话
+// 启动接收和心跳检测goroutine
 func (s *TcpClientSession) Start() {
 	if s.conn == nil {
 		return
@@ -41,15 +50,20 @@ func (s *TcpClientSession) Start() {
 	if s.cli.heartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
-
-	return
 }
 
+// Close 关闭会话
+// 取消上下文并等待所有goroutine退出
 func (s *TcpClientSession) Close() {
 	s.ctxCancel()
 	s.wg.Wait()
 }
 
+// receive 接收数据
+// 从TCP连接中读取数据包，解密后分发到消息处理器
+//
+// 参数:
+//   - ctx: 上下文
 func (s *TcpClientSession) receive(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.ctxCancel()
@@ -66,15 +80,17 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			break
 		}
 
+		// 设置读取超时时间
 		_ = s.conn.SetReadDeadline(time.Now().Add(time.Second * 3))
 
+		// 读取数据包头
 		headBuf := make([]byte, NetPacketHeadSize)
 		n, err := io.ReadFull(s.conn, headBuf)
 		if err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) {
 				if netErr.Timeout() {
-					continue
+					continue // 超时继续等待
 				}
 			}
 			if s.cli.logger != nil {
@@ -90,6 +106,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			break
 		}
 
+		// 解析数据包头
 		netPacket := NetPacket{}
 		if err = netPacket.UnmarshalHead(headBuf); err != nil {
 			if s.cli.logger != nil {
@@ -98,6 +115,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			break
 		}
 
+		// 读取数据包体
 		if netPacket.DataSize > 0 {
 			netPacket.Data = make([]byte, int(netPacket.DataSize))
 			n, err = io.ReadFull(s.conn, netPacket.Data)
@@ -117,11 +135,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 		}
 
+		// 校验协议ID
 		if netPacket.ProtoId < 0 {
 			log.Printf("receive NetPacket protoid empty")
 			continue
 		}
 
+		// 检查数据包大小是否超过限制
 		if netPacket.DataSize > s.cli.maxPacketDataSize {
 			if s.cli.logger != nil {
 				s.cli.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
@@ -130,6 +150,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			continue
 		}
 
+		// 解密数据
 		if netPacket.DataSize > 0 && s.aesKey != nil {
 			if decrypted, err := zCrypto.AESDecrypt(netPacket.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
 				netPacket.Data = decrypted
@@ -140,6 +161,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 		}
 
+		// 分发到消息处理器（异步）
 		go func() {
 			err = s.cli.dispatcher(s, &netPacket)
 			if err != nil {
@@ -153,12 +175,22 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 	s.ctxCancel()
 }
 
+// Send 发送数据
+// 将数据加密后发送到服务器
+//
+// 参数:
+//   - protoId: 协议ID
+//   - data: 要发送的数据
+//
+// 返回:
+//   - error: 发送失败时返回错误
 func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
 
 	if data != nil {
+		// 加密数据
 		if s.aesKey != nil {
 			if encrypted, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
 				netPacket.Data = encrypted
@@ -174,26 +206,35 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
+	// 校验数据包合法性
 	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
 		return errors.New("send packet illegal")
 	}
+	// 检查数据包大小是否超过限制
 	if netPacket.DataSize > s.cli.maxPacketDataSize {
 		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
 			netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
 	}
 
+	// 发送数据包
 	_, err := s.conn.Write(netPacket.Marshal())
 	if err != nil {
 		return err
 	}
-	s.heartbeatUpdate()
+	s.heartbeatUpdate() // 更新心跳时间
 	return nil
 }
 
+// heartbeatUpdate 更新心跳时间
 func (s *TcpClientSession) heartbeatUpdate() {
 	s.lastHeartBeat = time.Now()
 }
 
+// heartbeatCheck 心跳检测
+// 定期发送心跳包保持连接
+//
+// 参数:
+//   - ctx: 上下文
 func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
@@ -209,6 +250,12 @@ func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 		}
 	}
 }
+
+// GetSid 获取会话ID
+// 客户端会话固定返回1
+//
+// 返回:
+//   - SessionIdType: 会话ID
 func (s *TcpClientSession) GetSid() SessionIdType {
 	return SessionIdType(1)
 }

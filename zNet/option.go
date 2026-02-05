@@ -8,8 +8,16 @@ import (
 	"reflect"
 )
 
+// Options 服务器配置选项函数类型
+// 用于函数式配置模式，通过闭包设置服务器属性
 type Options func(Server)
 
+// WithMaxClientCount 设置最大客户端连接数
+// 参数:
+//   - count: 最大客户端连接数
+//
+// 返回:
+//   - Options: 配置函数
 func WithMaxClientCount(count int) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -25,6 +33,12 @@ func WithMaxClientCount(count int) Options {
 	}
 }
 
+// WithMaxPacketDataSize 设置最大数据包数据大小
+// 参数:
+//   - size: 数据包最大字节数
+//
+// 返回:
+//   - Options: 配置函数
 func WithMaxPacketDataSize(size int32) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -40,6 +54,14 @@ func WithMaxPacketDataSize(size int32) Options {
 	}
 }
 
+// WithRsaEncrypt 启用RSA加密
+// 从指定文件加载RSA私钥用于加密通信
+//
+// 参数:
+//   - rsaPrivateFile: RSA私钥文件路径
+//
+// 返回:
+//   - Options: 配置函数
 func WithRsaEncrypt(rsaPrivateFile string) Options {
 	return func(svr Server) {
 		if rsaPrivateFile != "" && reflect.TypeOf(svr).String() == "*zNet.TcpServer" {
@@ -54,23 +76,25 @@ func WithRsaEncrypt(rsaPrivateFile string) Options {
 
 			block, _ := pem.Decode(all)
 			if block == nil {
-				//LogPrint("public key error")
 				return
 			}
 
-			//x509.ParsePKCS8PrivateKey()
 			prkI, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err != nil {
-				//LogPrint("ParsePKCS1PrivateKey error", err)
 				return
 			}
 
-			svr.(*TcpServer).privateKey = prkI //.(*rsa.PrivateKey)
-			//LogPrint("rsa encrypt opened", prkI)
+			svr.(*TcpServer).privateKey = prkI
 		}
 	}
 }
 
+// WithChanSize 设置通道大小
+// 参数:
+//   - chanSize: 通道缓冲区大小
+//
+// 返回:
+//   - Options: 配置函数
 func WithChanSize(chanSize int) Options {
 	return func(svr Server) {
 		if chanSize <= 0 {
@@ -87,6 +111,12 @@ func WithChanSize(chanSize int) Options {
 	}
 }
 
+// WithHeartbeat 设置心跳间隔
+// 参数:
+//   - duration: 心跳间隔时间（秒）
+//
+// 返回:
+//   - Options: 配置函数
 func WithHeartbeat(duration int) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -100,6 +130,12 @@ func WithHeartbeat(duration int) Options {
 	}
 }
 
+// WithAddSessionCallBack 设置Session添加回调
+// 参数:
+//   - cb: Session添加时的回调函数
+//
+// 返回:
+//   - Options: 配置函数
 func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -115,6 +151,12 @@ func WithAddSessionCallBack(cb SessionCallBackFunc) Options {
 	}
 }
 
+// WithRemoveSessionCallBack 设置Session移除回调
+// 参数:
+//   - cb: Session移除时的回调函数
+//
+// 返回:
+//   - Options: 配置函数
 func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -130,6 +172,9 @@ func WithRemoveSessionCallBack(cb SessionCallBackFunc) Options {
 	}
 }
 
+// WithWorkerPoolSize 设置工作池大小（已废弃）
+// 为了确保FIFO数据包处理顺序，Worker Pool已被移除
+// 此函数保留用于向后兼容
 func WithWorkerPoolSize(size int) Options {
 	return func(svr Server) {
 		// Worker pool has been removed to ensure FIFO packet processing
@@ -137,6 +182,12 @@ func WithWorkerPoolSize(size int) Options {
 	}
 }
 
+// WithLogger 设置日志记录器
+// 参数:
+//   - logger: 日志记录器实例
+//
+// 返回:
+//   - Options: 配置函数
 func WithLogger(logger Logger) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
@@ -153,6 +204,11 @@ func WithLogger(logger Logger) Options {
 }
 
 // WithDDoSConfig 设置DDoS保护配置
+// 参数:
+//   - cfg: DDoS保护配置
+//
+// 返回:
+//   - Options: 配置函数
 func WithDDoSConfig(cfg *DDoSConfig) Options {
 	return func(svr Server) {
 		switch reflect.TypeOf(svr).String() {
