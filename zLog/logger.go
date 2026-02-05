@@ -10,6 +10,109 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// AsyncWriter 异步日志写入器
+type AsyncWriter struct {
+	writer        zapcore.WriteSyncer
+	buffer        chan []byte
+	stopChan      chan struct{}
+	flushInterval time.Duration
+	wg            sync.WaitGroup
+	mu            sync.Mutex
+	closed        bool
+}
+
+// NewAsyncWriter 创建一个新的异步写入器
+func NewAsyncWriter(writer zapcore.WriteSyncer, bufferSize int, flushInterval time.Duration) *AsyncWriter {
+	aw := &AsyncWriter{
+		writer:        writer,
+		buffer:        make(chan []byte, bufferSize),
+		stopChan:      make(chan struct{}),
+		flushInterval: flushInterval,
+	}
+	aw.wg.Add(1)
+	go aw.run()
+	return aw
+}
+
+// run 异步写入循环
+func (aw *AsyncWriter) run() {
+	defer aw.wg.Done()
+	ticker := time.NewTicker(aw.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case data := <-aw.buffer:
+			aw.write(data)
+		case <-ticker.C:
+			aw.flushBuffer()
+		case <-aw.stopChan:
+			aw.flushBuffer()
+			return
+		}
+	}
+}
+
+// write 写入数据到底层写入器
+func (aw *AsyncWriter) write(data []byte) {
+	aw.mu.Lock()
+	defer aw.mu.Unlock()
+	_, _ = aw.writer.Write(data)
+}
+
+// flushBuffer 刷新缓冲区中所有数据
+func (aw *AsyncWriter) flushBuffer() {
+	for {
+		select {
+		case data := <-aw.buffer:
+			aw.write(data)
+		default:
+			return
+		}
+	}
+}
+
+// Write 实现 io.Writer 接口
+func (aw *AsyncWriter) Write(p []byte) (n int, err error) {
+	data := make([]byte, len(p))
+	copy(data, p)
+
+	select {
+	case aw.buffer <- data:
+		return len(p), nil
+	default:
+		aw.write(data)
+		return len(p), nil
+	}
+}
+
+// Sync 实现 zapcore.WriteSyncer 接口
+func (aw *AsyncWriter) Sync() error {
+	aw.Flush()
+	return nil
+}
+
+// Flush 刷新缓冲区
+func (aw *AsyncWriter) Flush() {
+	aw.flushBuffer()
+}
+
+// Close 关闭异步写入器
+func (aw *AsyncWriter) Close() error {
+	aw.mu.Lock()
+	if aw.closed {
+		aw.mu.Unlock()
+		return nil
+	}
+	aw.closed = true
+	aw.mu.Unlock()
+
+	close(aw.stopChan)
+	aw.wg.Wait()
+	aw.flushBuffer()
+	return aw.writer.Sync()
+}
+
 // Logger 标准日志接口
 type Logger interface {
 	Debug(format string, args ...interface{})
@@ -45,6 +148,12 @@ type Config struct {
 	SamplingInitial int `toml:"sampling-initial" json:"sampling-initial"`
 	// SamplingThereafter 采样后续数量，默认10
 	SamplingThereafter int `toml:"sampling-thereafter" json:"sampling-thereafter"`
+	// Async 是否启用异步写入
+	Async bool `toml:"async" json:"async"`
+	// AsyncBufferSize 异步写入缓冲区大小，默认1024
+	AsyncBufferSize int `toml:"async-buffer-size" json:"async-buffer-size"`
+	// AsyncFlushInterval 异步刷新间隔（毫秒），默认100
+	AsyncFlushInterval int `toml:"async-flush-interval" json:"async-flush-interval"`
 }
 
 const (
@@ -71,7 +180,45 @@ func NewZapLoggerAdapter(logger *zap.Logger) *ZapLoggerAdapter {
 type LoggerManager struct {
 	loggers      map[string]*zap.Logger
 	levelManager zap.AtomicLevel
+	asyncWriters []*AsyncWriter
 	mu           sync.RWMutex
+	asyncMu      sync.Mutex
+}
+
+// registerAsyncWriter 注册异步写入器
+func (lm *LoggerManager) registerAsyncWriter(writer *AsyncWriter) {
+	lm.asyncMu.Lock()
+	defer lm.asyncMu.Unlock()
+	lm.asyncWriters = append(lm.asyncWriters, writer)
+}
+
+// FlushAll 刷新所有异步写入器
+func (lm *LoggerManager) FlushAll() {
+	lm.asyncMu.Lock()
+	writers := make([]*AsyncWriter, len(lm.asyncWriters))
+	copy(writers, lm.asyncWriters)
+	lm.asyncMu.Unlock()
+
+	for _, writer := range writers {
+		writer.Flush()
+	}
+}
+
+// CloseAll 关闭所有异步写入器
+func (lm *LoggerManager) CloseAll() error {
+	lm.asyncMu.Lock()
+	writers := make([]*AsyncWriter, len(lm.asyncWriters))
+	copy(writers, lm.asyncWriters)
+	lm.asyncWriters = nil
+	lm.asyncMu.Unlock()
+
+	var firstErr error
+	for _, writer := range writers {
+		if err := writer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // 全局日志管理器
@@ -193,14 +340,31 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 			cfg.MaxBackups = 5 // 默认保留5个备份
 		}
 
-		output := zapcore.AddSync(&lumberjack.Logger{
+		fileWriter := &lumberjack.Logger{
 			Filename:   cfg.Filename,
 			MaxSize:    cfg.MaxSize,
 			MaxAge:     cfg.MaxDays,
 			MaxBackups: cfg.MaxBackups,
 			Compress:   cfg.Compress,
 			LocalTime:  true,
-		})
+		}
+
+		var output zapcore.WriteSyncer
+		if cfg.Async {
+			bufferSize := cfg.AsyncBufferSize
+			if bufferSize <= 0 {
+				bufferSize = 1024
+			}
+			flushInterval := time.Duration(cfg.AsyncFlushInterval) * time.Millisecond
+			if flushInterval <= 0 {
+				flushInterval = 100 * time.Millisecond
+			}
+			asyncWriter := NewAsyncWriter(zapcore.AddSync(fileWriter), bufferSize, flushInterval)
+			GetLoggerManager().registerAsyncWriter(asyncWriter)
+			output = asyncWriter
+		} else {
+			output = zapcore.AddSync(fileWriter)
+		}
 
 		encoderConfig := zap.NewProductionEncoderConfig()
 		encoderConfig.EncodeTime = timeEncoder
@@ -256,4 +420,14 @@ func SetGlobalLogLevel(level int) {
 // GetGlobalLogLevel 获取当前全局日志级别
 func GetGlobalLogLevel() int {
 	return GetLoggerManager().GetLevel()
+}
+
+// FlushAll 刷新所有异步写入器的缓冲区
+func FlushAll() {
+	GetLoggerManager().FlushAll()
+}
+
+// CloseAll 关闭所有异步写入器
+func CloseAll() error {
+	return GetLoggerManager().CloseAll()
 }
