@@ -19,7 +19,7 @@ type NetPacket struct {
 	ProtoId      int32  // 协议ID，用于标识消息类型
 	DataSize     int32  // 数据体大小（字节）
 	Version      int32  // 协议版本号，用于版本兼容
-	IsCompressed bool   // 数据是否压缩
+	IsCompressed int32  // 数据是否压缩 (0=未压缩, 1=压缩)
 	Data         []byte // 实际数据内容（序列化后的协议数据）
 }
 
