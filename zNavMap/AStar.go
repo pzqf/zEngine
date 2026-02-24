@@ -1,4 +1,4 @@
-package zNavigationMap
+package zNavMap
 
 import (
 	"container/heap"
@@ -75,7 +75,7 @@ func (nq *NodeQueue) Pop() interface{} {
 }
 
 // FindPathByAStar A*寻路
-func FindPathByAStar(start, end Grid, m *NavigationMap) (road []*Grid, err error) {
+func FindPathByAStar(start, end Grid, m *NavMap) (road []*Grid, err error) {
 	startNode := newNode(&start, nil, nil)
 	endNode := newNode(&end, nil, nil)
 

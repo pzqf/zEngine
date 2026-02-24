@@ -1,4 +1,4 @@
-package zNavigationMap
+package zNavMap
 
 import (
 	"errors"
@@ -23,8 +23,8 @@ func (g Grid) ToUniqueKey() string {
 	return strconv.Itoa(g.X) + "-" + strconv.Itoa(g.Y)
 }
 
-// NavigationMap 导航地图
-type NavigationMap struct {
+// NavMap 导航地图
+type NavMap struct {
 	grids [][]Grid //地图上的块
 	//blocks map[string]*Grid //地图上的阻挡，(永远不可到达)
 	maxX                     int
@@ -32,11 +32,11 @@ type NavigationMap struct {
 	canReachHeightDifference float64
 }
 
-// NewNavigationMap 初始化地图，
+// NewNavMap 初始化地图，
 // maxX, maxY 地块最大长度和宽度，
 // canReachHeightDifference 可攀爬的高度差
-func NewNavigationMap(maxX, maxY int, canReachHeightDifference float64) NavigationMap {
-	m := NavigationMap{
+func NewNavMap(maxX, maxY int, canReachHeightDifference float64) NavMap {
+	m := NavMap{
 		maxX:                     maxX,
 		maxY:                     maxY,
 		canReachHeightDifference: canReachHeightDifference,
@@ -52,7 +52,7 @@ func NewNavigationMap(maxX, maxY int, canReachHeightDifference float64) Navigati
 	return m
 }
 
-func (m *NavigationMap) AddGrid(g Grid) error {
+func (m *NavMap) AddGrid(g Grid) error {
 	if g.X < 0 || g.X >= m.maxX || g.Y < 0 || g.Y >= m.maxY {
 		return errors.New("grid data error")
 	}
@@ -61,7 +61,7 @@ func (m *NavigationMap) AddGrid(g Grid) error {
 }
 
 // GetNeighborGrid 获取相邻点,包含不可到达的点
-func (m *NavigationMap) GetNeighborGrid(currGrid *Grid) []*Grid {
+func (m *NavMap) GetNeighborGrid(currGrid *Grid) []*Grid {
 	var listGrid []*Grid
 
 	for x := currGrid.X - 1; x <= currGrid.X+1; x++ {
@@ -86,7 +86,7 @@ func (m *NavigationMap) GetNeighborGrid(currGrid *Grid) []*Grid {
 }
 
 // CanReachNeighborGrid 是否可以到达，假设可以攀爬高度差为1
-func (m *NavigationMap) CanReachNeighborGrid(from, to *Grid) bool {
+func (m *NavMap) CanReachNeighborGrid(from, to *Grid) bool {
 	if to.Pos.Z <= from.Pos.Z+m.canReachHeightDifference {
 		return true
 	}

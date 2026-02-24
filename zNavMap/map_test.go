@@ -1,4 +1,4 @@
-package zNavigationMap
+package zNavMap
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ import (
 	"github.com/pzqf/zUtil/zDataConv"
 )
 
-func StringToMap(charMap []string) *NavigationMap {
+func StringToMap(charMap []string) *NavMap {
 	maxX := len(charMap)
 	maxY := 0
 
@@ -23,7 +23,7 @@ func StringToMap(charMap []string) *NavigationMap {
 		}
 	}
 
-	m := NewNavigationMap(maxX, maxY, 1)
+	m := NewNavMap(maxX, maxY, 1)
 
 	for x, row := range charMap {
 		cols := strings.Split(row, " ")
@@ -40,7 +40,7 @@ func StringToMap(charMap []string) *NavigationMap {
 	return &m
 }
 
-func PrintMap(m *NavigationMap, road []*Grid) {
+func PrintMap(m *NavMap, road []*Grid) {
 	for x := 0; x < m.maxX; x++ {
 		for y := 0; y < m.maxY; y++ {
 			for i := 0; i < len(road); i++ {
