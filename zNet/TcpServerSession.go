@@ -15,17 +15,17 @@ import (
 // TcpServerSession TCP服务器会话
 // 管理与单个客户端的TCP连接，负责数据收发、心跳检测、加密解密
 type TcpServerSession struct {
-	conn          *net.TCPConn           // TCP连接
-	sid           SessionIdType          // 会话唯一标识
-	sendChan      chan *NetPacket        // 发送通道
-	receiveChan   chan *NetPacket        // 接收通道
-	wg            sync.WaitGroup         // 等待组
-	lastHeartBeat time.Time              // 最后心跳时间
-	ctxCancel     context.CancelFunc     // 上下文取消函数
-	onClose       TcpCloseCallBackFunc   // 关闭回调函数
-	aesKey        []byte                 // AES加密密钥
-	svr           *TcpServer             // 所属服务器
-	obj           interface{}            // 附加对象
+	conn          *net.TCPConn         // TCP连接
+	sid           SessionIdType        // 会话唯一标识
+	sendChan      chan *NetPacket      // 发送通道
+	receiveChan   chan *NetPacket      // 接收通道
+	wg            sync.WaitGroup       // 等待组
+	lastHeartBeat time.Time            // 最后心跳时间
+	ctxCancel     context.CancelFunc   // 上下文取消函数
+	onClose       TcpCloseCallBackFunc // 关闭回调函数
+	aesKey        []byte               // AES加密密钥
+	svr           *TcpServer           // 所属服务器
+	obj           interface{}          // 附加对象
 }
 
 // TcpCloseCallBackFunc TCP连接关闭回调函数类型
@@ -66,8 +66,14 @@ func (s *TcpServerSession) Start() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
-	go s.receive(ctx)       // 启动接收协程
-	go s.process(ctx)       // 启动处理协程
+	go s.receive(ctx) // 启动接收协程
+
+	// 根据配置决定是否启动处理协程
+	if !s.svr.config.UseWorkerPool {
+		// 传统模式：启动处理协程
+		go s.process(ctx)
+	}
+
 	if s.svr.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx) // 启动心跳检测协程
 	}
@@ -185,14 +191,52 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			continue
 		}
 
-		// 非心跳包放入接收通道
+		// 非心跳包处理
 		if netPacket.ProtoId != HeartbeatProtoId {
-			s.receiveChan <- &netPacket
+			if s.svr.config.UseWorkerPool {
+				// 工作池模式：提交任务到工作池
+				packet := netPacket // 复制数据包
+				s.svr.workerPool.Submit(func() error {
+					s.processPacket(&packet)
+					return nil
+				})
+			} else {
+				// 传统模式：放入接收通道
+				s.receiveChan <- &netPacket
+			}
 		}
 
 		s.heartbeatUpdate() // 更新心跳时间
 	}
 	s.ctxCancel()
+}
+
+// processPacket 处理数据包
+// 解密数据并分发到消息处理器
+//
+// 参数:
+//   - packet: 要处理的数据包
+func (s *TcpServerSession) processPacket(packet *NetPacket) {
+	// 解密数据
+	if packet.DataSize > 0 && s.aesKey != nil {
+		if decrypted, err := zCrypto.AESDecrypt(packet.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+			packet.Data = decrypted
+		} else {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("AES-GCM decrypt error: %v, sid:%d", err, s.sid)
+			}
+			return
+		}
+	}
+	// 分发到消息处理器
+	if s.svr.dispatcher != nil {
+		err := s.svr.dispatcher(s, packet)
+		if err != nil {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, packet.ProtoId)
+			}
+		}
+	}
 }
 
 // process 处理数据
@@ -217,26 +261,8 @@ func (s *TcpServerSession) process(ctx context.Context) {
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			// 解密数据
-			if receivePacket.DataSize > 0 && s.aesKey != nil {
-				if decrypted, err := zCrypto.AESDecrypt(receivePacket.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
-					receivePacket.Data = decrypted
-				} else {
-					if s.svr.logger != nil {
-						s.svr.logger.Error("AES-GCM decrypt error: %v, sid:%d", err, s.sid)
-					}
-				}
-			}
-			// 分发到消息处理器
-			if s.svr.dispatcher != nil {
-				err := s.svr.dispatcher(s, receivePacket)
-				if err != nil {
-					if s.svr.logger != nil {
-						s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-					}
-					return
-				}
-			}
+			// 使用processPacket处理数据包
+			s.processPacket(receivePacket)
 
 		case sendPacket := <-s.sendChan:
 			// 发送数据包
@@ -252,16 +278,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					if s.svr.dispatcher != nil {
-						err := s.svr.dispatcher(s, receivePacket)
-						if err != nil {
-							if s.svr.logger != nil {
-								s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-							}
-							return
-						}
-					}
-
+					s.processPacket(receivePacket)
 					continue
 				}
 				break

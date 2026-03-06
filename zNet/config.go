@@ -8,6 +8,9 @@ type TcpConfig struct {
 	ChanSize          int    `toml:"chan_size" json:"chan_size"`                       // Session收发通道大小，默认 1024
 	HeartbeatDuration int    `toml:"heartbeat_duration" json:"heartbeat_duration"`     // 心跳间隔时间（秒），默认 30
 	MaxPacketDataSize int32  `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
+	UseWorkerPool     bool   `toml:"use_worker_pool" json:"use_worker_pool"`           // 是否使用工作池模式，默认 false
+	WorkerPoolSize    int    `toml:"worker_pool_size" json:"worker_pool_size"`         // 工作池大小，默认 100
+	WorkerQueueSize   int    `toml:"worker_queue_size" json:"worker_queue_size"`       // 工作池队列大小，默认 10000
 }
 
 // UdpConfig UDP服务器配置

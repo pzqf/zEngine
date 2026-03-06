@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pzqf/zUtil/zConcurrency"
 	"github.com/pzqf/zUtil/zMap"
 )
 
@@ -24,6 +25,7 @@ type TcpServer struct {
 	dispatcher       HandlerFun                                       // 消息处理器
 	logger           Logger                                           // 日志记录器
 	ddosProtection   *DDoSProtection                                  // DDoS防护组件
+	workerPool       *zConcurrency.WorkerPool                         // 工作池
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -38,11 +40,25 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 		cfg.ChanSize = DefaultChanSize
 	}
 
+	// 设置默认工作池参数
+	if cfg.WorkerPoolSize <= 0 {
+		cfg.WorkerPoolSize = 100
+	}
+	if cfg.WorkerQueueSize <= 0 {
+		cfg.WorkerQueueSize = 10000
+	}
+
 	svr := &TcpServer{
 		clientSIDAtomic:  10000,
 		clientSessionMap: zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
 		config:           cfg,
 		ddosProtection:   NewDDoSProtection(),
+	}
+
+	// 根据配置创建工作池
+	if cfg.UseWorkerPool {
+		svr.workerPool = zConcurrency.NewWorkerPool(cfg.WorkerPoolSize, cfg.WorkerQueueSize)
+		svr.workerPool.Start()
 	}
 
 	for _, opt := range opts {
@@ -138,6 +154,11 @@ func (svr *TcpServer) Close() {
 		svr.clientSessionMap.Delete(session.sid)
 		return true
 	})
+
+	// 停止工作池
+	if svr.workerPool != nil {
+		svr.workerPool.Stop()
+	}
 
 	// 等待所有goroutine退出
 	svr.wg.Wait()
