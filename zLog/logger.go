@@ -1,6 +1,7 @@
 package zLog
 
 import (
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -10,198 +11,23 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// AsyncWriter 异步日志写入器
-// 将日志写入操作异步化，提高日志记录性能
-type AsyncWriter struct {
-	writer        zapcore.WriteSyncer // 底层写入器
-	buffer        chan []byte         // 写入缓冲区
-	stopChan      chan struct{}       // 停止信号通道
-	flushInterval time.Duration       // 刷新间隔
-	wg            sync.WaitGroup      // 等待组
-	mu            sync.Mutex          // 互斥锁
-	closed        bool                // 是否已关闭
-}
-
-// NewAsyncWriter 创建一个新的异步写入器
-// 参数:
-//   - writer: 底层写入器
-//   - bufferSize: 缓冲区大小
-//   - flushInterval: 刷新间隔
-//
-// 返回:
-//   - *AsyncWriter: 异步写入器实例
-func NewAsyncWriter(writer zapcore.WriteSyncer, bufferSize int, flushInterval time.Duration) *AsyncWriter {
-	aw := &AsyncWriter{
-		writer:        writer,
-		buffer:        make(chan []byte, bufferSize),
-		stopChan:      make(chan struct{}),
-		flushInterval: flushInterval,
-	}
-	aw.wg.Add(1)
-	go aw.run()
-	return aw
-}
-
-// run 异步写入循环
-// 在独立goroutine中运行，处理写入、定时刷新和停止信号
-func (aw *AsyncWriter) run() {
-	defer aw.wg.Done()
-	ticker := time.NewTicker(aw.flushInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case data := <-aw.buffer:
-			aw.write(data)
-		case <-ticker.C:
-			aw.flushBuffer()
-		case <-aw.stopChan:
-			aw.flushBuffer()
-			return
-		}
-	}
-}
-
-// write 写入数据到底层写入器
-// 参数:
-//   - data: 要写入的数据
-func (aw *AsyncWriter) write(data []byte) {
-	aw.mu.Lock()
-	defer aw.mu.Unlock()
-	_, _ = aw.writer.Write(data)
-}
-
-// flushBuffer 刷新缓冲区中所有数据
-// 将缓冲区中所有待写入数据写入到底层写入器
-func (aw *AsyncWriter) flushBuffer() {
-	for {
-		select {
-		case data := <-aw.buffer:
-			aw.write(data)
-		default:
-			return
-		}
-	}
-}
-
-// Write 实现 io.Writer 接口
-// 将数据写入缓冲区，如果缓冲区满则直接写入
-//
-// 参数:
-//   - p: 要写入的数据
-//
-// 返回:
-//   - n: 写入的字节数
-//   - error: 写入失败时返回错误
-func (aw *AsyncWriter) Write(p []byte) (n int, err error) {
-	data := make([]byte, len(p))
-	copy(data, p)
-
-	select {
-	case aw.buffer <- data:
-		return len(p), nil
-	default:
-		aw.write(data)
-		return len(p), nil
-	}
-}
-
-// Sync 实现 zapcore.WriteSyncer 接口
-// 刷新所有缓冲区数据
-//
-// 返回:
-//   - error: 同步失败时返回错误
-func (aw *AsyncWriter) Sync() error {
-	aw.Flush()
-	return nil
-}
-
-// Flush 刷新缓冲区
-// 将缓冲区中所有待写入数据写入到底层写入器
-func (aw *AsyncWriter) Flush() {
-	aw.flushBuffer()
-}
-
-// Close 关闭异步写入器
-// 停止异步写入循环，刷新所有缓冲区，关闭底层写入器
-//
-// 返回:
-//   - error: 关闭失败时返回错误
-func (aw *AsyncWriter) Close() error {
-	aw.mu.Lock()
-	if aw.closed {
-		aw.mu.Unlock()
-		return nil
-	}
-	aw.closed = true
-	aw.mu.Unlock()
-
-	close(aw.stopChan)
-	aw.wg.Wait()
-	aw.flushBuffer()
-	return aw.writer.Sync()
-}
-
-// Logger 标准日志接口
-// 定义日志记录的基本方法
-type Logger interface {
-	Debug(format string, args ...interface{}) // 调试级别日志
-	Info(format string, args ...interface{})  // 信息级别日志
-	Warn(format string, args ...interface{})  // 警告级别日志
-	Error(format string, args ...interface{}) // 错误级别日志
-	Fatal(format string, args ...interface{}) // 致命级别日志
-}
-
-// Config 日志配置结构体
-// 配置日志系统的各项参数
-type Config struct {
-	// Level 日志级别，可选值：DebugLevel(-1), InfoLevel(0), WarnLevel(1), ErrorLevel(2), DPanicLevel(3), PanicLevel(4), FatalLevel(5)
-	Level int `toml:"level" json:"level"`
-	// Console 是否输出到控制台
-	Console bool `toml:"console" json:"console"`
-	// Filename 日志文件路径
-	Filename string `toml:"filename" json:"filename"`
-	// MaxSize 单个日志文件最大大小（MB），默认1024MB
-	MaxSize int `toml:"max-size" json:"max-size"`
-	// MaxDays 日志文件最大保留天数
-	MaxDays int `toml:"max-days" json:"max-days"`
-	// MaxBackups 日志文件最大备份数，默认5个
-	MaxBackups int `toml:"max-backups" json:"max-backups"`
-	// Compress 是否压缩日志文件
-	Compress bool `toml:"compress" json:"compress"`
-	// ShowCaller 是否显示调用者信息
-	ShowCaller bool `toml:"show-caller" json:"show-caller"`
-	// Stacktrace 在什么级别添加堆栈跟踪，可选值同Level，默认ErrorLevel(2)
-	Stacktrace int `toml:"stacktrace" json:"stacktrace"`
-	// Sampling 是否启用日志采样
-	Sampling bool `toml:"sampling" json:"sampling"`
-	// SamplingInitial 采样初始数量，默认100
-	SamplingInitial int `toml:"sampling-initial" json:"sampling-initial"`
-	// SamplingThereafter 采样后续数量，默认10
-	SamplingThereafter int `toml:"sampling-thereafter" json:"sampling-thereafter"`
-	// Async 是否启用异步写入
-	Async bool `toml:"async" json:"async"`
-	// AsyncBufferSize 异步写入缓冲区大小，默认1024
-	AsyncBufferSize int `toml:"async-buffer-size" json:"async-buffer-size"`
-	// AsyncFlushInterval 异步刷新间隔（毫秒），默认100
-	AsyncFlushInterval int `toml:"async-flush-interval" json:"async-flush-interval"`
-}
-
-// 日志级别常量
-const (
-	DebugLevel  = iota - 1 // 调试级别
-	InfoLevel              // 信息级别
-	WarnLevel              // 警告级别
-	ErrorLevel             // 错误级别
-	DPanicLevel            // 开发模式Panic级别
-	PanicLevel             // Panic级别
-	FatalLevel             // 致命级别
-)
-
 // ZapLoggerAdapter 适配zap.Logger到标准Logger接口
 // 将zap.Logger适配为Logger接口，提供格式化日志方法
 type ZapLoggerAdapter struct {
 	logger *zap.Logger // zap日志器实例
+	writer *zapWriter  // io.Writer 适配器
+}
+
+// zapWriter 实现 io.Writer 接口，用于集成其他日志框架
+type zapWriter struct {
+	logger *zap.Logger
+}
+
+// Write 实现 io.Writer 接口
+// 将写入的数据作为 Info 级别日志记录
+func (w *zapWriter) Write(p []byte) (n int, err error) {
+	w.logger.Info(string(p))
+	return len(p), nil
 }
 
 // NewZapLoggerAdapter 创建一个新的ZapLoggerAdapter
@@ -211,7 +37,10 @@ type ZapLoggerAdapter struct {
 // 返回:
 //   - *ZapLoggerAdapter: 适配器实例
 func NewZapLoggerAdapter(logger *zap.Logger) *ZapLoggerAdapter {
-	return &ZapLoggerAdapter{logger: logger}
+	return &ZapLoggerAdapter{
+		logger: logger,
+		writer: &zapWriter{logger: logger},
+	}
 }
 
 // LoggerManager 日志管理器
@@ -311,6 +140,14 @@ func (l *ZapLoggerAdapter) Fatal(format string, args ...interface{}) {
 	l.logger.Sugar().Fatalf(format, args...)
 }
 
+// Writer 获取日志写入器
+// 返回一个 io.Writer，用于集成其他日志框架（如 Echo 的 Logger 中间件）
+// 返回:
+//   - io.Writer: 日志写入器
+func (l *ZapLoggerAdapter) Writer() io.Writer {
+	return l.writer
+}
+
 // GetStandardLogger 获取标准日志接口实例
 // 返回:
 //   - Logger: 标准日志接口实例
@@ -395,8 +232,16 @@ func (lm *LoggerManager) GetLevel() int {
 //   - *zap.Logger: 日志器实例
 //   - error: 创建失败时返回错误
 func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
-	level := zap.NewAtomicLevel()
-	level.SetLevel(zapcore.Level(cfg.Level))
+	// 文件日志级别
+	fileLevel := zap.NewAtomicLevel()
+	fileLevel.SetLevel(zapcore.Level(cfg.Level))
+
+	// 控制台日志级别（如果未设置，使用文件日志级别）
+	consoleLevel := fileLevel
+	if cfg.ConsoleLevel != 0 || cfg.ConsoleLevel == DebugLevel {
+		consoleLevel = zap.NewAtomicLevel()
+		consoleLevel.SetLevel(zapcore.Level(cfg.ConsoleLevel))
+	}
 
 	var cores []zapcore.Core
 
@@ -412,7 +257,7 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 		encoderConfig.EncodeTime = timeEncoder
 		encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 
-		consoleCore := zapcore.NewCore(zapcore.NewConsoleEncoder(encoderConfig), output, level)
+		consoleCore := zapcore.NewCore(zapcore.NewConsoleEncoder(encoderConfig), output, consoleLevel)
 		cores = append(cores, consoleCore)
 	}
 
@@ -465,7 +310,7 @@ func NewLogger(cfg *Config, options ...zap.Option) (*zap.Logger, error) {
 		encoderConfig.EncodeTime = timeEncoder
 		encoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
 
-		fileCore := zapcore.NewCore(zapcore.NewJSONEncoder(encoderConfig), output, level)
+		fileCore := zapcore.NewCore(zapcore.NewJSONEncoder(encoderConfig), output, fileLevel)
 		cores = append(cores, fileCore)
 	}
 

@@ -16,8 +16,8 @@ const zEngineLogo = `
 ║   ███████╗███████╗██║ ╚████║╚██████╔╝██║██║ ╚████║███████╗     ║
 ║   ╚══════╝╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝╚═╝  ╚═══╝╚══════╝     ║
 ║                                                                ║
-║                    zEngine - Go Game Engine                    ║
-║           A Lightweight Distributed Game Server Framework      ║
+║                  zEngine - Go Game Engine                      ║
+║         A Lightweight Distributed Game Server Framework        ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 `
@@ -31,7 +31,7 @@ func PrintZEngineLogo(appName string, version string) {
 	if version != "" {
 		fmt.Printf("  Version: %s\n", version)
 	}
-	fmt.Printf("  zEngine Version: %s\n", "1.0.0")
+	fmt.Printf("  zEngine Version: %s\n", "0.0.1")
 	fmt.Printf("  Go Version: %s\n", runtime.Version())
 	fmt.Printf("  OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("  CPUs: %d\n", runtime.NumCPU())

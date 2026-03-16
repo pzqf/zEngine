@@ -1,52 +1,108 @@
 package zNet
 
 import (
+	"context"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
+// ClientState 客户端连接状态
+type ClientState int
+
+const (
+	ClientStateDisconnected ClientState = iota // 未连接
+	ClientStateConnecting                      // 连接中
+	ClientStateConnected                       // 已连接
+	ClientStateReconnecting                    // 重连中
+)
+
+// ClientStateCallback 客户端状态回调函数类型
+type ClientStateCallback func(state ClientState)
+
 // TcpClient TCP客户端
-// 用于连接到TCP服务器并进行通信
+// 用于连接到TCP服务器并进行通信，支持自动重连、状态回调等功能
 type TcpClient struct {
-	serverAddr        string            // 服务器地址
-	serverPort        int               // 服务器端口
-	session           *TcpClientSession // 会话实例
-	dispatcher        HandlerFun        // 消息分发器
-	heartbeatDuration int               // 心跳间隔（秒）
-	maxPacketDataSize int32             // 最大数据包大小
-	logger            Logger            // 日志记录器
+	config     *TcpClientConfig  // 客户端配置
+	session    *TcpClientSession // 会话实例
+	dispatcher HandlerFun        // 消息分发器
+	logger     Logger            // 日志记录器
+	state      atomic.Value      // 连接状态（原子操作）
+	ctx        context.Context   // 上下文
+
+	ctxCancel context.CancelFunc // 上下文取消函数
+	wg        sync.WaitGroup     // 等待组
+
+	stateCallbacks []ClientStateCallback // 状态回调函数列表
+	reconnectCount int                   // 当前重连次数
 }
 
-// ConnectToServer 连接到服务器
-// 建立TCP连接，执行DH密钥交换，初始化会话
-//
+// NewTcpClient 创建新的TCP客户端实例
 // 参数:
-//   - serverAddr: 服务器地址
-//   - serverPort: 服务器端口
-//   - rsaPublicFile: RSA公钥文件（保留参数，当前使用DH密钥交换）
-//   - heartbeatDuration: 心跳间隔（秒）
-//   - maxPacketDataSize: 最大数据包大小
+//   - cfg: TCP客户端配置
+//   - opts: 可选配置项（函数式选项模式）
+//
+// 返回:
+//   - *TcpClient: TCP客户端实例
+func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
+	if cfg.ChanSize <= 0 {
+		cfg.ChanSize = DefaultChanSize
+	}
+	if cfg.HeartbeatDuration <= 0 {
+		cfg.HeartbeatDuration = 30
+	}
+	if cfg.MaxPacketDataSize <= 0 {
+		cfg.MaxPacketDataSize = 1024 * 1024
+	}
+	if cfg.ReconnectDelay <= 0 {
+		cfg.ReconnectDelay = 5
+	}
+
+	cli := &TcpClient{
+		config:         cfg,
+		stateCallbacks: make([]ClientStateCallback, 0),
+	}
+	cli.state.Store(ClientStateDisconnected)
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	cli.ctx = ctx
+	cli.ctxCancel = ctxCancel
+
+	for _, opt := range opts {
+		opt(cli)
+	}
+
+	return cli
+}
+
+// Connect 连接到服务器
+// 建立TCP连接，执行DH密钥交换，初始化会话
 //
 // 返回:
 //   - error: 连接失败时返回错误
-func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string, heartbeatDuration int, maxPacketDataSize int32) error {
-	cli.serverAddr = serverAddr
-	cli.serverPort = serverPort
-	cli.heartbeatDuration = heartbeatDuration
-	cli.maxPacketDataSize = maxPacketDataSize
+func (cli *TcpClient) Connect() error {
+	cli.setState(ClientStateConnecting)
 
-	tcpAddr, _ := net.ResolveTCPAddr("tcp", cli.serverAddr+":"+strconv.Itoa(cli.serverPort))
+	tcpAddr, err := net.ResolveTCPAddr("tcp", cli.config.ServerAddr+":"+strconv.Itoa(cli.config.ServerPort))
+	if err != nil {
+		cli.setState(ClientStateDisconnected)
+		return err
+	}
 
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
+		cli.setState(ClientStateDisconnected)
 		return err
 	}
+
 	cli.session = &TcpClientSession{}
 
-	// 执行DH密钥协商
 	aesKey, err := PerformKeyExchange(conn)
 	if err != nil {
 		conn.Close()
+		cli.setState(ClientStateDisconnected)
 		return err
 	}
 
@@ -54,11 +110,70 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 		cli.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
 	}
 
-	// 初始化会话，传递协商得到的 AES 密钥
 	cli.session.Init(cli, conn, aesKey)
 	cli.session.Start()
+	cli.setState(ClientStateConnected)
+	cli.reconnectCount = 0
+
+	if cli.config.AutoReconnect {
+		cli.wg.Add(1)
+		go cli.monitorConnection()
+	}
 
 	return nil
+}
+
+// monitorConnection 监控连接状态，支持自动重连
+func (cli *TcpClient) monitorConnection() {
+	defer cli.wg.Done()
+
+	for {
+		select {
+		case <-cli.ctx.Done():
+			return
+		case <-time.After(time.Second):
+			state := cli.GetState()
+
+			if state == ClientStateConnected && cli.session != nil {
+				if cli.session.IsClosed() {
+					cli.handleDisconnect()
+				}
+			}
+		}
+	}
+}
+
+// handleDisconnect 处理连接断开
+func (cli *TcpClient) handleDisconnect() {
+	cli.setState(ClientStateDisconnected)
+
+	if !cli.config.AutoReconnect {
+		return
+	}
+
+	if cli.config.MaxReconnectTimes > 0 && cli.reconnectCount >= cli.config.MaxReconnectTimes {
+		if cli.logger != nil {
+			cli.logger.Warn("Max reconnect times reached, stop reconnecting")
+		}
+		return
+	}
+
+	cli.setState(ClientStateReconnecting)
+	delay := time.Duration(cli.config.ReconnectDelay) * time.Second
+
+	if cli.logger != nil {
+		cli.logger.Info("Connection lost, will reconnect in %d seconds", cli.config.ReconnectDelay)
+	}
+
+	time.Sleep(delay)
+
+	cli.reconnectCount++
+	err := cli.Connect()
+	if err != nil {
+		if cli.logger != nil {
+			cli.logger.Error("Reconnect failed: %v", err)
+		}
+	}
 }
 
 // Send 发送数据
@@ -69,23 +184,84 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 // 返回:
 //   - error: 发送失败时返回错误
 func (cli *TcpClient) Send(protoId int32, data []byte) error {
+	if cli.session == nil {
+		return net.ErrWriteToConnected
+	}
 	return cli.session.Send(protoId, data)
 }
 
 // Close 关闭客户端
 // 关闭会话并断开连接
 func (cli *TcpClient) Close() {
-	cli.session.Close()
+	cli.ctxCancel()
+	cli.wg.Wait()
+	if cli.session != nil {
+		cli.session.Close()
+	}
+	cli.setState(ClientStateDisconnected)
 }
 
-// RegisterHandler 注册消息处理器
+// RegisterDispatcher 注册消息分发器
 // 参数:
 //   - fun: 消息处理函数
-//   - n: 保留参数
+func (cli *TcpClient) RegisterDispatcher(fun HandlerFun) {
+	cli.dispatcher = fun
+}
+
+// RegisterStateCallback 注册状态回调函数
+// 参数:
+//   - cb: 状态回调函数
+func (cli *TcpClient) RegisterStateCallback(cb ClientStateCallback) {
+	cli.stateCallbacks = append(cli.stateCallbacks, cb)
+}
+
+// setState 设置连接状态并触发回调
+func (cli *TcpClient) setState(state ClientState) {
+	cli.state.Store(state)
+
+	for _, cb := range cli.stateCallbacks {
+		cb(state)
+	}
+}
+
+// GetState 获取连接状态
 //
 // 返回:
-//   - error: 注册失败时返回错误
-func (cli *TcpClient) RegisterHandler(fun HandlerFun, n int) error {
-	cli.dispatcher = fun
-	return nil
+//   - ClientState: 当前连接状态
+func (cli *TcpClient) GetState() ClientState {
+	return cli.state.Load().(ClientState)
+}
+
+// IsConnected 检查是否已连接
+//
+// 返回:
+//   - bool: 是否已连接
+func (cli *TcpClient) IsConnected() bool {
+	return cli.GetState() == ClientStateConnected
+}
+
+// GetSession 获取会话实例
+//
+// 返回:
+//   - *TcpClientSession: 会话实例，未连接时返回nil
+func (cli *TcpClient) GetSession() *TcpClientSession {
+	return cli.session
+}
+
+// ConnectToServer 连接到服务器（兼容旧API）
+// 参数:
+//   - serverAddr: 服务器地址
+//   - serverPort: 服务器端口
+//   - rsaPublicFile: RSA公钥文件（保留参数，当前使用DH密钥交换）
+//   - heartbeatDuration: 心跳间隔（秒）
+//   - maxPacketDataSize: 最大数据包大小
+//
+// 返回:
+//   - error: 连接失败时返回错误
+func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPublicFile string, heartbeatDuration int, maxPacketDataSize int32) error {
+	cli.config.ServerAddr = serverAddr
+	cli.config.ServerPort = serverPort
+	cli.config.HeartbeatDuration = heartbeatDuration
+	cli.config.MaxPacketDataSize = maxPacketDataSize
+	return cli.Connect()
 }

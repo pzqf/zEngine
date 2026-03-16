@@ -223,3 +223,31 @@ func WithDDoSConfig(cfg *DDoSConfig) Options {
 		}
 	}
 }
+
+// ClientOption 客户端配置选项函数类型
+// 用于函数式配置模式，通过闭包设置客户端属性
+type ClientOption func(*TcpClient)
+
+// WithClientLogger 设置客户端日志记录器
+// 参数:
+//   - logger: 日志记录器实例
+//
+// 返回:
+//   - ClientOption: 配置函数
+func WithClientLogger(logger Logger) ClientOption {
+	return func(cli *TcpClient) {
+		cli.logger = logger
+	}
+}
+
+// WithClientStateCallback 设置客户端状态回调
+// 参数:
+//   - cb: 状态回调函数
+//
+// 返回:
+//   - ClientOption: 配置函数
+func WithClientStateCallback(cb ClientStateCallback) ClientOption {
+	return func(cli *TcpClient) {
+		cli.stateCallbacks = append(cli.stateCallbacks, cb)
+	}
+}

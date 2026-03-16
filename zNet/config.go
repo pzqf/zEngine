@@ -41,6 +41,19 @@ type WebSocketConfig struct {
 	MaxPacketDataSize int32  `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
 }
 
+// TcpClientConfig TCP客户端配置
+// 定义TCP客户端运行所需的各项参数
+type TcpClientConfig struct {
+	ServerAddr        string `toml:"server_addr" json:"server_addr"`                 // 服务器地址
+	ServerPort        int    `toml:"server_port" json:"server_port"`                 // 服务器端口
+	ChanSize          int    `toml:"chan_size" json:"chan_size"`                     // Session收发通道大小，默认 1024
+	HeartbeatDuration int    `toml:"heartbeat_duration" json:"heartbeat_duration"`       // 心跳间隔时间（秒），默认 30
+	MaxPacketDataSize int32  `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
+	AutoReconnect    bool   `toml:"auto_reconnect" json:"auto_reconnect"`             // 是否自动重连，默认 false
+	ReconnectDelay   int    `toml:"reconnect_delay" json:"reconnect_delay"`           // 重连延迟（秒），默认 5
+	MaxReconnectTimes int    `toml:"max_reconnect_times" json:"max_reconnect_times"`   // 最大重连次数，默认 0（无限重连）
+}
+
 // DDoSConfig DDoS保护配置
 // 定义DDoS防护的各项阈值参数
 type DDoSConfig struct {

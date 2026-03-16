@@ -21,6 +21,8 @@ type TcpClientSession struct {
 	lastHeartBeat time.Time          // 最后心跳时间
 	ctxCancel     context.CancelFunc // 上下文取消函数
 	aesKey        []byte             // AES加密密钥
+	closed        bool               // 是否已关闭
+	closedMutex   sync.RWMutex       // 关闭状态锁
 
 	cli *TcpClient // 所属客户端
 }
@@ -47,7 +49,7 @@ func (s *TcpClientSession) Start() {
 	s.ctxCancel = ctxCancel
 
 	go s.receive(ctx)
-	if s.cli.heartbeatDuration > 0 {
+	if s.cli.config.HeartbeatDuration > 0 {
 		go s.heartbeatCheck(ctx)
 	}
 }
@@ -55,8 +57,21 @@ func (s *TcpClientSession) Start() {
 // Close 关闭会话
 // 取消上下文并等待所有goroutine退出
 func (s *TcpClientSession) Close() {
+	s.closedMutex.Lock()
+	s.closed = true
+	s.closedMutex.Unlock()
 	s.ctxCancel()
 	s.wg.Wait()
+}
+
+// IsClosed 检查会话是否已关闭
+//
+// 返回:
+//   - bool: 是否已关闭
+func (s *TcpClientSession) IsClosed() bool {
+	s.closedMutex.RLock()
+	defer s.closedMutex.RUnlock()
+	return s.closed
 }
 
 // receive 接收数据
@@ -142,10 +157,10 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 		}
 
 		// 检查数据包大小是否超过限制
-		if netPacket.DataSize > s.cli.maxPacketDataSize {
+		if netPacket.DataSize > s.cli.config.MaxPacketDataSize {
 			if s.cli.logger != nil {
 				s.cli.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-					netPacket.ProtoId, netPacket.DataSize, s.cli.maxPacketDataSize)
+					netPacket.ProtoId, netPacket.DataSize, s.cli.config.MaxPacketDataSize)
 			}
 			continue
 		}
@@ -211,9 +226,9 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 		return errors.New("send packet illegal")
 	}
 	// 检查数据包大小是否超过限制
-	if netPacket.DataSize > s.cli.maxPacketDataSize {
+	if netPacket.DataSize > s.cli.config.MaxPacketDataSize {
 		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
+			netPacket.DataSize, s.cli.config.MaxPacketDataSize, protoId)
 	}
 
 	// 发送数据包
@@ -238,10 +253,10 @@ func (s *TcpClientSession) heartbeatUpdate() {
 func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
-	hbd := float64(s.cli.heartbeatDuration)
+	hbd := float64(s.cli.config.HeartbeatDuration)
 	for {
 		select {
-		case <-time.After(30 * time.Second):
+		case <-time.After(time.Duration(s.cli.config.HeartbeatDuration) * time.Second):
 			if time.Since(s.lastHeartBeat).Seconds() >= hbd {
 				_ = s.Send(HeartbeatProtoId, nil)
 			}
