@@ -11,6 +11,7 @@ type TcpConfig struct {
 	UseWorkerPool     bool   `toml:"use_worker_pool" json:"use_worker_pool"`           // 是否使用工作池模式，默认 false
 	WorkerPoolSize    int    `toml:"worker_pool_size" json:"worker_pool_size"`         // 工作池大小，默认 100
 	WorkerQueueSize   int    `toml:"worker_queue_size" json:"worker_queue_size"`       // 工作池队列大小，默认 10000
+	DisableEncryption bool   `toml:"disable_encryption" json:"disable_encryption"`     // 是否禁用加密，默认 false
 }
 
 // UdpConfig UDP服务器配置
@@ -52,6 +53,7 @@ type TcpClientConfig struct {
 	AutoReconnect    bool   `toml:"auto_reconnect" json:"auto_reconnect"`             // 是否自动重连，默认 false
 	ReconnectDelay   int    `toml:"reconnect_delay" json:"reconnect_delay"`           // 重连延迟（秒），默认 5
 	MaxReconnectTimes int    `toml:"max_reconnect_times" json:"max_reconnect_times"`   // 最大重连次数，默认 0（无限重连）
+	DisableEncryption bool   `toml:"disable_encryption" json:"disable_encryption"`     // 是否禁用加密，默认 false
 }
 
 // DDoSConfig DDoS保护配置

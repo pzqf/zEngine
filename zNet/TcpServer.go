@@ -174,18 +174,28 @@ func (svr *TcpServer) Close() {
 // 参数:
 //   - conn: TCP连接
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
-	// 执行DH密钥协商，生成AES密钥
-	aesKey, err := PerformKeyExchange(conn)
-	if err != nil {
-		if svr.logger != nil {
-			svr.logger.Error("DH key exchange failed: %v", err)
-		}
-		conn.Close()
-		return
-	}
+	var aesKey []byte
+	var err error
 
-	if svr.logger != nil {
-		svr.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+	// 检查是否禁用加密
+	if !svr.config.DisableEncryption {
+		// 执行DH密钥协商，生成AES密钥
+		aesKey, err = PerformKeyExchange(conn)
+		if err != nil {
+			if svr.logger != nil {
+				svr.logger.Error("DH key exchange failed: %v", err)
+			}
+			conn.Close()
+			return
+		}
+
+		if svr.logger != nil {
+			svr.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+		}
+	} else {
+		if svr.logger != nil {
+			svr.logger.Info("Encryption disabled, skipping key exchange")
+		}
 	}
 
 	// 生成唯一会话ID并创建会话

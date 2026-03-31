@@ -1,7 +1,7 @@
 package zService
 
 import (
-	"sync"
+	"sync/atomic"
 
 	"github.com/pzqf/zEngine/zObject"
 )
@@ -30,9 +30,8 @@ type Service interface {
 // BaseService 基础服务实现
 // 提供Service接口的默认实现，可嵌入到具体服务中
 type BaseService struct {
-	zObject.BaseObject     // 继承基础对象
-	state            ServiceState // 服务状态
-	mu               sync.RWMutex // 状态读写锁
+	zObject.BaseObject              // 继承基础对象
+	state              atomic.Int32 // 服务状态，使用原子操作
 }
 
 // NewBaseService 创建基础服务实例
@@ -42,10 +41,11 @@ type BaseService struct {
 // 返回:
 //   - *BaseService: 基础服务实例
 func NewBaseService(serviceId string) *BaseService {
-	return &BaseService{
+	bs := &BaseService{
 		BaseObject: zObject.BaseObject{Id: serviceId},
-		state:      ServiceStateCreated,
 	}
+	bs.state.Store(int32(ServiceStateCreated))
+	return bs
 }
 
 // ServiceId 获取服务ID
@@ -62,18 +62,14 @@ func (bs *BaseService) ServiceId() string {
 // 返回:
 //   - ServiceState: 当前服务状态
 func (bs *BaseService) GetState() ServiceState {
-	bs.mu.RLock()
-	defer bs.mu.RUnlock()
-	return bs.state
+	return ServiceState(bs.state.Load())
 }
 
 // SetState 设置服务状态
 // 参数:
 //   - state: 新的服务状态
 func (bs *BaseService) SetState(state ServiceState) {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	bs.state = state
+	bs.state.Store(int32(state))
 }
 
 // Init 初始化服务

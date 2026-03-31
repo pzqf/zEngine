@@ -99,15 +99,24 @@ func (cli *TcpClient) Connect() error {
 
 	cli.session = &TcpClientSession{}
 
-	aesKey, err := PerformKeyExchange(conn)
-	if err != nil {
-		conn.Close()
-		cli.setState(ClientStateDisconnected)
-		return err
-	}
+	var aesKey []byte
 
-	if cli.logger != nil {
-		cli.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+	// 检查是否禁用加密
+	if !cli.config.DisableEncryption {
+		aesKey, err = PerformKeyExchange(conn)
+		if err != nil {
+			conn.Close()
+			cli.setState(ClientStateDisconnected)
+			return err
+		}
+
+		if cli.logger != nil {
+			cli.logger.Info("DH key exchange completed successfully, AES key length: %d", len(aesKey))
+		}
+	} else {
+		if cli.logger != nil {
+			cli.logger.Info("Encryption disabled, skipping key exchange")
+		}
 	}
 
 	cli.session.Init(cli, conn, aesKey)
@@ -246,6 +255,14 @@ func (cli *TcpClient) IsConnected() bool {
 //   - *TcpClientSession: 会话实例，未连接时返回nil
 func (cli *TcpClient) GetSession() *TcpClientSession {
 	return cli.session
+}
+
+// GetMaxPacketDataSize 获取最大数据包大小
+//
+// 返回:
+//   - int32: 最大数据包大小
+func (cli *TcpClient) GetMaxPacketDataSize() int32 {
+	return cli.config.MaxPacketDataSize
 }
 
 // ConnectToServer 连接到服务器（兼容旧API）
