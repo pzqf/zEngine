@@ -224,6 +224,21 @@ func WithDDoSConfig(cfg *DDoSConfig) Options {
 	}
 }
 
+// WithCompressionConfig 设置压缩配置
+// 参数:
+//   - cfg: 压缩配置
+//
+// 返回:
+//   - Options: 配置函数
+func WithCompressionConfig(cfg *CompressionConfig) Options {
+	return func(svr Server) {
+		switch reflect.TypeOf(svr).String() {
+		case "*zNet.TcpServer":
+			svr.(*TcpServer).compressionConfig = cfg
+		}
+	}
+}
+
 // ClientOption 客户端配置选项函数类型
 // 用于函数式配置模式，通过闭包设置客户端属性
 type ClientOption func(*TcpClient)

@@ -623,13 +623,27 @@ func main() {
 
 ### 12. zServer - 服务器框架
 
-zServer 提供了服务器生命周期管理功能，包括启动、停止、优雅关闭等。
+zServer 提供了服务器生命周期管理功能，包括启动、停止、优雅关闭等，支持完整的服务器状态管理和组件管理。
 
 #### 主要特性
-- 支持服务器生命周期管理
-- 支持优雅关闭
-- 支持信号处理
-- 支持服务依赖管理
+- 支持完整的服务器生命周期管理
+- 支持服务器状态管理（Starting → Initializing → Ready → Healthy → Draining → Stopped）
+- 支持组件注册和管理
+- 支持优雅关闭和信号处理
+- 支持状态监听器
+- 支持原子操作的状态管理，无锁设计
+- 模块化设计，代码结构清晰
+
+#### 代码结构
+
+```
+zServer/
+├── server.go      # 核心服务器结构和方法
+├── state.go       # 状态管理相关代码
+├── components.go  # 组件管理相关代码
+├── lifecycle.go   # 生命周期管理相关代码
+└── report.go      # 状态报告相关代码
+```
 
 #### 使用示例
 
@@ -637,41 +651,66 @@ zServer 提供了服务器生命周期管理功能，包括启动、停止、优
 package main
 
 import (
-    "context"
-    "time"
     "github.com/pzqf/zEngine/zServer"
     "github.com/pzqf/zEngine/zLog"
 )
 
+// 自定义服务器类型
+type MyServer struct {
+    *zServer.BaseServer
+}
+
+// 实现生命周期钩子
+func (s *MyServer) OnBeforeStart() error {
+    zLog.Info("MyServer before start")
+    // 注册组件
+    s.RegisterComponent("database", &DatabaseComponent{})
+    return nil
+}
+
+func (s *MyServer) OnAfterStart() error {
+    zLog.Info("MyServer after start")
+    // 设置状态为健康
+    s.SetState(zServer.StateHealthy, "server healthy")
+    return nil
+}
+
+func (s *MyServer) OnBeforeStop() {
+    zLog.Info("MyServer before stop")
+}
+
+// 数据库组件
+type DatabaseComponent struct{}
+
 func main() {
     // 创建服务器
-    server := zServer.NewServer(
-        zServer.WithName("MyServer"),
-        zServer.WithVersion("1.0.0"),
-    )
+    server := &MyServer{
+        BaseServer: zServer.NewBaseServer(
+            "game",           // 服务器类型
+            "server-001",     // 服务器ID
+            "My Game Server", // 服务器名称
+            "1.0.0",          // 服务器版本
+            nil,              // 生命周期钩子（使用MyServer自身）
+        ),
+    }
+    
+    // 设置生命周期钩子为自身
+    server.BaseServer.SetHooks(server)
 
-    // 添加启动回调
-    server.OnStart(func() error {
-        zLog.Info("Server starting...")
-        return nil
-    })
-
-    // 添加停止回调
-    server.OnStop(func() error {
-        zLog.Info("Server stopping...")
-        return nil
-    })
+    // 设置日志
+    server.SetLogger(zLog.DefaultLogger)
 
     // 启动服务器
-    go server.Start()
+    zLog.Info("Starting server...")
+    if err := server.Start(); err != nil {
+        zLog.Error("Failed to start server", zLog.Error(err))
+        return
+    }
 
-    // 等待信号
-    server.WaitForShutdown()
-
-    // 优雅关闭
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-    defer cancel()
-    server.Shutdown(ctx)
+    // 运行服务器（阻塞）
+    if err := server.Run(); err != nil {
+        zLog.Error("Server run failed", zLog.Error(err))
+    }
 }
 ```
 

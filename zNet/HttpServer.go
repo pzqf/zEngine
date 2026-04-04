@@ -141,7 +141,7 @@ func (svr *HttpServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 创建HTTP会话
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
-	session := NewHttpSession(w, sid)
+	session := NewHttpSession(w, sid, clientIP)
 	svr.clientSessionMap.Store(sid, session)
 
 	if svr.onAddSession != nil {

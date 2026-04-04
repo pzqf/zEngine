@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/snappy"
 	"github.com/pzqf/zUtil/zCrypto"
 )
 
@@ -228,6 +229,20 @@ func (s *TcpServerSession) processPacket(packet *NetPacket) {
 			return
 		}
 	}
+
+	// 解压缩数据
+	if packet.IsCompressed == CompressionSnappy && packet.DataSize > 0 {
+		if decompressed, err := snappy.Decode(nil, packet.Data); err == nil {
+			packet.Data = decompressed
+			packet.DataSize = int32(len(decompressed))
+		} else {
+			if s.svr.logger != nil {
+				s.svr.logger.Error("Decompress error: %v, sid:%d", err, s.sid)
+			}
+			return
+		}
+	}
+
 	// 分发到消息处理器
 	if s.svr.dispatcher != nil {
 		err := s.svr.dispatcher(s, packet)
@@ -343,6 +358,17 @@ func (s *TcpServerSession) Send(protoId int32, data []byte) error {
 	} else {
 		netPacket.Data = data
 	}
+
+	// 压缩数据
+	if s.svr.compressionConfig.Enabled && len(netPacket.Data) > s.svr.compressionConfig.CompressionThreshold && len(netPacket.Data) <= s.svr.compressionConfig.MaxCompressSize {
+		compressed := snappy.Encode(nil, netPacket.Data)
+		// 只有当压缩后的数据小于原始数据时才使用压缩数据
+		if len(compressed) < len(netPacket.Data) {
+			netPacket.Data = compressed
+			netPacket.IsCompressed = CompressionSnappy
+		}
+	}
+
 	netPacket.DataSize = int32(len(netPacket.Data))
 	// 校验数据包合法性
 	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
@@ -430,4 +456,14 @@ func (s *TcpServerSession) GetObj() interface{} {
 //   - obj: 要设置的对象
 func (s *TcpServerSession) SetObj(obj interface{}) {
 	s.obj = obj
+}
+
+// GetClientIP 获取客户端IP地址
+// 返回:
+//   - string: 客户端IP地址
+func (s *TcpServerSession) GetClientIP() string {
+	if s.conn != nil {
+		return s.conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	}
+	return ""
 }

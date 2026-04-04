@@ -67,6 +67,14 @@ func (s *WebSocketClientSession) GetSid() SessionIdType {
 	return s.sid
 }
 
+// GetClientIP 获取客户端IP地址
+func (s *WebSocketClientSession) GetClientIP() string {
+	if s.conn != nil {
+		return s.conn.RemoteAddr().String()
+	}
+	return ""
+}
+
 func (s *WebSocketClientSession) Start() {
 	if s.conn == nil {
 		return

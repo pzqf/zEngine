@@ -315,6 +315,14 @@ func (s *UdpServerSession) SetObj(obj interface{}) {
 	s.obj = obj
 }
 
+// GetClientIP 获取客户端IP地址
+func (s *UdpServerSession) GetClientIP() string {
+	if s.addr != nil {
+		return s.addr.IP.String()
+	}
+	return ""
+}
+
 func (s *UdpServerSession) GetAddr() *net.UDPAddr {
 	return s.addr
 }

@@ -45,15 +45,16 @@ type WebSocketConfig struct {
 // TcpClientConfig TCP客户端配置
 // 定义TCP客户端运行所需的各项参数
 type TcpClientConfig struct {
-	ServerAddr        string `toml:"server_addr" json:"server_addr"`                 // 服务器地址
-	ServerPort        int    `toml:"server_port" json:"server_port"`                 // 服务器端口
-	ChanSize          int    `toml:"chan_size" json:"chan_size"`                     // Session收发通道大小，默认 1024
-	HeartbeatDuration int    `toml:"heartbeat_duration" json:"heartbeat_duration"`       // 心跳间隔时间（秒），默认 30
-	MaxPacketDataSize int32  `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
-	AutoReconnect    bool   `toml:"auto_reconnect" json:"auto_reconnect"`             // 是否自动重连，默认 false
-	ReconnectDelay   int    `toml:"reconnect_delay" json:"reconnect_delay"`           // 重连延迟（秒），默认 5
-	MaxReconnectTimes int    `toml:"max_reconnect_times" json:"max_reconnect_times"`   // 最大重连次数，默认 0（无限重连）
-	DisableEncryption bool   `toml:"disable_encryption" json:"disable_encryption"`     // 是否禁用加密，默认 false
+	ServerAddr        string            `toml:"server_addr" json:"server_addr"`                   // 服务器地址
+	ServerPort        int               `toml:"server_port" json:"server_port"`                   // 服务器端口
+	ChanSize          int               `toml:"chan_size" json:"chan_size"`                       // Session收发通道大小，默认 1024
+	HeartbeatDuration int               `toml:"heartbeat_duration" json:"heartbeat_duration"`     // 心跳间隔时间（秒），默认 30
+	MaxPacketDataSize int32             `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
+	AutoReconnect     bool              `toml:"auto_reconnect" json:"auto_reconnect"`             // 是否自动重连，默认 false
+	ReconnectDelay    int               `toml:"reconnect_delay" json:"reconnect_delay"`           // 重连延迟（秒），默认 5
+	MaxReconnectTimes int               `toml:"max_reconnect_times" json:"max_reconnect_times"`   // 最大重连次数，默认 0（无限重连）
+	DisableEncryption bool              `toml:"disable_encryption" json:"disable_encryption"`     // 是否禁用加密，默认 false
+	Compression       CompressionConfig `toml:"compression" json:"compression"`                   // 压缩配置
 }
 
 // DDoSConfig DDoS保护配置
@@ -82,5 +83,26 @@ func DefaultDDoSConfig() *DDoSConfig {
 		MaxBytesPerIP:     10 * 1024 * 1024,
 		TrafficTimeWindow: 3600,
 		BanDuration:       24 * 3600,
+	}
+}
+
+// CompressionConfig 压缩配置
+// 定义压缩功能的各项参数
+type CompressionConfig struct {
+	Enabled              bool `toml:"enabled" json:"enabled"`                             // 是否启用压缩，默认 true
+	CompressionThreshold int  `toml:"compression_threshold" json:"compression_threshold"` // 压缩阈值，默认 1024
+	MaxCompressSize      int  `toml:"max_compress_size" json:"max_compress_size"`         // 最大压缩大小，默认 1024*1024
+}
+
+// DefaultCompressionConfig 默认压缩配置
+// 返回预配置的压缩参数
+//
+// 返回:
+//   - *CompressionConfig: 默认压缩配置实例
+func DefaultCompressionConfig() *CompressionConfig {
+	return &CompressionConfig{
+		Enabled:              true,
+		CompressionThreshold: 1024,
+		MaxCompressSize:      1024 * 1024,
 	}
 }

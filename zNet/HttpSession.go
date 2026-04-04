@@ -3,14 +3,16 @@ package zNet
 import "net/http"
 
 type HttpSession struct {
-	writer http.ResponseWriter
-	sid    SessionIdType
+	writer   http.ResponseWriter
+	sid      SessionIdType
+	clientIP string
 }
 
-func NewHttpSession(writer http.ResponseWriter, sid SessionIdType) *HttpSession {
+func NewHttpSession(writer http.ResponseWriter, sid SessionIdType, clientIP string) *HttpSession {
 	return &HttpSession{
-		writer: writer,
-		sid:    sid,
+		writer:   writer,
+		sid:      sid,
+		clientIP: clientIP,
 	}
 }
 
@@ -33,4 +35,9 @@ func (s *HttpSession) Start() {
 
 func (s *HttpSession) Close() {
 	// HTTP会话不需要特殊的关闭逻辑，因为HTTP是无状态的
+}
+
+// GetClientIP 获取客户端IP地址
+func (s *HttpSession) GetClientIP() string {
+	return s.clientIP
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/snappy"
 	"github.com/pzqf/zUtil/zCrypto"
 )
 
@@ -176,6 +177,18 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 		}
 
+		// 解压缩数据
+		if netPacket.IsCompressed == CompressionSnappy && netPacket.DataSize > 0 {
+			if decompressed, err := snappy.Decode(nil, netPacket.Data); err == nil {
+				netPacket.Data = decompressed
+				netPacket.DataSize = int32(len(decompressed))
+			} else {
+				if s.cli.logger != nil {
+					s.cli.logger.Error("Decompress error: %v", err)
+				}
+			}
+		}
+
 		// 分发到消息处理器（异步）
 		go func() {
 			err = s.cli.dispatcher(s, &netPacket)
@@ -217,6 +230,16 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 			}
 		} else {
 			netPacket.Data = data
+		}
+
+		// 压缩数据
+		if s.cli.config.Compression.Enabled && len(netPacket.Data) > s.cli.config.Compression.CompressionThreshold && len(netPacket.Data) <= s.cli.config.Compression.MaxCompressSize {
+			compressed := snappy.Encode(nil, netPacket.Data)
+			// 只有当压缩后的数据小于原始数据时才使用压缩数据
+			if len(compressed) < len(netPacket.Data) {
+				netPacket.Data = compressed
+				netPacket.IsCompressed = CompressionSnappy
+			}
 		}
 	}
 
@@ -273,4 +296,15 @@ func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
 //   - SessionIdType: 会话ID
 func (s *TcpClientSession) GetSid() SessionIdType {
 	return SessionIdType(1)
+}
+
+// GetClientIP 获取客户端IP地址
+//
+// 返回:
+//   - string: 客户端IP地址
+func (s *TcpClientSession) GetClientIP() string {
+	if s.conn != nil {
+		return s.conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	}
+	return ""
 }

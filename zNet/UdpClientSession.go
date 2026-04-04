@@ -48,6 +48,14 @@ func (s *UdpClientSession) GetSid() SessionIdType {
 	return s.sid
 }
 
+// GetClientIP 获取客户端IP地址
+func (s *UdpClientSession) GetClientIP() string {
+	if s.conn != nil {
+		return s.conn.RemoteAddr().(*net.UDPAddr).IP.String()
+	}
+	return ""
+}
+
 func (s *UdpClientSession) Start() {
 	if s.conn == nil {
 		return

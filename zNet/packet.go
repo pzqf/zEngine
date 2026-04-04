@@ -9,6 +9,12 @@ import (
 // HeartbeatProtoId 心跳协议ID，用于连接保活
 const HeartbeatProtoId = int32(0)
 
+// 压缩状态常量
+const (
+	CompressionNone   int32 = 0 // 未压缩
+	CompressionSnappy int32 = 1 // Snappy压缩
+)
+
 // NetPacketHeadSize 网络包头部大小（字节）
 // 包含: ProtoId(4) + Version(4) + DataSize(4) + IsCompressed(4) = 16字节
 const NetPacketHeadSize = 16

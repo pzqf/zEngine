@@ -304,6 +304,15 @@ func (s *WebSocketServerSession) GetObj() interface{} {
 	return s.obj
 }
 
+// SetObj 设置附加对象
 func (s *WebSocketServerSession) SetObj(obj interface{}) {
 	s.obj = obj
+}
+
+// GetClientIP 获取客户端IP地址
+func (s *WebSocketServerSession) GetClientIP() string {
+	if s.conn != nil {
+		return s.conn.RemoteAddr().String()
+	}
+	return ""
 }

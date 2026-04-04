@@ -13,6 +13,7 @@ type Session interface {
 	Close()              // 关闭Session
 	Send(protoId int32, data []byte) error // 发送数据
 	GetSid() SessionIdType // 获取Session ID
+	GetClientIP() string // 获取客户端IP地址
 }
 
 // Server 服务器接口

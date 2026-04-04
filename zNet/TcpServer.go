@@ -14,18 +14,19 @@ import (
 // TcpServer TCP服务器实现
 // 支持多客户端连接、会话管理、DDoS防护、密钥交换等功能
 type TcpServer struct {
-	clientSIDAtomic  SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
-	listener         *net.TCPListener                                 // TCP监听器
-	clientSessionMap *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
-	wg               sync.WaitGroup                                   // 等待组，用于优雅关闭
-	onAddSession     SessionCallBackFunc                              // 会话添加回调
-	onRemoveSession  SessionCallBackFunc                              // 会话移除回调
-	privateKey       *rsa.PrivateKey                                  // RSA私钥（用于密钥交换）
-	config           *TcpConfig                                       // 服务器配置
-	dispatcher       HandlerFun                                       // 消息处理器
-	logger           Logger                                           // 日志记录器
-	ddosProtection   *DDoSProtection                                  // DDoS防护组件
-	workerPool       *zConcurrency.WorkerPool                         // 工作池
+	clientSIDAtomic    SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
+	listener           *net.TCPListener                                 // TCP监听器
+	clientSessionMap   *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
+	wg                 sync.WaitGroup                                   // 等待组，用于优雅关闭
+	onAddSession       SessionCallBackFunc                              // 会话添加回调
+	onRemoveSession    SessionCallBackFunc                              // 会话移除回调
+	privateKey         *rsa.PrivateKey                                  // RSA私钥（用于密钥交换）
+	config             *TcpConfig                                       // 服务器配置
+	dispatcher         HandlerFun                                       // 消息处理器
+	logger             Logger                                           // 日志记录器
+	ddosProtection     *DDoSProtection                                  // DDoS防护组件
+	compressionConfig  *CompressionConfig                               // 压缩配置
+	workerPool         *zConcurrency.WorkerPool                         // 工作池
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -49,10 +50,11 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	}
 
 	svr := &TcpServer{
-		clientSIDAtomic:  10000,
-		clientSessionMap: zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
-		config:           cfg,
-		ddosProtection:   NewDDoSProtection(),
+		clientSIDAtomic:    10000,
+		clientSessionMap:   zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
+		config:             cfg,
+		ddosProtection:     NewDDoSProtection(),
+		compressionConfig:  DefaultCompressionConfig(),
 	}
 
 	// 根据配置创建工作池
