@@ -16,7 +16,7 @@ func NewHttpSession(writer http.ResponseWriter, sid SessionIdType, clientIP stri
 	}
 }
 
-func (s *HttpSession) Send(protoId int32, data []byte) error {
+func (s *HttpSession) Send(protoId ProtoIdType, data []byte) error {
 	_, _ = s.writer.Write(data)
 	return nil
 }

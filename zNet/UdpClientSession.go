@@ -117,7 +117,7 @@ func (s *UdpClientSession) handleKeyExchange(data []byte) bool {
 	return false
 }
 
-func (s *UdpClientSession) Send(protoId int32, data []byte) error {
+func (s *UdpClientSession) Send(protoId ProtoIdType, data []byte) error {
 	if s.conn == nil {
 		return errors.New("udp connection is nil")
 	}

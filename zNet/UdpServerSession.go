@@ -233,7 +233,7 @@ func (s *UdpServerSession) process(ctx context.Context) {
 	}
 }
 
-func (s *UdpServerSession) Send(protoId int32, data []byte) error {
+func (s *UdpServerSession) Send(protoId ProtoIdType, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}

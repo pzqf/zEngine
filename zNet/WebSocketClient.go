@@ -38,7 +38,7 @@ func (cli *WebSocketClient) ConnectToServer(serverAddr string, serverPort int, h
 	return nil
 }
 
-func (cli *WebSocketClient) Send(protoId int32, data []byte) error {
+func (cli *WebSocketClient) Send(protoId ProtoIdType, data []byte) error {
 	if cli.session == nil {
 		return errors.New("websocket client session is nil")
 	}

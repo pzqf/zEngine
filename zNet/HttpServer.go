@@ -153,7 +153,7 @@ func (svr *HttpServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// 这里需要根据实际情况解析HTTP请求，提取ProtoId和Data
 		// 这里只是一个示例，实际实现需要根据你的协议格式来解析
 		// 例如，从URL参数、请求体或头部中提取信息
-		protoId := int32(0) // 示例值
+		protoId := ProtoIdType(0) // 示例值
 		data := []byte{}
 
 		netPacket := &NetPacket{

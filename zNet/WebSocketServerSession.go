@@ -226,7 +226,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 	}
 }
 
-func (s *WebSocketServerSession) Send(protoId int32, data []byte) error {
+func (s *WebSocketServerSession) Send(protoId ProtoIdType, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}

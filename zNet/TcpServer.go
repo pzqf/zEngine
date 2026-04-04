@@ -14,19 +14,21 @@ import (
 // TcpServer TCP服务器实现
 // 支持多客户端连接、会话管理、DDoS防护、密钥交换等功能
 type TcpServer struct {
-	clientSIDAtomic    SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
-	listener           *net.TCPListener                                 // TCP监听器
-	clientSessionMap   *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
-	wg                 sync.WaitGroup                                   // 等待组，用于优雅关闭
-	onAddSession       SessionCallBackFunc                              // 会话添加回调
-	onRemoveSession    SessionCallBackFunc                              // 会话移除回调
-	privateKey         *rsa.PrivateKey                                  // RSA私钥（用于密钥交换）
-	config             *TcpConfig                                       // 服务器配置
-	dispatcher         HandlerFun                                       // 消息处理器
-	logger             Logger                                           // 日志记录器
-	ddosProtection     *DDoSProtection                                  // DDoS防护组件
-	compressionConfig  *CompressionConfig                               // 压缩配置
-	workerPool         *zConcurrency.WorkerPool                         // 工作池
+	clientSIDAtomic   SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
+	listener          *net.TCPListener                                 // TCP监听器
+	clientSessionMap  *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
+	wg                sync.WaitGroup                                   // 等待组，用于优雅关闭
+	onAddSession      SessionCallBackFunc                              // 会话添加回调
+	onRemoveSession   SessionCallBackFunc                              // 会话移除回调
+	privateKey        *rsa.PrivateKey                                  // RSA私钥（用于密钥交换）
+	config            *TcpConfig                                       // 服务器配置
+	dispatcher        HandlerFun                                       // 消息处理器
+	logger            Logger                                           // 日志记录器
+	ddosProtection    *DDoSProtection                                  // DDoS防护组件
+	compressionConfig *CompressionConfig                               // 压缩配置
+	workerPool        *zConcurrency.WorkerPool                         // 工作池
+	keyRotationMgr    *KeyRotationManager                              // 密钥轮换管理器
+	sequenceManager   *SequenceManager                                 // 序列号管理器
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -50,17 +52,36 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	}
 
 	svr := &TcpServer{
-		clientSIDAtomic:    10000,
-		clientSessionMap:   zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
-		config:             cfg,
-		ddosProtection:     NewDDoSProtection(),
-		compressionConfig:  DefaultCompressionConfig(),
+		clientSIDAtomic:   10000,
+		clientSessionMap:  zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
+		config:            cfg,
+		ddosProtection:    NewDDoSProtection(),
+		compressionConfig: DefaultCompressionConfig(),
 	}
 
 	// 根据配置创建工作池
 	if cfg.UseWorkerPool {
 		svr.workerPool = zConcurrency.NewWorkerPool(cfg.WorkerPoolSize, cfg.WorkerQueueSize)
 		svr.workerPool.Start()
+	}
+
+	// 初始化密钥轮换管理器
+	if cfg.EnableKeyRotation && cfg.KeyRotationInterval > 0 {
+		if cfg.MaxHistoryKeys <= 0 {
+			cfg.MaxHistoryKeys = 3
+		}
+		svr.keyRotationMgr = NewKeyRotationManager(cfg.KeyRotationInterval, cfg.MaxHistoryKeys)
+	}
+
+	// 初始化序列号管理器
+	if cfg.EnableSequenceCheck {
+		if cfg.SequenceWindowSize <= 0 {
+			cfg.SequenceWindowSize = 1000
+		}
+		if cfg.TimestampTolerance <= 0 {
+			cfg.TimestampTolerance = 30
+		}
+		svr.sequenceManager = NewSequenceManager(cfg.SequenceWindowSize, cfg.TimestampTolerance)
 	}
 
 	for _, opt := range opts {
@@ -225,6 +246,12 @@ func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
 	if svr.onRemoveSession != nil {
 		svr.onRemoveSession(cli.sid)
 	}
+
+	// 从序列号管理器中移除会话
+	if svr.sequenceManager != nil {
+		svr.sequenceManager.RemoveSession(cli.sid)
+	}
+
 	svr.clientSessionMap.Delete(cli.sid)
 }
 
@@ -240,6 +267,17 @@ func (svr *TcpServer) GetSession(sid SessionIdType) *TcpServerSession {
 		return client
 	}
 	return nil
+}
+
+// GetListenAddress 获取服务器实际监听地址
+//
+// 返回:
+//   - string: 服务器监听地址
+func (svr *TcpServer) GetListenAddress() string {
+	if svr.listener == nil {
+		return ""
+	}
+	return svr.listener.Addr().String()
 }
 
 // GetAllSession 获取所有客户端会话
@@ -262,4 +300,51 @@ func (svr *TcpServer) GetAllSession() []*TcpServerSession {
 //   - fun: 消息处理函数
 func (svr *TcpServer) RegisterDispatcher(fun HandlerFun) {
 	svr.dispatcher = fun
+}
+
+// SetOnAddSession 设置会话添加回调
+//
+// 参数:
+//   - fun: 会话添加回调函数
+func (svr *TcpServer) SetOnAddSession(fun SessionCallBackFunc) {
+	svr.onAddSession = fun
+}
+
+// SetOnRemoveSession 设置会话移除回调
+//
+// 参数:
+//   - fun: 会话移除回调函数
+func (svr *TcpServer) SetOnRemoveSession(fun SessionCallBackFunc) {
+	svr.onRemoveSession = fun
+}
+
+// StartKeyRotation 启动密钥轮换（手动触发）
+func (svr *TcpServer) StartKeyRotation() {
+	if svr.keyRotationMgr == nil {
+		return
+	}
+
+	newKey, newKeyID := svr.keyRotationMgr.Rotate()
+
+	// 通知所有会话更新密钥
+	svr.clientSessionMap.Range(func(sid SessionIdType, session *TcpServerSession) bool {
+		session.UpdateKey(newKey, newKeyID)
+		return true
+	})
+
+	if svr.logger != nil {
+		svr.logger.Info("Key rotation started, new key ID: %d", newKeyID)
+	}
+}
+
+// StartAutoKeyRotation 启动自动密钥轮换
+func (svr *TcpServer) StartAutoKeyRotation() {
+	if svr.keyRotationMgr == nil {
+		return
+	}
+
+	// 启动自动轮换
+	svr.keyRotationMgr.StartAutoRotation(func() []*TcpServerSession {
+		return svr.GetAllSession()
+	})
 }

@@ -192,7 +192,7 @@ func (cli *TcpClient) handleDisconnect() {
 //
 // 返回:
 //   - error: 发送失败时返回错误
-func (cli *TcpClient) Send(protoId int32, data []byte) error {
+func (cli *TcpClient) Send(protoId ProtoIdType, data []byte) error {
 	if cli.session == nil {
 		return net.ErrWriteToConnected
 	}

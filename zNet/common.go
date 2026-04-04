@@ -1,5 +1,36 @@
 package zNet
 
+import (
+	"encoding/binary"
+	"sync/atomic"
+)
+
+type byteOrderWrapper struct {
+	order binary.ByteOrder
+}
+
+var (
+	byteOrder atomic.Value // 存储字节序，默认为小端序
+)
+
+func init() {
+	byteOrder.Store(&byteOrderWrapper{order: binary.LittleEndian})
+}
+
+// SetByteOrder 设置网络数据包的字节序
+// 参数:
+//   - order: 字节序，binary.LittleEndian 或 binary.BigEndian
+func SetByteOrder(order binary.ByteOrder) {
+	byteOrder.Store(&byteOrderWrapper{order: order})
+}
+
+// GetByteOrder 获取当前网络数据包的字节序
+// 返回:
+//   - binary.ByteOrder: 当前字节序
+func GetByteOrder() binary.ByteOrder {
+	return byteOrder.Load().(*byteOrderWrapper).order
+}
+
 // SessionCallBackFunc Session回调函数类型
 // 用于Session添加/移除时的通知回调
 //

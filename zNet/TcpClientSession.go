@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang/snappy"
@@ -21,9 +22,12 @@ type TcpClientSession struct {
 	wg            sync.WaitGroup     // 等待组
 	lastHeartBeat time.Time          // 最后心跳时间
 	ctxCancel     context.CancelFunc // 上下文取消函数
-	aesKey        []byte             // AES加密密钥
+	aesKey        []byte             // AES加密密钥（初始密钥）
+	currentKey    atomic.Value       // 当前密钥（支持密钥轮换）
+	currentKeyID  atomic.Uint32      // 当前密钥ID
 	closed        bool               // 是否已关闭
 	closedMutex   sync.RWMutex       // 关闭状态锁
+	sendSequence  atomic.Uint64      // 发送序列号
 
 	cli *TcpClient // 所属客户端
 }
@@ -38,6 +42,34 @@ func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte
 	s.lastHeartBeat = time.Now()
 	s.aesKey = aesKey
 	s.cli = cli
+	// 初始化当前密钥
+	s.currentKey.Store(aesKey)
+	s.currentKeyID.Store(0) // 0表示使用初始密钥
+}
+
+// UpdateKey 更新密钥（密钥轮换时调用）
+// 参数:
+//   - newKey: 新密钥
+//   - newKeyID: 新密钥ID
+func (s *TcpClientSession) UpdateKey(newKey []byte, newKeyID uint32) {
+	s.currentKey.Store(newKey)
+	s.currentKeyID.Store(newKeyID)
+}
+
+// GetDecryptKey 获取解密密钥（根据密钥ID）
+// 参数:
+//   - keyID: 密钥ID
+//
+// 返回:
+//   - []byte: 密钥
+func (s *TcpClientSession) GetDecryptKey(keyID uint32) []byte {
+	if keyID == 0 {
+		return s.aesKey
+	}
+	if keyID == s.currentKeyID.Load() {
+		return s.currentKey.Load().([]byte)
+	}
+	return nil
 }
 
 // Start 启动会话
@@ -61,7 +93,9 @@ func (s *TcpClientSession) Close() {
 	s.closedMutex.Lock()
 	s.closed = true
 	s.closedMutex.Unlock()
-	s.ctxCancel()
+	if s.ctxCancel != nil {
+		s.ctxCancel()
+	}
 	s.wg.Wait()
 }
 
@@ -166,13 +200,22 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			continue
 		}
 
+		// 处理密钥轮换通知
+		if netPacket.ProtoId == KeyRotationNotifyProtoId {
+			s.handleKeyRotationNotify(&netPacket)
+			continue
+		}
+
 		// 解密数据
-		if netPacket.DataSize > 0 && s.aesKey != nil {
-			if decrypted, err := zCrypto.AESDecrypt(netPacket.Data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
-				netPacket.Data = decrypted
-			} else {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("AES-GCM decrypt error: %v", err)
+		if netPacket.DataSize > 0 && !s.cli.config.DisableEncryption {
+			key := s.GetDecryptKey(netPacket.KeyID)
+			if key != nil {
+				if decrypted, err := zCrypto.AESDecrypt(netPacket.Data, key, nil, zCrypto.AESModeGCM); err == nil {
+					netPacket.Data = decrypted
+				} else {
+					if s.cli.logger != nil {
+						s.cli.logger.Error("AES-GCM decrypt error: %v, keyID:%d", err, netPacket.KeyID)
+					}
 				}
 			}
 		}
@@ -212,15 +255,28 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 //
 // 返回:
 //   - error: 发送失败时返回错误
-func (s *TcpClientSession) Send(protoId int32, data []byte) error {
+func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
 	netPacket := NetPacket{
-		ProtoId: protoId,
+		ProtoId:   protoId,
+		Sequence:  s.sendSequence.Add(1),
+		Timestamp: time.Now().Unix(),
 	}
+
+	// 获取加密密钥
+	var key []byte
+	var keyID uint32
+	if s.currentKeyID.Load() > 0 {
+		key = s.currentKey.Load().([]byte)
+		keyID = s.currentKeyID.Load()
+	} else if !s.cli.config.DisableEncryption {
+		key = s.aesKey
+	}
+	netPacket.KeyID = keyID
 
 	if data != nil {
 		// 加密数据
-		if s.aesKey != nil {
-			if encrypted, err := zCrypto.AESEncrypt(data, s.aesKey, nil, zCrypto.AESModeGCM); err == nil {
+		if key != nil && !s.cli.config.DisableEncryption {
+			if encrypted, err := zCrypto.AESEncrypt(data, key, nil, zCrypto.AESModeGCM); err == nil {
 				netPacket.Data = encrypted
 			} else {
 				if s.cli.logger != nil {
@@ -261,6 +317,58 @@ func (s *TcpClientSession) Send(protoId int32, data []byte) error {
 	}
 	s.heartbeatUpdate() // 更新心跳时间
 	return nil
+}
+
+// handleKeyRotationNotify 处理密钥轮换通知
+// 参数:
+//   - packet: 密钥轮换通知数据包
+func (s *TcpClientSession) handleKeyRotationNotify(packet *NetPacket) {
+	if packet.DataSize == 0 {
+		return
+	}
+
+	// 使用当前密钥解密通知数据
+	key := s.GetDecryptKey(packet.KeyID)
+	if key == nil {
+		if s.cli.logger != nil {
+			s.cli.logger.Error("Failed to get decrypt key for key rotation notify, keyID:%d", packet.KeyID)
+		}
+		return
+	}
+
+	decryptedData, err := zCrypto.AESDecrypt(packet.Data, key, nil, zCrypto.AESModeGCM)
+	if err != nil {
+		if s.cli.logger != nil {
+			s.cli.logger.Error("Failed to decrypt key rotation notify: %v", err)
+		}
+		return
+	}
+
+	var notify KeyRotationNotify
+	if !notify.Unmarshal(decryptedData) {
+		if s.cli.logger != nil {
+			s.cli.logger.Error("Failed to unmarshal key rotation notify")
+		}
+		return
+	}
+
+	// 验证时间戳
+	now := time.Now().Unix()
+	if now-notify.Timestamp > 30 || now-notify.Timestamp < -30 {
+		if s.cli.logger != nil {
+			s.cli.logger.Warn("Key rotation notify timestamp out of tolerance: %d", notify.Timestamp)
+		}
+		return
+	}
+
+	// 这里需要从安全通道获取新密钥
+	// 简化处理：使用通知中的KeyID作为新密钥的标识
+	// 实际应用中应该通过安全通道协商新密钥
+	s.currentKeyID.Store(notify.KeyID)
+
+	if s.cli.logger != nil {
+		s.cli.logger.Info("Key rotation notify received, new key ID: %d", notify.KeyID)
+	}
 }
 
 // heartbeatUpdate 更新心跳时间

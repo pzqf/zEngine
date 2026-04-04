@@ -39,7 +39,7 @@ func (cli *UdpClient) ConnectToServer(serverAddr string, serverPort int, heartbe
 	return nil
 }
 
-func (cli *UdpClient) Send(protoId int32, data []byte) error {
+func (cli *UdpClient) Send(protoId ProtoIdType, data []byte) error {
 	if cli.session == nil {
 		return errors.New("udp client session is nil")
 	}

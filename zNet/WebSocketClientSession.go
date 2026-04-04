@@ -90,7 +90,7 @@ func (s *WebSocketClientSession) Start() {
 	return
 }
 
-func (s *WebSocketClientSession) Send(protoId int32, data []byte) error {
+func (s *WebSocketClientSession) Send(protoId ProtoIdType, data []byte) error {
 	if s.conn == nil {
 		return errors.New("websocket connection is nil")
 	}

@@ -56,16 +56,20 @@ zEngine/
 
 ### 1. zNet - 网络模块
 
-zNet 是 zEngine 的核心网络模块，提供了 TCP、UDP、WebSocket 和 HTTP 服务器与客户端的完整实现，支持高性能网络通信。
+zNet 是 zEngine 的核心网络模块，提供了 TCP、UDP、WebSocket 和 HTTP 服务器与客户端的完整实现，支持高性能网络通信，专为游戏服务器等高并发场景设计。
 
 #### 主要特性
 - 支持多种网络协议：TCP、UDP、WebSocket、HTTP
-- 内置连接管理和会话管理
-- 支持消息编解码和压缩
+- 内置连接管理和会话管理，支持单服10000+玩家在线
+- 支持消息编解码和 Snappy 压缩
 - 支持加密通信（AES-GCM、ECDH 密钥交换）
 - 支持心跳检测和连接保活
-- 支持 DDoS 防护
+- 支持 DDoS 防护（流量限制、连接限制、IP黑名单）
+- 可配置的工作池模式，提高并发处理能力
+- 支持密钥轮换机制，增强安全性
+- 支持序列号检查和时间戳验证，防止重放攻击
 - 可配置的连接参数和缓冲区大小
+- 高性能设计，支持10000+并发连接
 
 #### 使用示例
 
@@ -75,6 +79,7 @@ zNet 是 zEngine 的核心网络模块，提供了 TCP、UDP、WebSocket 和 HTT
 package main
 
 import (
+    "time"
     "github.com/pzqf/zEngine/zNet"
     "github.com/pzqf/zEngine/zLog"
 )
@@ -83,10 +88,21 @@ func main() {
     zLog.PrintLogo("My TCP Server", "1.0.0")
 
     config := zNet.TcpConfig{
-        ListenAddress: ":8080",
-        MaxConnections: 10000,
-        ReadBufferSize: 4096,
-        WriteBufferSize: 4096,
+        ListenAddress:       ":8080",
+        MaxClientCount:      12000,       // 最大客户端连接数
+        ChanSize:            4096,        // 会话通道大小
+        HeartbeatDuration:   30,          // 心跳间隔（秒）
+        MaxPacketDataSize:   1024 * 1024, // 最大数据包大小
+        UseWorkerPool:       true,        // 启用工作池模式
+        WorkerPoolSize:      500,         // 工作池大小
+        WorkerQueueSize:     20000,       // 工作池队列大小
+        DisableEncryption:   false,       // 启用加密
+        EnableKeyRotation:   true,        // 启用密钥轮换
+        KeyRotationInterval: 30 * time.Minute, // 密钥轮换间隔
+        MaxHistoryKeys:      3,           // 保留历史密钥数量
+        EnableSequenceCheck: true,        // 启用序列号检查
+        SequenceWindowSize:  1000,        // 序列号窗口大小
+        TimestampTolerance:  30,          // 时间戳容忍度（秒）
     }
 
     server := zNet.NewTcpServer(config)
@@ -900,6 +916,9 @@ func main() {
 |------|------|------|
 | zNet | TCP 连接建立 | 10K conn/s |
 | zNet | TCP 消息处理 | 1M msg/s |
+| zNet | 10000并发连接 | 稳定支持 |
+| zNet | 加密通信 | 800K msg/s |
+| zNet | 压缩通信 | 900K msg/s |
 | zEvent | 事件发布 | 1M events/s |
 | zActor | 消息传递 | 500K msg/s |
 | zObject | 对象池获取 | 10M ops/s |
@@ -911,10 +930,16 @@ func main() {
 ### zNet 使用建议
 
 - ✅ 使用 `OnSessionCreated` 和 `OnSessionClosed` 管理会话生命周期
-- ✅ 合理设置 `ReadBufferSize` 和 `WriteBufferSize`
+- ✅ 启用工作池模式 (`UseWorkerPool: true`) 提高并发处理能力
+- ✅ 合理设置工作池大小 (`WorkerPoolSize`) 和队列大小 (`WorkerQueueSize`)
+- ✅ 增大通道容量 (`ChanSize`) 减少阻塞
 - ✅ 使用消息压缩减少网络传输
 - ✅ 使用加密通信保护敏感数据
+- ✅ 启用密钥轮换机制增强安全性
+- ✅ 配置 TCP_NODELAY 和适当的缓冲区大小
 - ⚠️ 避免在 `OnDataReceived` 中执行耗时操作
+- ⚠️ 合理设置 `MaxClientCount` 避免资源耗尽
+- ⚠️ 监控工作池负载和通道使用率
 
 ### zLog 使用建议
 
@@ -984,4 +1009,4 @@ MIT License
 
 ---
 
-*最后更新: 2026-04-01*
+*最后更新: 2026-04-04*

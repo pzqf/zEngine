@@ -1,17 +1,25 @@
 package zNet
 
+import "time"
+
 // TcpConfig TCP服务器配置
 // 定义TCP服务器运行所需的各项参数
 type TcpConfig struct {
-	ListenAddress     string `toml:"listen_address" json:"listen_address"`             // 监听地址，默认 ":9016"
-	MaxClientCount    int    `toml:"max_client_count" json:"max_client_count"`         // 最大客户端连接数，默认 10000
-	ChanSize          int    `toml:"chan_size" json:"chan_size"`                       // Session收发通道大小，默认 1024
-	HeartbeatDuration int    `toml:"heartbeat_duration" json:"heartbeat_duration"`     // 心跳间隔时间（秒），默认 30
-	MaxPacketDataSize int32  `toml:"max_packet_data_size" json:"max_packet_data_size"` // 最大数据包大小，默认 1024*1024
-	UseWorkerPool     bool   `toml:"use_worker_pool" json:"use_worker_pool"`           // 是否使用工作池模式，默认 false
-	WorkerPoolSize    int    `toml:"worker_pool_size" json:"worker_pool_size"`         // 工作池大小，默认 100
-	WorkerQueueSize   int    `toml:"worker_queue_size" json:"worker_queue_size"`       // 工作池队列大小，默认 10000
-	DisableEncryption bool   `toml:"disable_encryption" json:"disable_encryption"`     // 是否禁用加密，默认 false
+	ListenAddress       string        `toml:"listen_address" json:"listen_address"`               // 监听地址，默认 ":9016"
+	MaxClientCount      int           `toml:"max_client_count" json:"max_client_count"`           // 最大客户端连接数，默认 10000
+	ChanSize            int           `toml:"chan_size" json:"chan_size"`                         // Session收发通道大小，默认 1024
+	HeartbeatDuration   int           `toml:"heartbeat_duration" json:"heartbeat_duration"`       // 心跳间隔时间（秒），默认 30
+	MaxPacketDataSize   int32         `toml:"max_packet_data_size" json:"max_packet_data_size"`   // 最大数据包大小，默认 1024*1024
+	UseWorkerPool       bool          `toml:"use_worker_pool" json:"use_worker_pool"`             // 是否使用工作池模式，默认 false
+	WorkerPoolSize      int           `toml:"worker_pool_size" json:"worker_pool_size"`           // 工作池大小，默认 100
+	WorkerQueueSize     int           `toml:"worker_queue_size" json:"worker_queue_size"`         // 工作池队列大小，默认 10000
+	DisableEncryption   bool          `toml:"disable_encryption" json:"disable_encryption"`       // 是否禁用加密，默认 false
+	EnableKeyRotation   bool          `toml:"enable_key_rotation" json:"enable_key_rotation"`     // 是否启用密钥轮换，默认 false
+	KeyRotationInterval time.Duration `toml:"key_rotation_interval" json:"key_rotation_interval"` // 密钥轮换间隔，默认 30分钟
+	MaxHistoryKeys      int           `toml:"max_history_keys" json:"max_history_keys"`           // 保留历史密钥数量，默认 3
+	EnableSequenceCheck bool          `toml:"enable_sequence_check" json:"enable_sequence_check"` // 是否启用序列号检查，默认 false
+	SequenceWindowSize  uint64        `toml:"sequence_window_size" json:"sequence_window_size"`   // 序列号窗口大小，默认 1000
+	TimestampTolerance  int64         `toml:"timestamp_tolerance" json:"timestamp_tolerance"`     // 时间戳容忍度（秒），默认 30
 }
 
 // UdpConfig UDP服务器配置
