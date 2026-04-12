@@ -171,11 +171,11 @@ func (ibl *IPBlacklist) BlacklistIP(ip string) {
 // TrafficLimiter 流量限制器
 // 限制单个IP在指定时间窗口内的流量大小
 type TrafficLimiter struct {
-	ipTraffic     map[string]int64    // IP流量统计
-	mu            sync.Mutex          // 互斥锁
-	maxBytesPerIP int64               // 每个IP最大流量（字节）
-	timeWindow    time.Duration       // 时间窗口
-	lastReset     time.Time           // 上次重置时间
+	ipTraffic     map[string]int64 // IP流量统计
+	mu            sync.Mutex       // 互斥锁
+	maxBytesPerIP int64            // 每个IP最大流量（字节）
+	timeWindow    time.Duration    // 时间窗口
+	lastReset     time.Time        // 上次重置时间
 }
 
 // NewTrafficLimiter 创建流量限制器
@@ -222,50 +222,44 @@ func (tl *TrafficLimiter) AllowTraffic(ip string, bytes int64) bool {
 }
 
 // DDoSProtection DDoS保护管理器
-// 整合连接限制、数据包限制、流量限制和IP黑名单功能
 type DDoSProtection struct {
-	connectionLimiter *ConnectionLimiter // 连接限制器
-	packetLimiter     *PacketLimiter     // 数据包限制器
-	ipBlacklist       *IPBlacklist       // IP黑名单
-	trafficLimiter    *TrafficLimiter    // 流量限制器
+	connectionLimiter *ConnectionLimiter
+	packetLimiter     *PacketLimiter
+	ipBlacklist       *IPBlacklist
+	trafficLimiter    *TrafficLimiter
+	whitelist         map[string]bool
 }
 
-// NewDDoSProtection 创建DDoS保护管理器
-// 参数:
-//   - cfg: DDoS配置（可选），不提供则使用默认配置
-//
-// 返回:
-//   - *DDoSProtection: DDoS保护管理器实例
 func NewDDoSProtection(cfg ...*DDoSConfig) *DDoSProtection {
-	// 使用默认配置
 	ddosCfg := DefaultDDoSConfig()
 	if len(cfg) > 0 && cfg[0] != nil {
 		ddosCfg = cfg[0]
 	}
 
+	whitelist := make(map[string]bool)
+	for _, ip := range ddosCfg.WhitelistIPs {
+		whitelist[ip] = true
+	}
+
 	return &DDoSProtection{
-		connectionLimiter: NewConnectionLimiter(ddosCfg.MaxPacketsPerIP, time.Duration(ddosCfg.ConnTimeWindow)*time.Second),
+		connectionLimiter: NewConnectionLimiter(ddosCfg.MaxConnPerIP, time.Duration(ddosCfg.ConnTimeWindow)*time.Second),
 		packetLimiter:     NewPacketLimiter(ddosCfg.MaxPacketsPerIP, time.Duration(ddosCfg.PacketTimeWindow)*time.Second),
 		ipBlacklist:       NewIPBlacklist(time.Duration(ddosCfg.BanDuration) * time.Second),
 		trafficLimiter:    NewTrafficLimiter(ddosCfg.MaxBytesPerIP, time.Duration(ddosCfg.TrafficTimeWindow)*time.Second),
+		whitelist:         whitelist,
 	}
 }
 
-// AllowConnection 检查是否允许新连接
-// 参数:
-//   - ip: 客户端IP地址
-//
-// 返回:
-//   - bool: 允许连接返回true
 func (dp *DDoSProtection) AllowConnection(ip string) bool {
-	// 检查IP是否被黑名单
+	if dp.whitelist[ip] {
+		return true
+	}
+
 	if dp.ipBlacklist.IsBlacklisted(ip) {
 		return false
 	}
 
-	// 检查连接频率是否超过限制
 	if !dp.connectionLimiter.AllowConnection(ip) {
-		// 将IP加入黑名单
 		dp.ipBlacklist.BlacklistIP(ip)
 		return false
 	}

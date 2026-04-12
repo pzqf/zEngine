@@ -9,6 +9,7 @@ import (
 
 	"github.com/pzqf/zUtil/zConcurrency"
 	"github.com/pzqf/zUtil/zMap"
+	"go.uber.org/zap"
 )
 
 // TcpServer TCP服务器实现
@@ -117,6 +118,16 @@ func (svr *TcpServer) Start() error {
 		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
 	}
 
+	// 启动自动密钥轮换
+	if svr.config.EnableKeyRotation && svr.config.KeyRotationInterval > 0 {
+		svr.StartAutoKeyRotation()
+		if svr.logger != nil {
+			svr.logger.Info("Auto key rotation started",
+				zap.Duration("interval", svr.config.KeyRotationInterval),
+				zap.Int("max_history_keys", svr.config.MaxHistoryKeys))
+		}
+	}
+
 	svr.wg.Add(1)
 	go func() {
 		defer svr.wg.Done()
@@ -149,7 +160,7 @@ func (svr *TcpServer) Start() error {
 				continue
 			}
 
-			go svr.AddSession(conn)
+		go svr.AddSession(conn)
 		}
 	}()
 
@@ -200,7 +211,18 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	var aesKey []byte
 	var err error
 
-	// 检查是否禁用加密
+	if svr.config.TcpNoDelay {
+		_ = conn.SetNoDelay(true)
+	}
+
+	if svr.config.WriteBufferSize > 0 {
+		_ = conn.SetWriteBuffer(svr.config.WriteBufferSize)
+	}
+
+	if svr.config.ReadBufferSize > 0 {
+		_ = conn.SetReadBuffer(svr.config.ReadBufferSize)
+	}
+
 	if !svr.config.DisableEncryption {
 		// 执行DH密钥协商，生成AES密钥
 		aesKey, err = PerformKeyExchange(conn)

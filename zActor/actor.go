@@ -3,71 +3,132 @@ package zActor
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/pzqf/zEngine/zLog"
 )
 
-// ActorMessage Actor消息接口
+type SupervisorStrategy int
+
+const (
+	SupervisorStrategyRestart   SupervisorStrategy = iota
+	SupervisorStrategyStop
+	SupervisorStrategyEscalate
+)
+
+type SupervisorConfig struct {
+	Strategy       SupervisorStrategy
+	MaxRestarts    int
+	RestartWindow  time.Duration
+	RestartBackoff time.Duration
+}
+
+func DefaultSupervisorConfig() SupervisorConfig {
+	return SupervisorConfig{
+		Strategy:       SupervisorStrategyRestart,
+		MaxRestarts:    3,
+		RestartWindow:  60 * time.Second,
+		RestartBackoff: 1 * time.Second,
+	}
+}
+
 type ActorMessage interface {
 	GetActorID() int64
 }
 
-// BaseActorMessage 基础Actor消息实现
 type BaseActorMessage struct {
 	ActorID int64
 }
 
-// GetActorID 获取ActorID
 func (msg *BaseActorMessage) GetActorID() int64 {
 	return msg.ActorID
 }
 
-// Actor 接口定义
+type PriorityActorMessage struct {
+	BaseActorMessage
+	Priority MessagePriority
+}
+
+func (msg *PriorityActorMessage) GetPriority() MessagePriority {
+	return msg.Priority
+}
+
+type MessagePriority int
+
+const (
+	PriorityHigh   MessagePriority = 0
+	PriorityNormal MessagePriority = 1
+	PriorityLow    MessagePriority = 2
+)
+
 type Actor interface {
-	// ID 获取Actor唯一标识
 	ID() int64
-	// Start 启动Actor
 	Start() error
-	// Stop 停止Actor
 	Stop() error
-	// SendMessage 发送消息给Actor
 	SendMessage(msg ActorMessage)
-	// ProcessMessage 处理消息
 	ProcessMessage(msg ActorMessage)
-	// IsRunning 检查Actor是否在运行
 	IsRunning() bool
 }
 
-// BaseActor 基础Actor实现
-type BaseActor struct {
-	id           int64
-	ActorMsgChan chan ActorMessage
-	isRunning    bool
-	mu           sync.Mutex
-	logger       *zap.Logger
+type LifecycleHooks interface {
+	OnStart() error
+	OnStop()
+	OnRestart() error
 }
 
-// NewBaseActor 创建基础Actor实例
+type BaseActor struct {
+	id            int64
+	ActorMsgChan  chan ActorMessage
+	highPriority  chan ActorMessage
+	isRunning     bool
+	mu            sync.Mutex
+	logger        *zap.Logger
+	supervisorCfg SupervisorConfig
+	restartTimes  []time.Time
+	hooks         LifecycleHooks
+	stopCh        chan struct{}
+}
+
 func NewBaseActor(id int64, chanSize int) *BaseActor {
 	if chanSize <= 0 {
 		chanSize = 1024
 	}
 	return &BaseActor{
-		id:           id,
-		ActorMsgChan: make(chan ActorMessage, chanSize),
-		isRunning:    false,
-		logger:       zLog.GetLogger(),
+		id:            id,
+		ActorMsgChan:  make(chan ActorMessage, chanSize),
+		highPriority:  make(chan ActorMessage, chanSize),
+		isRunning:     false,
+		logger:        zLog.GetLogger(),
+		supervisorCfg: DefaultSupervisorConfig(),
+		stopCh:        make(chan struct{}),
 	}
 }
 
-// ID 获取Actor唯一标识
+func NewBaseActorWithSupervisor(id int64, chanSize int, cfg SupervisorConfig) *BaseActor {
+	if chanSize <= 0 {
+		chanSize = 1024
+	}
+	return &BaseActor{
+		id:            id,
+		ActorMsgChan:  make(chan ActorMessage, chanSize),
+		highPriority:  make(chan ActorMessage, chanSize),
+		isRunning:     false,
+		logger:        zLog.GetLogger(),
+		supervisorCfg: cfg,
+		stopCh:        make(chan struct{}),
+	}
+}
+
+func (a *BaseActor) SetLifecycleHooks(hooks LifecycleHooks) {
+	a.hooks = hooks
+}
+
 func (a *BaseActor) ID() int64 {
 	return a.id
 }
 
-// Start 启动Actor
 func (a *BaseActor) Start() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -77,11 +138,19 @@ func (a *BaseActor) Start() error {
 	}
 
 	a.isRunning = true
+	a.stopCh = make(chan struct{})
+
+	if a.hooks != nil {
+		if err := a.hooks.OnStart(); err != nil {
+			a.isRunning = false
+			return fmt.Errorf("actor %d OnStart failed: %w", a.id, err)
+		}
+	}
+
 	go a.run()
 	return nil
 }
 
-// Stop 停止Actor
 func (a *BaseActor) Stop() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -92,45 +161,176 @@ func (a *BaseActor) Stop() error {
 
 	a.isRunning = false
 	close(a.ActorMsgChan)
+	close(a.highPriority)
+	close(a.stopCh)
+
+	if a.hooks != nil {
+		a.hooks.OnStop()
+	}
+
 	return nil
 }
 
-// SendMessage 发送消息给Actor
 func (a *BaseActor) SendMessage(msg ActorMessage) {
 	if !a.IsRunning() {
 		a.logger.Warn("Sending message to stopped actor", zap.Int64("actor_id", a.id))
 		return
 	}
 
-	select {
-	case a.ActorMsgChan <- msg:
-		// 消息发送成功
+	priority := PriorityNormal
+	if pm, ok := msg.(*PriorityActorMessage); ok {
+		priority = pm.Priority
+	}
+
+	switch priority {
+	case PriorityHigh:
+		select {
+		case a.highPriority <- msg:
+		default:
+			a.logger.Warn("Actor high priority queue is full", zap.Int64("actor_id", a.id))
+		}
 	default:
-		// 消息队列已满，丢弃消息或进行其他处理
-		a.logger.Warn("Actor message queue is full", zap.Int64("actor_id", a.id))
+		select {
+		case a.ActorMsgChan <- msg:
+		default:
+			a.logger.Warn("Actor message queue is full", zap.Int64("actor_id", a.id))
+		}
 	}
 }
 
-// ProcessMessage 处理消息，需要被子类重写
+func (a *BaseActor) SendPriority(msg ActorMessage, priority MessagePriority) {
+	if !a.IsRunning() {
+		a.logger.Warn("Sending priority message to stopped actor", zap.Int64("actor_id", a.id))
+		return
+	}
+
+	pMsg := &PriorityActorMessage{
+		BaseActorMessage: BaseActorMessage{ActorID: a.id},
+		Priority:         priority,
+	}
+
+	switch priority {
+	case PriorityHigh:
+		select {
+		case a.highPriority <- pMsg:
+		default:
+			a.logger.Warn("Actor high priority queue is full", zap.Int64("actor_id", a.id))
+		}
+	default:
+		select {
+		case a.ActorMsgChan <- pMsg:
+		default:
+			a.logger.Warn("Actor message queue is full", zap.Int64("actor_id", a.id))
+		}
+	}
+}
+
 func (a *BaseActor) ProcessMessage(msg ActorMessage) {
-	// 默认实现，需要被子类重写
 	a.logger.Debug("BaseActor received message", zap.Int64("actor_id", a.id), zap.Any("message", msg))
 }
 
-// IsRunning 检查Actor是否在运行
 func (a *BaseActor) IsRunning() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.isRunning
 }
 
-// run 内部运行循环
 func (a *BaseActor) run() {
 	a.logger.Info("Actor started", zap.Int64("actor_id", a.id))
 
-	for msg := range a.ActorMsgChan {
-		a.ProcessMessage(msg)
+	defer func() {
+		if r := recover(); r != nil {
+			a.logger.Error("Actor panic recovered",
+				zap.Int64("actor_id", a.id),
+				zap.Any("panic", r))
+			a.handlePanic()
+		}
+	}()
+
+	for {
+		select {
+		case <-a.stopCh:
+			a.logger.Info("Actor stopped via stop channel", zap.Int64("actor_id", a.id))
+			return
+		case msg, ok := <-a.highPriority:
+			if !ok {
+				return
+			}
+			a.ProcessMessage(msg)
+		default:
+			select {
+			case msg, ok := <-a.highPriority:
+				if !ok {
+					return
+				}
+				a.ProcessMessage(msg)
+			case msg, ok := <-a.ActorMsgChan:
+				if !ok {
+					return
+				}
+				a.ProcessMessage(msg)
+			}
+		}
+	}
+}
+
+func (a *BaseActor) handlePanic() {
+	a.mu.Lock()
+	a.isRunning = false
+	a.mu.Unlock()
+
+	switch a.supervisorCfg.Strategy {
+	case SupervisorStrategyRestart:
+		a.tryRestart()
+	case SupervisorStrategyStop:
+		a.logger.Info("Actor stopped by supervisor strategy", zap.Int64("actor_id", a.id))
+	case SupervisorStrategyEscalate:
+		a.logger.Error("Actor panic escalated", zap.Int64("actor_id", a.id))
+	}
+}
+
+func (a *BaseActor) tryRestart() {
+	now := time.Now()
+	windowStart := now.Add(-a.supervisorCfg.RestartWindow)
+	var recentRestarts []time.Time
+	for _, t := range a.restartTimes {
+		if t.After(windowStart) {
+			recentRestarts = append(recentRestarts, t)
+		}
+	}
+	a.restartTimes = recentRestarts
+
+	if len(recentRestarts) >= a.supervisorCfg.MaxRestarts {
+		a.logger.Error("Actor exceeded max restarts",
+			zap.Int64("actor_id", a.id),
+			zap.Int("max_restarts", a.supervisorCfg.MaxRestarts))
+		return
 	}
 
-	a.logger.Info("Actor stopped", zap.Int64("actor_id", a.id))
+	time.Sleep(a.supervisorCfg.RestartBackoff)
+
+	a.mu.Lock()
+	a.ActorMsgChan = make(chan ActorMessage, cap(a.ActorMsgChan))
+	a.highPriority = make(chan ActorMessage, cap(a.highPriority))
+	a.stopCh = make(chan struct{})
+	a.isRunning = true
+	a.restartTimes = append(a.restartTimes, time.Now())
+	a.mu.Unlock()
+
+	if a.hooks != nil {
+		if err := a.hooks.OnRestart(); err != nil {
+			a.logger.Error("Actor OnRestart failed",
+				zap.Int64("actor_id", a.id),
+				zap.Error(err))
+			a.mu.Lock()
+			a.isRunning = false
+			a.mu.Unlock()
+			return
+		}
+	}
+
+	go a.run()
+	a.logger.Info("Actor restarted",
+		zap.Int64("actor_id", a.id),
+		zap.Int("restart_count", len(a.restartTimes)))
 }

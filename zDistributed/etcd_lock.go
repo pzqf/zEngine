@@ -6,9 +6,10 @@ import (
 	"sync/atomic"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"github.com/pzqf/zEngine/zLog"
+	"go.uber.org/zap"
 )
 
-// EtcdLock 基于etcd的分布式锁实现
 type EtcdLock struct {
 	client     *clientv3.Client
 	lease      clientv3.LeaseID
@@ -18,7 +19,6 @@ type EtcdLock struct {
 	options    LockOptions
 }
 
-// NewEtcdLock 创建基于etcd的分布式锁
 func NewEtcdLock(client *clientv3.Client, key string, options LockOptions) *EtcdLock {
 	if options.LeaseTTL <= 0 {
 		options.LeaseTTL = DefaultLockOptions.LeaseTTL
@@ -31,27 +31,22 @@ func NewEtcdLock(client *clientv3.Client, key string, options LockOptions) *Etcd
 	}
 }
 
-// Lock 获取锁
 func (l *EtcdLock) Lock(ctx context.Context) error {
 	if l.isLocked.Load() {
 		return nil
 	}
 
-	// 创建租约
 	leaseResp, err := l.client.Grant(ctx, l.options.LeaseTTL)
 	if err != nil {
 		return err
 	}
 	l.lease = leaseResp.ID
 
-	// 创建上下文用于自动续约
 	ctxWithCancel, cancel := context.WithCancel(ctx)
 	l.cancelFunc = cancel
 
-	// 启动续约协程
 	go l.keepAlive(ctxWithCancel)
 
-	// 尝试获取锁
 	lockResp, err := l.client.Txn(ctx).
 		If(clientv3.Compare(clientv3.CreateRevision(l.lockKey), "=", 0)).
 		Then(clientv3.OpPut(l.lockKey, "", clientv3.WithLease(l.lease))).
@@ -71,18 +66,76 @@ func (l *EtcdLock) Lock(ctx context.Context) error {
 	return nil
 }
 
-// Unlock 释放锁
+func (l *EtcdLock) LockWithAutoRenew(ctx context.Context) error {
+	if l.isLocked.Load() {
+		return nil
+	}
+
+	leaseResp, err := l.client.Grant(ctx, l.options.LeaseTTL)
+	if err != nil {
+		return err
+	}
+	l.lease = leaseResp.ID
+
+	ctxWithCancel, cancel := context.WithCancel(ctx)
+	l.cancelFunc = cancel
+
+	keepAliveCh, err := l.client.KeepAlive(ctxWithCancel, l.lease)
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	go func() {
+		for {
+			select {
+			case <-ctxWithCancel.Done():
+				return
+			case resp, ok := <-keepAliveCh:
+				if !ok {
+					zLog.Warn("Lock keep-alive channel closed, lease may have expired",
+						zap.String("key", l.lockKey))
+					l.isLocked.Store(false)
+					return
+				}
+				if resp == nil {
+					zLog.Warn("Lock keep-alive received nil response",
+						zap.String("key", l.lockKey))
+					l.isLocked.Store(false)
+					return
+				}
+			}
+		}
+	}()
+
+	lockResp, err := l.client.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(l.lockKey), "=", 0)).
+		Then(clientv3.OpPut(l.lockKey, "", clientv3.WithLease(l.lease))).
+		Commit()
+
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	if !lockResp.Succeeded {
+		cancel()
+		return errors.New("lock already held")
+	}
+
+	l.isLocked.Store(true)
+	return nil
+}
+
 func (l *EtcdLock) Unlock(ctx context.Context) error {
 	if !l.isLocked.Load() {
 		return nil
 	}
 
-	// 取消续约
 	if l.cancelFunc != nil {
 		l.cancelFunc()
 	}
 
-	// 删除锁
 	_, err := l.client.Delete(ctx, l.lockKey)
 	if err != nil {
 		return err
@@ -92,24 +145,41 @@ func (l *EtcdLock) Unlock(ctx context.Context) error {
 	return nil
 }
 
-// IsLocked 检查是否持有锁
 func (l *EtcdLock) IsLocked() bool {
 	return l.isLocked.Load()
 }
 
-// GetKey 获取锁的键名
 func (l *EtcdLock) GetKey() string {
 	return l.lockKey
 }
 
-// keepAlive 保持租约活跃
 func (l *EtcdLock) keepAlive(ctx context.Context) {
 	ch, err := l.client.KeepAlive(ctx, l.lease)
 	if err != nil {
+		zLog.Error("Lock keep-alive failed",
+			zap.String("key", l.lockKey),
+			zap.Error(err))
+		l.isLocked.Store(false)
 		return
 	}
 
-	for range ch {
-		// 续约成功，继续监听
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resp, ok := <-ch:
+			if !ok {
+				zLog.Warn("Lock keep-alive channel closed",
+					zap.String("key", l.lockKey))
+				l.isLocked.Store(false)
+				return
+			}
+			if resp == nil {
+				zLog.Warn("Lock keep-alive received nil response",
+					zap.String("key", l.lockKey))
+				l.isLocked.Store(false)
+				return
+			}
+		}
 	}
 }

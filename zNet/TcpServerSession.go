@@ -133,7 +133,9 @@ func (s *TcpServerSession) Start() {
 // Close 关闭会话
 // 取消上下文并等待所有goroutine退出
 func (s *TcpServerSession) Close() {
-	s.ctxCancel()
+	if s.ctxCancel != nil {
+		s.ctxCancel()
+	}
 	s.wg.Wait()
 }
 
@@ -446,7 +448,7 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 	}
 
 	// 压缩数据
-	if s.svr.compressionConfig.Enabled && len(netPacket.Data) > s.svr.compressionConfig.CompressionThreshold && len(netPacket.Data) <= s.svr.compressionConfig.MaxCompressSize {
+	if !s.svr.config.DisableCompression && s.svr.compressionConfig.Enabled && len(netPacket.Data) > s.svr.compressionConfig.CompressionThreshold && len(netPacket.Data) <= s.svr.compressionConfig.MaxCompressSize {
 		compressed := snappy.Encode(nil, netPacket.Data)
 		// 只有当压缩后的数据小于原始数据时才使用压缩数据
 		if len(compressed) < len(netPacket.Data) {
