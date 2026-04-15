@@ -3,6 +3,7 @@ package zActor
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -82,7 +83,7 @@ type BaseActor struct {
 	id            int64
 	ActorMsgChan  chan ActorMessage
 	highPriority  chan ActorMessage
-	isRunning     bool
+	running       atomic.Bool
 	mu            sync.Mutex
 	logger        *zap.Logger
 	supervisorCfg SupervisorConfig
@@ -99,7 +100,6 @@ func NewBaseActor(id int64, chanSize int) *BaseActor {
 		id:            id,
 		ActorMsgChan:  make(chan ActorMessage, chanSize),
 		highPriority:  make(chan ActorMessage, chanSize),
-		isRunning:     false,
 		logger:        zLog.GetLogger(),
 		supervisorCfg: DefaultSupervisorConfig(),
 		stopCh:        make(chan struct{}),
@@ -114,7 +114,6 @@ func NewBaseActorWithSupervisor(id int64, chanSize int, cfg SupervisorConfig) *B
 		id:            id,
 		ActorMsgChan:  make(chan ActorMessage, chanSize),
 		highPriority:  make(chan ActorMessage, chanSize),
-		isRunning:     false,
 		logger:        zLog.GetLogger(),
 		supervisorCfg: cfg,
 		stopCh:        make(chan struct{}),
@@ -133,16 +132,16 @@ func (a *BaseActor) Start() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.isRunning {
+	if a.running.Load() {
 		return fmt.Errorf("actor %d is already running", a.id)
 	}
 
-	a.isRunning = true
+	a.running.Store(true)
 	a.stopCh = make(chan struct{})
 
 	if a.hooks != nil {
 		if err := a.hooks.OnStart(); err != nil {
-			a.isRunning = false
+			a.running.Store(false)
 			return fmt.Errorf("actor %d OnStart failed: %w", a.id, err)
 		}
 	}
@@ -155,11 +154,11 @@ func (a *BaseActor) Stop() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if !a.isRunning {
+	if !a.running.Load() {
 		return fmt.Errorf("actor %d is not running", a.id)
 	}
 
-	a.isRunning = false
+	a.running.Store(false)
 	close(a.ActorMsgChan)
 	close(a.highPriority)
 	close(a.stopCh)
@@ -230,9 +229,7 @@ func (a *BaseActor) ProcessMessage(msg ActorMessage) {
 }
 
 func (a *BaseActor) IsRunning() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.isRunning
+	return a.running.Load()
 }
 
 func (a *BaseActor) run() {
@@ -275,9 +272,7 @@ func (a *BaseActor) run() {
 }
 
 func (a *BaseActor) handlePanic() {
-	a.mu.Lock()
-	a.isRunning = false
-	a.mu.Unlock()
+	a.running.Store(false)
 
 	switch a.supervisorCfg.Strategy {
 	case SupervisorStrategyRestart:
@@ -313,7 +308,7 @@ func (a *BaseActor) tryRestart() {
 	a.ActorMsgChan = make(chan ActorMessage, cap(a.ActorMsgChan))
 	a.highPriority = make(chan ActorMessage, cap(a.highPriority))
 	a.stopCh = make(chan struct{})
-	a.isRunning = true
+	a.running.Store(true)
 	a.restartTimes = append(a.restartTimes, time.Now())
 	a.mu.Unlock()
 
@@ -322,9 +317,7 @@ func (a *BaseActor) tryRestart() {
 			a.logger.Error("Actor OnRestart failed",
 				zap.Int64("actor_id", a.id),
 				zap.Error(err))
-			a.mu.Lock()
-			a.isRunning = false
-			a.mu.Unlock()
+			a.running.Store(false)
 			return
 		}
 	}

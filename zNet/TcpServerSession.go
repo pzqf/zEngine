@@ -17,26 +17,35 @@ import (
 // TcpServerSession TCP服务器会话
 // 管理与单个客户端的TCP连接，负责数据收发、心跳检测、加密解密
 type TcpServerSession struct {
-	conn          *net.TCPConn         // TCP连接
-	sid           SessionIdType        // 会话唯一标识
-	sendChan      chan *NetPacket      // 发送通道
-	receiveChan   chan *NetPacket      // 接收通道
-	wg            sync.WaitGroup       // 等待组
-	lastHeartBeat time.Time            // 最后心跳时间
-	ctxCancel     context.CancelFunc   // 上下文取消函数
-	onClose       TcpCloseCallBackFunc // 关闭回调函数
-	aesKey        []byte               // AES加密密钥（初始密钥）
-	currentKey    atomic.Value         // 当前密钥（支持密钥轮换）
-	currentKeyID  atomic.Uint32        // 当前密钥ID
-	svr           *TcpServer           // 所属服务器
-	obj           interface{}          // 附加对象
-	sendSequence  atomic.Uint64        // 发送序列号
+	conn          *net.TCPConn
+	sid           SessionIdType
+	sendChan      chan *NetPacket
+	receiveChan   chan *NetPacket
+	wg            sync.WaitGroup
+	lastHeartBeat time.Time
+	ctxCancel     context.CancelFunc
+	onClose       TcpCloseCallBackFunc
+	closeOnce     sync.Once
+	aesKey        []byte
+	currentKey    atomic.Value
+	currentKeyID  atomic.Uint32
+	svr           *TcpServer    // 所属服务器
+	obj           interface{}   // 附加对象
+	sendSequence  atomic.Uint64 // 发送序列号
 }
 
 // TcpCloseCallBackFunc TCP连接关闭回调函数类型
 // 参数:
 //   - c: 被关闭的会话实例
 type TcpCloseCallBackFunc func(c *TcpServerSession)
+
+func (s *TcpServerSession) triggerOnClose() {
+	s.closeOnce.Do(func() {
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+	})
+}
 
 // NewTcpServerSession 创建TCP服务器会话
 // 参数:
@@ -149,9 +158,7 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
-		if s.onClose != nil {
-			s.onClose(s)
-		}
+		s.triggerOnClose()
 		if err := recover(); err != nil {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("process panic:%v, sid:%d, closed", err, s.sid)
@@ -337,9 +344,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
-		if s.onClose != nil {
-			s.onClose(s)
-		}
+		s.triggerOnClose()
 		if err := recover(); err != nil {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("process panic:%v, sid:%d, closed", err, s.sid)
@@ -401,9 +406,7 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			s.svr.logger.Error("Failed to close connection: %v, sid: %d", err, s.sid)
 		}
 	}
-	if s.onClose != nil {
-		s.onClose(s)
-	}
+	s.triggerOnClose()
 }
 
 // Send 发送数据

@@ -1,295 +1,180 @@
 package zMetrics
 
 import (
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// NetworkMetrics 网络指标监控
 type NetworkMetrics struct {
-	mu sync.RWMutex
+	activeConnections  atomic.Int32
+	totalConnections   atomic.Int64
+	droppedConnections atomic.Int64
 
-	// 连接统计
-	activeConnections  int
-	totalConnections   int64
-	droppedConnections int64
+	avgLatencyNano     atomic.Int64
+	maxLatencyNano     atomic.Int64
+	minLatencyNano     atomic.Int64
+	totalLatencyNano   atomic.Int64
+	latencySamples     atomic.Int64
 
-	// 延迟统计
-	avgLatency     time.Duration
-	maxLatency     time.Duration
-	minLatency     time.Duration
-	totalLatency   time.Duration
-	latencySamples int64
+	totalBytesSent       atomic.Int64
+	totalBytesReceived   atomic.Int64
+	totalPacketsSent     atomic.Int64
+	totalPacketsReceived atomic.Int64
 
-	// 吞吐量统计
-	totalBytesSent       int64
-	totalBytesReceived   int64
-	totalPacketsSent     int64
-	totalPacketsReceived int64
+	encodingErrors    atomic.Int64
+	decodingErrors    atomic.Int64
+	compressionErrors atomic.Int64
+	droppedPackets    atomic.Int64
 
-	// 错误统计
-	encodingErrors    int64
-	decodingErrors    int64
-	compressionErrors int64
-	droppedPackets    int64
-
-	// 采样时间
-	lastSampleTime time.Time
+	lastSampleTime atomic.Int64
 }
 
-// NewNetworkMetrics 创建网络指标监控实例
 func NewNetworkMetrics() *NetworkMetrics {
-	return &NetworkMetrics{
-		lastSampleTime: time.Now(),
-		minLatency:     time.Hour, // 初始化为较大值
-	}
+	m := &NetworkMetrics{}
+	m.minLatencyNano.Store(int64(time.Hour))
+	m.lastSampleTime.Store(time.Now().UnixNano())
+	return m
 }
 
-// IncActiveConnections 增加活跃连接数
 func (m *NetworkMetrics) IncActiveConnections() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.activeConnections++
-	m.totalConnections++
+	m.activeConnections.Add(1)
+	m.totalConnections.Add(1)
 }
 
-// DecActiveConnections 减少活跃连接数
 func (m *NetworkMetrics) DecActiveConnections() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.activeConnections > 0 {
-		m.activeConnections--
-	}
+	m.activeConnections.Add(-1)
 }
 
-// IncDroppedConnections 增加丢弃连接数
 func (m *NetworkMetrics) IncDroppedConnections() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.droppedConnections++
+	m.droppedConnections.Add(1)
 }
 
-// RecordLatency 记录延迟
 func (m *NetworkMetrics) RecordLatency(latency time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	latencyNano := int64(latency)
+	m.totalLatencyNano.Add(latencyNano)
+	samples := m.latencySamples.Add(1)
 
-	m.totalLatency += latency
-	m.latencySamples++
-
-	if latency > m.maxLatency {
-		m.maxLatency = latency
+	for {
+		current := m.maxLatencyNano.Load()
+		if latencyNano <= current || m.maxLatencyNano.CompareAndSwap(current, latencyNano) {
+			break
+		}
 	}
 
-	if latency < m.minLatency {
-		m.minLatency = latency
+	for {
+		current := m.minLatencyNano.Load()
+		if latencyNano >= current || m.minLatencyNano.CompareAndSwap(current, latencyNano) {
+			break
+		}
 	}
 
-	// 计算平均延迟
-	if m.latencySamples > 0 {
-		m.avgLatency = m.totalLatency / time.Duration(m.latencySamples)
-	}
+	m.avgLatencyNano.Store(m.totalLatencyNano.Load() / samples)
 }
 
-// RecordBytesSent 记录发送字节数
 func (m *NetworkMetrics) RecordBytesSent(bytes int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalBytesSent += int64(bytes)
+	m.totalBytesSent.Add(int64(bytes))
 }
 
-// RecordBytesReceived 记录接收字节数
 func (m *NetworkMetrics) RecordBytesReceived(bytes int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalBytesReceived += int64(bytes)
+	m.totalBytesReceived.Add(int64(bytes))
 }
 
-// RecordPacketsSent 记录发送包数
 func (m *NetworkMetrics) RecordPacketsSent(count int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalPacketsSent += int64(count)
+	m.totalPacketsSent.Add(int64(count))
 }
 
-// RecordPacketsReceived 记录接收包数
 func (m *NetworkMetrics) RecordPacketsReceived(count int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.totalPacketsReceived += int64(count)
+	m.totalPacketsReceived.Add(int64(count))
 }
 
-// IncEncodingErrors 增加编码错误数
 func (m *NetworkMetrics) IncEncodingErrors() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.encodingErrors++
+	m.encodingErrors.Add(1)
 }
 
-// IncDecodingErrors 增加解码错误数
 func (m *NetworkMetrics) IncDecodingErrors() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.decodingErrors++
+	m.decodingErrors.Add(1)
 }
 
-// IncCompressionErrors 增加压缩错误数
 func (m *NetworkMetrics) IncCompressionErrors() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.compressionErrors++
+	m.compressionErrors.Add(1)
 }
 
-// IncDroppedPackets 增加丢包数
 func (m *NetworkMetrics) IncDroppedPackets() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.droppedPackets++
+	m.droppedPackets.Add(1)
 }
 
-// GetActiveConnections 获取活跃连接数
 func (m *NetworkMetrics) GetActiveConnections() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.activeConnections
+	return int(m.activeConnections.Load())
 }
 
-// GetTotalConnections 获取总连接数
 func (m *NetworkMetrics) GetTotalConnections() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.totalConnections
+	return m.totalConnections.Load()
 }
 
-// GetDroppedConnections 获取丢弃连接数
 func (m *NetworkMetrics) GetDroppedConnections() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.droppedConnections
+	return m.droppedConnections.Load()
 }
 
-// GetAvgLatency 获取平均延迟
 func (m *NetworkMetrics) GetAvgLatency() time.Duration {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.avgLatency
+	return time.Duration(m.avgLatencyNano.Load())
 }
 
-// GetMaxLatency 获取最大延迟
 func (m *NetworkMetrics) GetMaxLatency() time.Duration {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.maxLatency
+	return time.Duration(m.maxLatencyNano.Load())
 }
 
-// GetMinLatency 获取最小延迟
 func (m *NetworkMetrics) GetMinLatency() time.Duration {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.minLatency
+	return time.Duration(m.minLatencyNano.Load())
 }
 
-// GetTotalBytesSent 获取总发送字节数
 func (m *NetworkMetrics) GetTotalBytesSent() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.totalBytesSent
+	return m.totalBytesSent.Load()
 }
 
-// GetTotalBytesReceived 获取总接收字节数
 func (m *NetworkMetrics) GetTotalBytesReceived() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.totalBytesReceived
+	return m.totalBytesReceived.Load()
 }
 
-// GetTotalPacketsSent 获取总发送包数
 func (m *NetworkMetrics) GetTotalPacketsSent() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.totalPacketsSent
+	return m.totalPacketsSent.Load()
 }
 
-// GetTotalPacketsReceived 获取总接收包数
 func (m *NetworkMetrics) GetTotalPacketsReceived() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.totalPacketsReceived
+	return m.totalPacketsReceived.Load()
 }
 
-// GetEncodingErrors 获取编码错误数
 func (m *NetworkMetrics) GetEncodingErrors() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.encodingErrors
+	return m.encodingErrors.Load()
 }
 
-// GetDecodingErrors 获取解码错误数
 func (m *NetworkMetrics) GetDecodingErrors() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.decodingErrors
+	return m.decodingErrors.Load()
 }
 
-// GetCompressionErrors 获取压缩错误数
 func (m *NetworkMetrics) GetCompressionErrors() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.compressionErrors
+	return m.compressionErrors.Load()
 }
 
-// GetDroppedPackets 获取丢包数
 func (m *NetworkMetrics) GetDroppedPackets() int64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	return m.droppedPackets
+	return m.droppedPackets.Load()
 }
 
-// Reset 重置所有指标
 func (m *NetworkMetrics) Reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.activeConnections = 0
-	m.totalConnections = 0
-	m.droppedConnections = 0
-	m.avgLatency = 0
-	m.maxLatency = 0
-	m.minLatency = time.Hour
-	m.totalLatency = 0
-	m.latencySamples = 0
-	m.totalBytesSent = 0
-	m.totalBytesReceived = 0
-	m.totalPacketsSent = 0
-	m.totalPacketsReceived = 0
-	m.encodingErrors = 0
-	m.decodingErrors = 0
-	m.compressionErrors = 0
-	m.droppedPackets = 0
-	m.lastSampleTime = time.Now()
+	m.activeConnections.Store(0)
+	m.totalConnections.Store(0)
+	m.droppedConnections.Store(0)
+	m.avgLatencyNano.Store(0)
+	m.maxLatencyNano.Store(0)
+	m.minLatencyNano.Store(int64(time.Hour))
+	m.totalLatencyNano.Store(0)
+	m.latencySamples.Store(0)
+	m.totalBytesSent.Store(0)
+	m.totalBytesReceived.Store(0)
+	m.totalPacketsSent.Store(0)
+	m.totalPacketsReceived.Store(0)
+	m.encodingErrors.Store(0)
+	m.decodingErrors.Store(0)
+	m.compressionErrors.Store(0)
+	m.droppedPackets.Store(0)
+	m.lastSampleTime.Store(time.Now().UnixNano())
 }

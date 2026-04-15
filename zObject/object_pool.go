@@ -1,64 +1,72 @@
 package zObject
 
-import (
-	"sync"
-)
-
-// ObjectPool 对象池接口
 type ObjectPool interface {
-	// Get 从池中获取一个对象
 	Get() interface{}
-	// Put 将对象放回池中
 	Put(obj interface{})
-	// Size 获取池的大小
 	Size() int
 }
 
-// GenericPool 通用对象池实现
 type GenericPool struct {
-	mu      sync.Mutex
-	objects []interface{}
+	ch      chan interface{}
 	newFunc func() interface{}
-	maxSize int
 }
 
-// NewGenericPool 创建一个新的通用对象池
 func NewGenericPool(newFunc func() interface{}, maxSize int) *GenericPool {
-	return &GenericPool{
-		objects: make([]interface{}, 0, 10),
+	p := &GenericPool{
+		ch:      make(chan interface{}, maxSize),
 		newFunc: newFunc,
-		maxSize: maxSize,
 	}
+	return p
 }
 
-// Get 从池中获取一个对象
 func (p *GenericPool) Get() interface{} {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.objects) > 0 {
-		obj := p.objects[len(p.objects)-1]
-		p.objects = p.objects[:len(p.objects)-1]
+	select {
+	case obj := <-p.ch:
 		return obj
+	default:
+		return p.newFunc()
 	}
-
-	return p.newFunc()
 }
 
-// Put 将对象放回池中
 func (p *GenericPool) Put(obj interface{}) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.objects) < p.maxSize {
-		p.objects = append(p.objects, obj)
+	select {
+	case p.ch <- obj:
+	default:
 	}
 }
 
-// Size 获取池的大小
 func (p *GenericPool) Size() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	return len(p.ch)
+}
 
-	return len(p.objects)
+type TypedObjectPool[T any] struct {
+	ch      chan T
+	newFunc func() T
+}
+
+func NewTypedObjectPool[T any](newFunc func() T, maxSize int) *TypedObjectPool[T] {
+	return &TypedObjectPool[T]{
+		ch:      make(chan T, maxSize),
+		newFunc: newFunc,
+	}
+}
+
+func (p *TypedObjectPool[T]) Get() T {
+	select {
+	case obj := <-p.ch:
+		return obj
+	default:
+		return p.newFunc()
+	}
+}
+
+func (p *TypedObjectPool[T]) Put(obj T) {
+	select {
+	case p.ch <- obj:
+	default:
+	}
+}
+
+func (p *TypedObjectPool[T]) Size() int {
+	return len(p.ch)
 }

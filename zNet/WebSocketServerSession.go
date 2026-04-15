@@ -20,12 +20,21 @@ type WebSocketServerSession struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	onClose       WebSocketCloseCallBackFunc
+	closeOnce     sync.Once
 	aesKey        []byte
 	svr           *WebSocketServer
 	obj           interface{}
 }
 
 type WebSocketCloseCallBackFunc func(c *WebSocketServerSession)
+
+func (s *WebSocketServerSession) triggerOnClose() {
+	s.closeOnce.Do(func() {
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+	})
+}
 
 func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid SessionIdType, closeCallBack WebSocketCloseCallBackFunc, aesKey []byte) *WebSocketServerSession {
 	newSession := WebSocketServerSession{
@@ -65,9 +74,7 @@ func (s *WebSocketServerSession) receive(ctx context.Context) {
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
-		if s.onClose != nil {
-			s.onClose(s)
-		}
+		s.triggerOnClose()
 		if err := recover(); err != nil {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("process panic:%v, sid:%d, closed", err, s.sid)
@@ -135,9 +142,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
-		if s.onClose != nil {
-			s.onClose(s)
-		}
+		s.triggerOnClose()
 		if err := recover(); err != nil {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("process panic:%v, sid:%d, closed", err, s.sid)
@@ -221,9 +226,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 			s.svr.logger.Error("Failed to close WebSocket connection: %v, sid: %d", err, s.sid)
 		}
 	}
-	if s.onClose != nil {
-		s.onClose(s)
-	}
+	s.triggerOnClose()
 }
 
 func (s *WebSocketServerSession) Send(protoId ProtoIdType, data []byte) error {

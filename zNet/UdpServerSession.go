@@ -20,6 +20,7 @@ type UdpServerSession struct {
 	lastHeartBeat time.Time
 	ctxCancel     context.CancelFunc
 	onClose       UdpCloseCallBackFunc
+	closeOnce     sync.Once
 	aesKey        []byte
 	dhExchange    *DHKeyExchange
 	svr           *UdpServer
@@ -27,6 +28,14 @@ type UdpServerSession struct {
 }
 
 type UdpCloseCallBackFunc func(c *UdpServerSession)
+
+func (s *UdpServerSession) triggerOnClose() {
+	s.closeOnce.Do(func() {
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+	})
+}
 
 func NewUdpServerSession(svr *UdpServer, addr *net.UDPAddr, sid SessionIdType, closeCallBack UdpCloseCallBackFunc, aesKey []byte, dhExchange *DHKeyExchange) *UdpServerSession {
 	newSession := UdpServerSession{
@@ -147,9 +156,7 @@ func (s *UdpServerSession) process(ctx context.Context) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
-		if s.onClose != nil {
-			s.onClose(s)
-		}
+		s.triggerOnClose()
 		if err := recover(); err != nil {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("process panic:%v, sid:%d, closed", err, s.sid)
@@ -228,9 +235,7 @@ func (s *UdpServerSession) process(ctx context.Context) {
 		}
 	}
 
-	if s.onClose != nil {
-		s.onClose(s)
-	}
+	s.triggerOnClose()
 }
 
 func (s *UdpServerSession) Send(protoId ProtoIdType, data []byte) error {

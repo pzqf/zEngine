@@ -25,8 +25,7 @@ type TcpClientSession struct {
 	aesKey        []byte             // AES加密密钥（初始密钥）
 	currentKey    atomic.Value       // 当前密钥（支持密钥轮换）
 	currentKeyID  atomic.Uint32      // 当前密钥ID
-	closed        bool               // 是否已关闭
-	closedMutex   sync.RWMutex       // 关闭状态锁
+	closed        atomic.Bool        // 是否已关闭
 	sendSequence  atomic.Uint64      // 发送序列号
 
 	cli *TcpClient // 所属客户端
@@ -90,9 +89,7 @@ func (s *TcpClientSession) Start() {
 // Close 关闭会话
 // 取消上下文并等待所有goroutine退出
 func (s *TcpClientSession) Close() {
-	s.closedMutex.Lock()
-	s.closed = true
-	s.closedMutex.Unlock()
+	s.closed.Store(true)
 	if s.ctxCancel != nil {
 		s.ctxCancel()
 	}
@@ -104,9 +101,7 @@ func (s *TcpClientSession) Close() {
 // 返回:
 //   - bool: 是否已关闭
 func (s *TcpClientSession) IsClosed() bool {
-	s.closedMutex.RLock()
-	defer s.closedMutex.RUnlock()
-	return s.closed
+	return s.closed.Load()
 }
 
 // receive 接收数据
