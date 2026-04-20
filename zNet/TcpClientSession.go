@@ -295,9 +295,11 @@ func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	// 校验数据包合法性
-	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
-		return errors.New("send packet illegal")
+	if netPacket.DataSize < 0 {
+		return errors.New("send packet illegal, data size negative")
+	}
+	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId {
+		return errors.New("send packet illegal, protoId invalid")
 	}
 	// 检查数据包大小是否超过限制
 	if netPacket.DataSize > s.cli.config.MaxPacketDataSize {

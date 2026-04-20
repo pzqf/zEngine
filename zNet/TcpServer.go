@@ -9,7 +9,6 @@ import (
 
 	"github.com/pzqf/zUtil/zConcurrency"
 	"github.com/pzqf/zUtil/zMap"
-	"go.uber.org/zap"
 )
 
 // TcpServer TCP服务器实现
@@ -122,9 +121,8 @@ func (svr *TcpServer) Start() error {
 	if svr.config.EnableKeyRotation && svr.config.KeyRotationInterval > 0 {
 		svr.StartAutoKeyRotation()
 		if svr.logger != nil {
-			svr.logger.Info("Auto key rotation started",
-				zap.Duration("interval", svr.config.KeyRotationInterval),
-				zap.Int("max_history_keys", svr.config.MaxHistoryKeys))
+			svr.logger.Info("Auto key rotation started, interval=%v, max_history_keys=%d",
+				svr.config.KeyRotationInterval, svr.config.MaxHistoryKeys)
 		}
 	}
 

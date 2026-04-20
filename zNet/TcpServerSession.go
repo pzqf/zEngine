@@ -461,12 +461,17 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	// 校验数据包合法性
-	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
+	if netPacket.DataSize < 0 {
+		if s.svr.logger != nil {
+			s.svr.logger.Error("Send packet illegal: data size negative, dataSize=%d", netPacket.DataSize)
+		}
+		return errors.New("send packet illegal, data size negative")
+	}
+	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId {
 		if s.svr.logger != nil {
 			s.svr.logger.Error("Send packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
 		}
-		return errors.New("send packet illegal")
+		return errors.New("send packet illegal, protoId invalid")
 	}
 	// 检查数据包大小是否超过限制
 	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {

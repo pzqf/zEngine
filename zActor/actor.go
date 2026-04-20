@@ -90,6 +90,7 @@ type BaseActor struct {
 	restartTimes  []time.Time
 	hooks         LifecycleHooks
 	stopCh        chan struct{}
+	self          Actor
 }
 
 func NewBaseActor(id int64, chanSize int) *BaseActor {
@@ -126,6 +127,10 @@ func (a *BaseActor) SetLifecycleHooks(hooks LifecycleHooks) {
 
 func (a *BaseActor) ID() int64 {
 	return a.id
+}
+
+func (a *BaseActor) SetSelf(actor Actor) {
+	a.self = actor
 }
 
 func (a *BaseActor) Start() error {
@@ -244,6 +249,11 @@ func (a *BaseActor) run() {
 		}
 	}()
 
+	processFn := a.ProcessMessage
+	if a.self != nil {
+		processFn = a.self.ProcessMessage
+	}
+
 	for {
 		select {
 		case <-a.stopCh:
@@ -253,19 +263,19 @@ func (a *BaseActor) run() {
 			if !ok {
 				return
 			}
-			a.ProcessMessage(msg)
+			processFn(msg)
 		default:
 			select {
 			case msg, ok := <-a.highPriority:
 				if !ok {
 					return
 				}
-				a.ProcessMessage(msg)
+				processFn(msg)
 			case msg, ok := <-a.ActorMsgChan:
 				if !ok {
 					return
 				}
-				a.ProcessMessage(msg)
+				processFn(msg)
 			}
 		}
 	}
