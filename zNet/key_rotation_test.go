@@ -91,7 +91,10 @@ func TestKeyRotationManagerGetKeyByID(t *testing.T) {
 }
 
 func TestKeyRotationManagerHistoryLimit(t *testing.T) {
-	krm := NewKeyRotationManager(30*time.Minute, 3)
+	// 修正：原测试断言方向反了（把"应保留"写成"应淘汰"）。KeyRotationManager 保留
+	// = 当前 key + 最近 histLimit 个历史 key；更早的 key 才应被淘汰。
+	const histLimit = 3
+	krm := NewKeyRotationManager(30*time.Minute, histLimit)
 
 	rotations := 10
 	for i := 0; i < rotations; i++ {
@@ -102,18 +105,16 @@ func TestKeyRotationManagerHistoryLimit(t *testing.T) {
 
 	for i := uint32(1); i <= currentKeyID; i++ {
 		_, exists := krm.GetKeyByID(i)
-		if i > currentKeyID-3 {
-			if exists {
-				t.Errorf("Expected key ID %d to not exist (exceeds history limit)", i)
-			}
-		} else {
-			if !exists {
-				t.Errorf("Expected key ID %d to exist", i)
-			}
+		retained := i+uint32(histLimit) >= currentKeyID // 当前 + 最近 histLimit 个
+		if retained && !exists {
+			t.Errorf("Expected retained key ID %d to exist (within history limit)", i)
+		}
+		if !retained && exists {
+			t.Errorf("Expected old key ID %d to be evicted (exceeds history limit)", i)
 		}
 	}
 
-	t.Logf("Current key ID: %d", currentKeyID)
+	t.Logf("Current key ID: %d, retained current + last %d", currentKeyID, histLimit)
 }
 
 func TestKeyRotationManagerShouldRotate(t *testing.T) {

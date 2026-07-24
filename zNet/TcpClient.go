@@ -25,8 +25,8 @@ type ClientStateCallback func(state ClientState)
 // TcpClient TCP客户端
 // 用于连接到TCP服务器并进行通信，支持自动重连、状态回调等功能
 type TcpClient struct {
-	config     *TcpClientConfig  // 客户端配置
-	session    *TcpClientSession // 会话实例
+	config     *TcpClientConfig                 // 客户端配置
+	session    atomic.Pointer[TcpClientSession] // 会话实例（原子读写：Connect 写，Send/GetSession/monitor 读，消除重连期数据竞争）
 	dispatcher HandlerFun        // 消息分发器
 	logger     Logger            // 日志记录器
 	state      atomic.Value      // 连接状态（原子操作）
@@ -37,6 +37,7 @@ type TcpClient struct {
 
 	stateCallbacks []ClientStateCallback // 状态回调函数列表
 	reconnectCount int                   // 当前重连次数
+	monitorOnce    sync.Once             // 保证连接监控 goroutine 只启动一次（重连不再重复 spawn）
 }
 
 // NewTcpClient 创建新的TCP客户端实例
@@ -97,13 +98,14 @@ func (cli *TcpClient) Connect() error {
 		return err
 	}
 
-	cli.session = &TcpClientSession{}
+	s := &TcpClientSession{}
 
 	var aesKey []byte
 
 	// 检查是否禁用加密
 	if !cli.config.DisableEncryption {
-		aesKey, err = PerformKeyExchange(conn)
+		// 带握手超时，防对端不配合（如两端加密配置不一致）导致永久阻塞
+		aesKey, err = PerformKeyExchangeWithDeadline(conn, DefaultKeyExchangeTimeout)
 		if err != nil {
 			conn.Close()
 			cli.setState(ClientStateDisconnected)
@@ -119,14 +121,19 @@ func (cli *TcpClient) Connect() error {
 		}
 	}
 
-	cli.session.Init(cli, conn, aesKey)
-	cli.session.Start()
+	s.Init(cli, conn, aesKey)
+	s.Start()
+	cli.session.Store(s) // 完成初始化+启动后再发布，避免暴露半初始化会话
 	cli.setState(ClientStateConnected)
 	cli.reconnectCount = 0
 
+	// 仅在首次连接时启动唯一的连接监控 goroutine；重连也走 Connect()，
+	// 若每次都 spawn 会造成 monitor goroutine 泄漏 + 多监控并发重复重连。
 	if cli.config.AutoReconnect {
-		cli.wg.Add(1)
-		go cli.monitorConnection()
+		cli.monitorOnce.Do(func() {
+			cli.wg.Add(1)
+			go cli.monitorConnection()
+		})
 	}
 
 	return nil
@@ -143,8 +150,8 @@ func (cli *TcpClient) monitorConnection() {
 		case <-time.After(time.Second):
 			state := cli.GetState()
 
-			if state == ClientStateConnected && cli.session != nil {
-				if cli.session.IsClosed() {
+			if s := cli.session.Load(); state == ClientStateConnected && s != nil {
+				if s.IsClosed() {
 					cli.handleDisconnect()
 				}
 			}
@@ -152,7 +159,8 @@ func (cli *TcpClient) monitorConnection() {
 	}
 }
 
-// handleDisconnect 处理连接断开
+// handleDisconnect 处理连接断开：带退避的重连循环，直到重连成功、达到上限或客户端关闭。
+// 由唯一的 monitorConnection 同步调用（重连期间暂停健康检查，避免并发重连）。
 func (cli *TcpClient) handleDisconnect() {
 	cli.setState(ClientStateDisconnected)
 
@@ -160,28 +168,39 @@ func (cli *TcpClient) handleDisconnect() {
 		return
 	}
 
-	if cli.config.MaxReconnectTimes > 0 && cli.reconnectCount >= cli.config.MaxReconnectTimes {
+	delay := time.Duration(cli.config.ReconnectDelay) * time.Second
+	for {
+		select {
+		case <-cli.ctx.Done():
+			return
+		default:
+		}
+
+		if cli.config.MaxReconnectTimes > 0 && cli.reconnectCount >= cli.config.MaxReconnectTimes {
+			if cli.logger != nil {
+				cli.logger.Warn("Max reconnect times reached, stop reconnecting")
+			}
+			return
+		}
+
+		cli.setState(ClientStateReconnecting)
 		if cli.logger != nil {
-			cli.logger.Warn("Max reconnect times reached, stop reconnecting")
+			cli.logger.Info("Connection lost, will reconnect in %d seconds", cli.config.ReconnectDelay)
+		}
+		time.Sleep(delay)
+
+		cli.reconnectCount++
+		// Connect 成功会把 reconnectCount 归零（下次断线重新计数）并置 Connected 状态。
+		if err := cli.Connect(); err != nil {
+			if cli.logger != nil {
+				cli.logger.Error("Reconnect failed: %v", err)
+			}
+			continue // 重试直至成功或超过上限
+		}
+		if cli.logger != nil {
+			cli.logger.Info("Reconnected successfully")
 		}
 		return
-	}
-
-	cli.setState(ClientStateReconnecting)
-	delay := time.Duration(cli.config.ReconnectDelay) * time.Second
-
-	if cli.logger != nil {
-		cli.logger.Info("Connection lost, will reconnect in %d seconds", cli.config.ReconnectDelay)
-	}
-
-	time.Sleep(delay)
-
-	cli.reconnectCount++
-	err := cli.Connect()
-	if err != nil {
-		if cli.logger != nil {
-			cli.logger.Error("Reconnect failed: %v", err)
-		}
 	}
 }
 
@@ -193,10 +212,11 @@ func (cli *TcpClient) handleDisconnect() {
 // 返回:
 //   - error: 发送失败时返回错误
 func (cli *TcpClient) Send(protoId ProtoIdType, data []byte) error {
-	if cli.session == nil {
+	s := cli.session.Load()
+	if s == nil {
 		return net.ErrWriteToConnected
 	}
-	return cli.session.Send(protoId, data)
+	return s.Send(protoId, data)
 }
 
 // Close 关闭客户端
@@ -204,8 +224,8 @@ func (cli *TcpClient) Send(protoId ProtoIdType, data []byte) error {
 func (cli *TcpClient) Close() {
 	cli.ctxCancel()
 	cli.wg.Wait()
-	if cli.session != nil {
-		cli.session.Close()
+	if s := cli.session.Load(); s != nil {
+		s.Close()
 	}
 	cli.setState(ClientStateDisconnected)
 }
@@ -254,7 +274,7 @@ func (cli *TcpClient) IsConnected() bool {
 // 返回:
 //   - *TcpClientSession: 会话实例，未连接时返回nil
 func (cli *TcpClient) GetSession() *TcpClientSession {
-	return cli.session
+	return cli.session.Load()
 }
 
 // GetMaxPacketDataSize 获取最大数据包大小

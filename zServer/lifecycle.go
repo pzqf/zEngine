@@ -15,9 +15,18 @@ type LifecycleHooks interface {
 	OnBeforeStop()
 }
 
-// Start 启动服务器
+// Start 启动服务器：要求当前状态为 Starting，依次执行 OnBeforeStart、OnAfterStart 钩子。
+//
+// 状态机契约（成熟化改造 Phase 1.3.1 明确）：
+//   - Start 只负责失败兜底——任一钩子返回错误即置 Stopped 并返回该错误。
+//   - **成功路径的状态推进（Initializing→Ready→Healthy）由业务在钩子内自行驱动**，
+//     框架不自动推进，以保留灵活性（如在 OnBeforeStart 内 Initialize() 后校验依赖，
+//     在 OnAfterStart 内 Ready() 再 Healthy()）。便捷方法见 Initialize()/Ready()/Healthy()。
+//   - 因此若业务未在钩子内驱动状态，Start() 成功返回后服务器仍停留在 Starting。
+//     此为有意设计（业务驱动），而非缺陷；Stop() 则由框架驱动 Draining→Stopped。
+//
 // 返回:
-//   - error: 启动失败时返回错误
+//   - error: 启动失败时返回错误（此时状态已被置为 Stopped）
 func (s *BaseServer) Start() error {
 	// 检查服务器状态，如果不是 Starting 状态，则返回错误
 	if state := s.GetState(); state != StateStarting {

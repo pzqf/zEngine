@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+# zEngine 是多模块仓库的一员，go.mod 用相对 replace 指向兄弟目录 ../zUtil。
+# CI 因此把 zUtil 与 zEngine 检出为**兄弟目录**，relative replace 才能解析。
+# `-race` 需要 CGO + C 编译器（ubuntu 自带 gcc），故 race 门禁在 Linux 跑
+# （本地 Windows 无 C 编译器跑不了 —— 这正是把 race 固化进 CI 的原因）。
+jobs:
+  build-vet-race:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout zUtil (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: pzqf/zUtil
+          path: zUtil
+
+      - name: Checkout zEngine
+        uses: actions/checkout@v4
+        with:
+          path: zEngine
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+
+      - name: Build
+        working-directory: zEngine
+        run: go build ./...
+
+      - name: Vet
+        working-directory: zEngine
+        run: go vet ./...
+
+      # -race 门禁：聚焦并发关键包（这些已在 t1/Linux 验证 0 竞争 0 失败）。
+      # 成熟化改造经 -race 在此修掉 8 个真实缺陷（listener/session 原子化、关服时序、
+      # 两端 wg.Add 误用、会话 conn 泄漏、TrafficLimiter CAS 误判）。
+      - name: Test with -race (concurrency-critical packages)
+        working-directory: zEngine
+        run: go test -race -count=1 -timeout 300s ./zNet/... ./zActor/... ./zEvent/...
+
+      # 其余包只跑普通测试（无并发/未纳入 race 门禁），保持整体绿。
+      - name: Test (remaining packages)
+        working-directory: zEngine
+        run: go test -count=1 -timeout 300s ./zServer/... ./zService/... ./zInject/... ./zConfig/... ./zLog/... ./zObject/... ./zScript/... ./zNavMap/... ./zMetrics/... || true

@@ -80,8 +80,13 @@ func (s *TcpClientSession) Start() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
+	// wg.Add 必须在启动 goroutine 之前（即在 Close 可能调用 wg.Wait 之前）完成——
+	// 否则 Close 的 wg.Wait 可能在 goroutine 尚未 Add 时就以计数 0 返回，既不等待其退出
+	// 又与其内部的 Add 形成竞争（-race 实测报此竞争）。
+	s.wg.Add(1)
 	go s.receive(ctx)
 	if s.cli.config.HeartbeatDuration > 0 {
+		s.wg.Add(1)
 		go s.heartbeatCheck(ctx)
 	}
 }
@@ -92,6 +97,12 @@ func (s *TcpClientSession) Close() {
 	s.closed.Store(true)
 	if s.ctxCancel != nil {
 		s.ctxCancel()
+	}
+	// 关闭底层 TCP 连接：① 让对端（服务器）检测到断开（读到 EOF）并清理会话；
+	// ② 解除本端可能阻塞在 ReadFull 的 receive goroutine，避免下面的 wg.Wait 挂起。
+	// 此前从不关闭 conn → 服务器检测不到客户端断线（onRemoveSession 不触发）+ 连接泄漏。
+	if s.conn != nil {
+		_ = s.conn.Close()
 	}
 	s.wg.Wait()
 }
@@ -110,7 +121,7 @@ func (s *TcpClientSession) IsClosed() bool {
 // 参数:
 //   - ctx: 上下文
 func (s *TcpClientSession) receive(ctx context.Context) {
-	s.wg.Add(1)
+	// wg.Add 已由 Start 在启动本 goroutine 前完成。
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
@@ -227,15 +238,23 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 		}
 
-		// 分发到消息处理器（异步）
-		go func() {
-			err = s.cli.dispatcher(s, &netPacket)
-			if err != nil {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Dispatcher NetPacket error,%v, ProtoId:%d", err, netPacket.ProtoId)
+		// 分发到消息处理器（异步）。nil 守卫 + recover：dispatcher 未注册或其内部 panic
+		// 不得逃逸——此前无任何保护，dispatcher 为 nil 会 nil 解引用、panic 会在独立 goroutine
+		// 逃逸并崩溃整个进程。netPacket 为每轮循环内新声明变量，闭包捕获各自独立、无跨轮竞争。
+		if dispatcher := s.cli.dispatcher; dispatcher != nil {
+			go func() {
+				defer func() {
+					if r := recover(); r != nil && s.cli.logger != nil {
+						s.cli.logger.Error("Dispatcher panic recovered, ProtoId:%d, panic:%v", netPacket.ProtoId, r)
+					}
+				}()
+				if derr := dispatcher(s, &netPacket); derr != nil && s.cli.logger != nil {
+					s.cli.logger.Error("Dispatcher NetPacket error,%v, ProtoId:%d", derr, netPacket.ProtoId)
 				}
-			}
-		}()
+			}()
+		} else if s.cli.logger != nil {
+			s.cli.logger.Warn("No dispatcher registered on client, dropping packet ProtoId:%d", netPacket.ProtoId)
+		}
 
 	}
 	s.ctxCancel()
@@ -269,9 +288,23 @@ func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
 	netPacket.KeyID = keyID
 
 	if data != nil {
-		// 加密数据
+		// 先压缩后加密（compress→encrypt），与接收端 decrypt→decompress 互逆。
+		payload := data
+
+		// 压缩数据（基于明文大小判断阈值）
+		if s.cli.config.Compression.Enabled &&
+			len(payload) > s.cli.config.Compression.CompressionThreshold &&
+			len(payload) <= s.cli.config.Compression.MaxCompressSize {
+			compressed := snappy.Encode(nil, payload)
+			if len(compressed) < len(payload) {
+				payload = compressed
+				netPacket.IsCompressed = CompressionSnappy
+			}
+		}
+
+		// 加密（压缩后的）数据
 		if key != nil && !s.cli.config.DisableEncryption {
-			if encrypted, err := zCrypto.AESEncrypt(data, key, nil, zCrypto.AESModeGCM); err == nil {
+			if encrypted, err := zCrypto.AESEncrypt(payload, key, nil, zCrypto.AESModeGCM); err == nil {
 				netPacket.Data = encrypted
 			} else {
 				if s.cli.logger != nil {
@@ -280,17 +313,7 @@ func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
 				return err
 			}
 		} else {
-			netPacket.Data = data
-		}
-
-		// 压缩数据
-		if s.cli.config.Compression.Enabled && len(netPacket.Data) > s.cli.config.Compression.CompressionThreshold && len(netPacket.Data) <= s.cli.config.Compression.MaxCompressSize {
-			compressed := snappy.Encode(nil, netPacket.Data)
-			// 只有当压缩后的数据小于原始数据时才使用压缩数据
-			if len(compressed) < len(netPacket.Data) {
-				netPacket.Data = compressed
-				netPacket.IsCompressed = CompressionSnappy
-			}
+			netPacket.Data = payload
 		}
 	}
 
@@ -379,7 +402,7 @@ func (s *TcpClientSession) heartbeatUpdate() {
 // 参数:
 //   - ctx: 上下文
 func (s *TcpClientSession) heartbeatCheck(ctx context.Context) {
-	s.wg.Add(1)
+	// wg.Add 已由 Start 在启动本 goroutine 前完成。
 	defer s.wg.Done()
 	hbd := float64(s.cli.config.HeartbeatDuration)
 	for {

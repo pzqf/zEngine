@@ -1,872 +1,220 @@
 package zNet
 
 import (
+	"bytes"
 	"crypto/rand"
-	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestServerToServerCommunication(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8081",
+// 本文件是旧 server_test.go 的重写（成熟化改造收尾）。旧版问题：① 固定端口 8081-8099
+// 并行/占用即冲突；② 断言薄弱且自相矛盾（`t.Errorf(...received 0)` 后又 `t.Log("passed")`），
+// 多条实际处于 FAIL。重写为：临时端口（`:0` + `GetListenAddress`，现为原子安全）、
+// 强断言（原子计数 + 轮询等待）、`t.Cleanup` 保证释放，杜绝端口冲突与资源泄漏，且 `-race` 干净。
+
+// startTestServer 在临时端口启动一台服务器（dispatcher 由调用方给定），返回其监听地址。
+// 服务器经 t.Cleanup 自动关闭。
+func startTestServer(t *testing.T, dispatcher HandlerFun, opts ...Options) (string, *TcpServer) {
+	t.Helper()
+	cfg := &TcpConfig{
+		ListenAddress:     "127.0.0.1:0",
 		MaxClientCount:    100,
 		ChanSize:          1024,
 		HeartbeatDuration: 30,
 		MaxPacketDataSize: 1024 * 1024,
 		DisableEncryption: true,
 	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8082",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
+	srv := NewTcpServer(cfg, opts...)
+	if dispatcher != nil {
+		srv.RegisterDispatcher(dispatcher)
 	}
+	go func() { _ = srv.Start() }()
+	t.Cleanup(func() { srv.Close() })
 
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server1.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		t.Logf("Server1 received: ProtoId=%d, DataSize=%d", netPacket.ProtoId, netPacket.DataSize)
-		return nil
-	})
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		t.Logf("Server2 received: ProtoId=%d, DataSize=%d", netPacket.ProtoId, netPacket.DataSize)
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8081,
-		AutoReconnect: false,
+	var addr string
+	if !waitFor(t, 2*time.Second, func() bool {
+		addr = srv.GetListenAddress()
+		return addr != ""
+	}) {
+		t.Fatal("server did not report a listen address in time")
 	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect to server1 failed: %v", err)
-	}
-
-	testData := []byte("server to server test message")
-	if err := client.Send(1000, testData); err != nil {
-		t.Fatalf("Client send failed: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	t.Log("Server-to-server communication test passed")
+	return addr, srv
 }
 
-func TestServerToServerMultipleMessages(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8083",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
+// dialTestClient 连接 addr（默认 no-op dispatcher，除非给定），经 t.Cleanup 自动关闭。
+func dialTestClient(t *testing.T, addr string, dispatcher HandlerFun) *TcpClient {
+	t.Helper()
+	host, port := parseAddr(addr)
+	cli := NewTcpClient(&TcpClientConfig{DisableEncryption: true, ServerAddr: host, ServerPort: port})
+	if dispatcher == nil {
+		dispatcher = func(Session, *NetPacket) error { return nil }
 	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8084",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
+	cli.RegisterDispatcher(dispatcher)
+	if err := cli.Connect(); err != nil {
+		t.Fatalf("client connect to %s: %v", addr, err)
 	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	receivedCount := 0
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
-		t.Logf("Server2 received message %d: ProtoId=%d", receivedCount, netPacket.ProtoId)
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8083,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	messageCount := 100
-	for i := 0; i < messageCount; i++ {
-		testData := []byte(fmt.Sprintf("server message %d", i))
-		if err := client.Send(ProtoIdType(i+1), testData); err != nil {
-			t.Fatalf("Client send failed at message %d: %v", i, err)
-		}
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	if receivedCount != messageCount {
-		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount)
-	}
-
-	t.Logf("Server-to-server multiple messages test passed: %d messages", receivedCount)
+	t.Cleanup(func() { cli.Close() })
+	return cli
 }
 
-func TestServerToServerBidirectional(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8085",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8086",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server1Received := 0
-	server2Received := 0
-
-	server1.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		server1Received++
-		t.Logf("Server1 received: ProtoId=%d", netPacket.ProtoId)
-		return nil
-	})
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		server2Received++
-		t.Logf("Server2 received: ProtoId=%d", netPacket.ProtoId)
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
+// waitFor 轮询直到 cond 为真或超时，返回最终结果。
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
 		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	client1Cfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8085,
-		AutoReconnect: false,
+		time.Sleep(10 * time.Millisecond)
 	}
-
-	client2Cfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8086,
-		AutoReconnect: false,
-	}
-
-	client1 := NewTcpClient(client1Cfg)
-	defer client1.Close()
-
-	client2 := NewTcpClient(client2Cfg)
-	defer client2.Close()
-
-	if err := client1.Connect(); err != nil {
-		t.Fatalf("Client1 connect failed: %v", err)
-	}
-
-	if err := client2.Connect(); err != nil {
-		t.Fatalf("Client2 connect failed: %v", err)
-	}
-
-	messageCount := 50
-	for i := 0; i < messageCount; i++ {
-		testData1 := []byte(fmt.Sprintf("server1 message %d", i))
-		testData2 := []byte(fmt.Sprintf("server2 message %d", i))
-
-		if err := client1.Send(ProtoIdType(i+1), testData1); err != nil {
-			t.Fatalf("Client1 send failed at message %d: %v", i, err)
-		}
-
-		if err := client2.Send(ProtoIdType(i+1), testData2); err != nil {
-			t.Fatalf("Client2 send failed at message %d: %v", i, err)
-		}
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	if server1Received != messageCount {
-		t.Errorf("Expected %d messages on server1, received %d", messageCount, server1Received)
-	}
-
-	if server2Received != messageCount {
-		t.Errorf("Expected %d messages on server2, received %d", messageCount, server2Received)
-	}
-
-	t.Logf("Bidirectional test passed: server1=%d, server2=%d", server1Received, server2Received)
+	return cond()
 }
 
-func TestServerToServerPerformance(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8087",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8088",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	receivedCount := 0
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
+// TestServer_ReceivesClientMessage 断言服务器确实收到客户端消息（强断言，非仅打印）。
+func TestServer_ReceivesClientMessage(t *testing.T) {
+	var got atomic.Int64
+	addr, _ := startTestServer(t, func(session Session, p *NetPacket) error {
+		got.Add(1)
 		return nil
 	})
+	cli := dialTestClient(t, addr, nil)
 
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8087,
-		AutoReconnect: false,
+	if err := cli.Send(1000, []byte("hello")); err != nil {
+		t.Fatalf("send: %v", err)
 	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	messageCount := 1000
-	messageSize := 1024
-
-	t.Logf("Testing server-to-server performance: %d messages, %d bytes each", messageCount, messageSize)
-
-	start := time.Now()
-	for i := 0; i < messageCount; i++ {
-		testData := make([]byte, messageSize)
-		rand.Read(testData)
-		if err := client.Send(ProtoIdType(i+1), testData); err != nil {
-			t.Fatalf("Client send failed at message %d: %v", i, err)
-		}
-	}
-	elapsed := time.Since(start)
-
-	time.Sleep(200 * time.Millisecond)
-
-	if receivedCount != messageCount {
-		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount)
-	}
-
-	totalBytes := int64(messageCount * messageSize)
-	throughput := float64(totalBytes) / elapsed.Seconds() / 1024 / 1024
-
-	t.Logf("Total time: %v", elapsed)
-	t.Logf("Throughput: %.2f MB/s", throughput)
-	t.Logf("Messages per second: %.2f", float64(messageCount)/elapsed.Seconds())
-}
-
-func TestServerToServerWithEncryption(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8089",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: false,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8090",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: false,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		t.Logf("Server2 received encrypted packet: ProtoId=%d", netPacket.ProtoId)
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8089,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	testData := []byte("encrypted server-to-server message")
-	if err := client.Send(1000, testData); err != nil {
-		t.Fatalf("Client send failed: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	t.Log("Server-to-server encryption test passed")
-}
-
-func TestServerToServerLargeData(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8091",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8092",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	receivedCount := 0
-	receivedBytes := int64(0)
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
-		receivedBytes += int64(netPacket.DataSize)
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8091,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	largeDataSizes := []int{1024, 4096, 16384, 65536, 262144}
-
-	for i, dataSize := range largeDataSizes {
-		testData := make([]byte, dataSize)
-		rand.Read(testData)
-
-		t.Logf("Sending large data: %d bytes", dataSize)
-
-		if err := client.Send(ProtoIdType(i+1), testData); err != nil {
-			t.Fatalf("Client send failed for size %d: %v", dataSize, err)
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	if receivedCount != len(largeDataSizes) {
-		t.Errorf("Expected %d messages, received %d", len(largeDataSizes), receivedCount)
-	}
-
-	t.Logf("Large data test passed: %d messages, %d total bytes", receivedCount, receivedBytes)
-}
-
-func TestServerToServerConcurrent(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8093",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8094",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server3Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8095",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server3 := NewTcpServer(server3Cfg)
-	defer server3.Close()
-
-	receivedCount := 0
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
-		return nil
-	})
-
-	server3.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server3.Start(); err != nil {
-			t.Fatalf("Server3 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8093,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	messageCount := 100
-	for i := 0; i < messageCount; i++ {
-		testData := []byte(fmt.Sprintf("concurrent message %d", i))
-		if err := client.Send(ProtoIdType(i+1), testData); err != nil {
-			t.Fatalf("Client send failed at message %d: %v", i, err)
-		}
-	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	expectedMessages := messageCount * 2
-	if receivedCount != expectedMessages {
-		t.Errorf("Expected %d messages, received %d", expectedMessages, receivedCount)
-	}
-
-	t.Logf("Concurrent test passed: %d messages sent to 2 servers", messageCount)
-}
-
-func TestServerToServerConnectionFailure(t *testing.T) {
-	serverCfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8096",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server := NewTcpServer(serverCfg)
-	defer server.Close()
-
-	go func() {
-		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    9999,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-
-	if err := client.Connect(); err == nil {
-		t.Error("Expected connection to fail")
-	}
-
-	t.Log("Connection failure test passed")
-}
-
-func TestServerToServerSessionManagement(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8097",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8098",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	connectedSessions := make(map[SessionIdType]bool)
-	disconnectedSessions := make(map[SessionIdType]bool)
-
-	server1.SetOnAddSession(func(sid SessionIdType) {
-		connectedSessions[sid] = true
-		t.Logf("Server1 session connected: %d", sid)
-	})
-
-	server1.SetOnRemoveSession(func(sid SessionIdType) {
-		disconnectedSessions[sid] = true
-		t.Logf("Server1 session disconnected: %d", sid)
-	})
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8097,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	sessionID := client.GetSession().GetSid()
-
-	if !connectedSessions[sessionID] {
-		t.Errorf("Expected session %d to be connected", sessionID)
-	}
-
-	client.Close()
-
-	time.Sleep(200 * time.Millisecond)
-
-	if !disconnectedSessions[sessionID] {
-		t.Errorf("Expected session %d to be disconnected", sessionID)
-	}
-
-	t.Log("Session management test passed")
-}
-
-func BenchmarkServerToServerCommunication(b *testing.B) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8099",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8100",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: true,
-	}
-
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		return nil
-	})
-
-	go func() {
-		if err := server1.Start(); err != nil {
-			b.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			b.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8099,
-		AutoReconnect: false,
-	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		b.Fatalf("Client connect failed: %v", err)
-	}
-
-	testData := make([]byte, 1024)
-	rand.Read(testData)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = client.Send(ProtoIdType(i+1), testData)
+	if !waitFor(t, 2*time.Second, func() bool { return got.Load() == 1 }) {
+		t.Fatalf("server must receive exactly 1 message, got %d", got.Load())
 	}
 }
 
-func TestServerToServerRealScenario(t *testing.T) {
-	server1Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8101",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: false,
+// TestServer_MultipleMessages 断言 N 条消息全部被服务器接收。
+func TestServer_MultipleMessages(t *testing.T) {
+	const n = 50
+	var got atomic.Int64
+	addr, _ := startTestServer(t, func(session Session, p *NetPacket) error {
+		got.Add(1)
+		return nil
+	})
+	cli := dialTestClient(t, addr, nil)
+
+	for i := 0; i < n; i++ {
+		if err := cli.Send(ProtoIdType(1000+i), []byte("msg")); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
 	}
-
-	server2Cfg := &TcpConfig{
-		ListenAddress:     "127.0.0.1:8102",
-		MaxClientCount:    100,
-		ChanSize:          1024,
-		HeartbeatDuration: 30,
-		MaxPacketDataSize: 1024 * 1024,
-		DisableEncryption: false,
+	if !waitFor(t, 3*time.Second, func() bool { return got.Load() == n }) {
+		t.Fatalf("server must receive %d messages, got %d", n, got.Load())
 	}
+}
 
-	server1 := NewTcpServer(server1Cfg)
-	defer server1.Close()
-
-	server2 := NewTcpServer(server2Cfg)
-	defer server2.Close()
-
-	server2.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		t.Logf("Server2 received: ProtoId=%d, Seq=%d, KeyID=%d",
-			netPacket.ProtoId, netPacket.Sequence, netPacket.KeyID)
+// TestServer_ConcurrentClients 断言多客户端并发发送时服务器收齐全部消息。
+func TestServer_ConcurrentClients(t *testing.T) {
+	const clients = 8
+	const perClient = 25
+	var got atomic.Int64
+	// 回归守护：8 个客户端从同一 IP(127.0.0.1) 并发发送。此前 TrafficLimiter.AllowTraffic
+	// 用单次 CAS，同 IP 并发时 CAS 失败被误判为"流量超限"→随机断连丢消息（本测试实测 ~30% 失败）。
+	// 修复（循环 CAS 重试）后应稳定收齐全部消息。
+	addr, _ := startTestServer(t, func(session Session, p *NetPacket) error {
+		got.Add(1)
 		return nil
 	})
 
-	go func() {
-		if err := server1.Start(); err != nil {
-			t.Fatalf("Server1 start failed: %v", err)
-		}
-	}()
-
-	go func() {
-		if err := server2.Start(); err != nil {
-			t.Fatalf("Server2 start failed: %v", err)
-		}
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	clientCfg := &TcpClientConfig{
-		ServerAddr:    "127.0.0.1",
-		ServerPort:    8101,
-		AutoReconnect: false,
+	// 在主 goroutine 建立所有客户端（dialTestClient 用到 t.Fatalf/t.Cleanup，不可在子 goroutine 调），
+	// 再并发发送（Send 不涉及 testing.T）。
+	conns := make([]*TcpClient, clients)
+	for c := 0; c < clients; c++ {
+		conns[c] = dialTestClient(t, addr, nil)
 	}
-
-	client := NewTcpClient(clientCfg)
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Client connect failed: %v", err)
-	}
-
-	t.Log("Testing real server-to-server scenario with encryption")
-
-	scenarios := []struct {
-		name  string
-		proto ProtoIdType
-		data  []byte
-	}{
-		{"服务注册", 2000, []byte(`{"server_id":1,"type":"gateway"}`)},
-		{"服务发现", 2001, []byte(`{"servers":[{"id":2,"type":"game"},{"id":3,"type":"map"}]}`)},
-		{"心跳同步", 2002, []byte(`{"timestamp":1234567890}`)},
-		{"数据转发", 2003, []byte(`{"from_client":12345,"to_server":67890,"data":"test"}`)},
-	}
-
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			if err := client.Send(scenario.proto, scenario.data); err != nil {
-				t.Errorf("Send failed: %v", err)
+	var wg sync.WaitGroup
+	for c := 0; c < clients; c++ {
+		wg.Add(1)
+		go func(cli *TcpClient) {
+			defer wg.Done()
+			for i := 0; i < perClient; i++ {
+				_ = cli.Send(2000, []byte("x"))
 			}
-			time.Sleep(10 * time.Millisecond)
-		})
+		}(conns[c])
+	}
+	wg.Wait()
+
+	want := int64(clients * perClient)
+	if !waitFor(t, 5*time.Second, func() bool { return got.Load() == want }) {
+		t.Fatalf("server must receive %d messages from %d concurrent clients, got %d", want, clients, got.Load())
+	}
+}
+
+// TestServer_SessionCallbacks 断言会话建立/移除回调各触发一次，且会话数随之增减。
+func TestServer_SessionCallbacks(t *testing.T) {
+	var added, removed atomic.Int64
+	addr, srv := startTestServer(t, nil,
+		WithAddSessionCallBack(func(SessionIdType) { added.Add(1) }),
+		WithRemoveSessionCallBack(func(SessionIdType) { removed.Add(1) }),
+	)
+
+	cli := dialTestClient(t, addr, nil)
+	if !waitFor(t, 2*time.Second, func() bool { return added.Load() == 1 }) {
+		t.Fatalf("onAddSession must fire once, got %d", added.Load())
+	}
+	if !waitFor(t, 2*time.Second, func() bool { return srv.clientSessionMap.Len() == 1 }) {
+		t.Fatalf("server must track 1 session, got %d", srv.clientSessionMap.Len())
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	cli.Close()
+	if !waitFor(t, 3*time.Second, func() bool { return removed.Load() == 1 }) {
+		t.Fatalf("onRemoveSession must fire once after client close, got %d", removed.Load())
+	}
+}
 
-	t.Log("Real scenario test passed")
+// TestServer_LargeDataRoundTrip 断言大数据包（256KB）被完整接收且内容一致。
+func TestServer_LargeDataRoundTrip(t *testing.T) {
+	payload := make([]byte, 256*1024)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+
+	var okContent atomic.Bool
+	done := make(chan struct{}, 1)
+	addr, _ := startTestServer(t, func(session Session, p *NetPacket) error {
+		if bytes.Equal(p.Data, payload) {
+			okContent.Store(true)
+		}
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	cli := dialTestClient(t, addr, nil)
+
+	if err := cli.Send(3000, payload); err != nil {
+		t.Fatalf("send large: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("large data packet was not received in time")
+	}
+	if !okContent.Load() {
+		t.Fatal("received large data did not match sent content")
+	}
+}
+
+// TestServer_TwoServersIndependent 断言两台服务器各自独立收发（取代旧的固定端口 server-to-server）。
+func TestServer_TwoServersIndependent(t *testing.T) {
+	var got1, got2 atomic.Int64
+	addr1, _ := startTestServer(t, func(session Session, p *NetPacket) error { got1.Add(1); return nil })
+	addr2, _ := startTestServer(t, func(session Session, p *NetPacket) error { got2.Add(1); return nil })
+
+	c1 := dialTestClient(t, addr1, nil)
+	c2 := dialTestClient(t, addr2, nil)
+	_ = c1.Send(1, []byte("to-1"))
+	_ = c2.Send(2, []byte("to-2"))
+	_ = c2.Send(2, []byte("to-2"))
+
+	if !waitFor(t, 2*time.Second, func() bool { return got1.Load() == 1 && got2.Load() == 2 }) {
+		t.Fatalf("independent servers: got1=%d(want 1) got2=%d(want 2)", got1.Load(), got2.Load())
+	}
 }

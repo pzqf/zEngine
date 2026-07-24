@@ -11,8 +11,18 @@ import (
 
 type EventHandler func(event *Event)
 
+// SubscriptionID 是一次订阅的唯一句柄，由 Subscribe 返回，用于 Unsubscribe。
+// 用 ID 而非直接比较 EventHandler，是因为 Go 函数值不可比较，无法按 handler 退订。
+type SubscriptionID uint64
+
+type subscription struct {
+	id SubscriptionID
+	fn EventHandler
+}
+
 type EventBus struct {
-	handlers   map[EventType][]EventHandler
+	handlers   map[EventType][]subscription
+	nextID     atomic.Uint64
 	mu         sync.RWMutex
 	running    atomic.Bool
 	logger     *zap.Logger
@@ -31,7 +41,7 @@ func GetGlobalEventBus() *EventBus {
 
 func NewEventBus() *EventBus {
 	bus := &EventBus{
-		handlers: make(map[EventType][]EventHandler),
+		handlers: make(map[EventType][]subscription),
 		logger:   zLog.GetLogger(),
 	}
 	bus.running.Store(true)
@@ -46,7 +56,7 @@ func NewEventBus() *EventBus {
 
 func NewEventBusWithPool(workers int, queueSize int) *EventBus {
 	bus := &EventBus{
-		handlers: make(map[EventType][]EventHandler),
+		handlers: make(map[EventType][]subscription),
 		logger:   zLog.GetLogger(),
 	}
 	bus.running.Store(true)
@@ -61,30 +71,66 @@ func NewEventBusWithPool(workers int, queueSize int) *EventBus {
 	return bus
 }
 
-func (eb *EventBus) Subscribe(eventType EventType, handler EventHandler) {
+// Subscribe 订阅事件，返回可用于 Unsubscribe 的订阅句柄。
+// 返回值可忽略（若无需退订）。
+func (eb *EventBus) Subscribe(eventType EventType, handler EventHandler) SubscriptionID {
 	if !eb.running.Load() {
-		return
+		return 0
+	}
+
+	id := SubscriptionID(eb.nextID.Add(1))
+
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+
+	eb.handlers[eventType] = append(eb.handlers[eventType], subscription{id: id, fn: handler})
+	eb.logger.Debug("Subscribed to event",
+		zap.Int("eventType", int(eventType)),
+		zap.Uint64("subscriptionID", uint64(id)),
+		zap.Int("handlerCount", len(eb.handlers[eventType])))
+	return id
+}
+
+// Unsubscribe 按订阅句柄退订，返回是否命中并移除。
+func (eb *EventBus) Unsubscribe(id SubscriptionID) bool {
+	if !eb.running.Load() || id == 0 {
+		return false
 	}
 
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
-	if _, exists := eb.handlers[eventType]; !exists {
-		eb.handlers[eventType] = make([]EventHandler, 0)
+	for eventType, subs := range eb.handlers {
+		for i, s := range subs {
+			if s.id == id {
+				eb.handlers[eventType] = append(subs[:i], subs[i+1:]...)
+				if len(eb.handlers[eventType]) == 0 {
+					delete(eb.handlers, eventType)
+				}
+				eb.logger.Debug("Unsubscribed from event",
+					zap.Int("eventType", int(eventType)),
+					zap.Uint64("subscriptionID", uint64(id)))
+				return true
+			}
+		}
 	}
-
-	eb.handlers[eventType] = append(eb.handlers[eventType], handler)
-	eb.logger.Debug("Subscribed to event",
-		zap.Int("eventType", int(eventType)),
-		zap.Int("handlerCount", len(eb.handlers[eventType])))
+	return false
 }
 
-func (eb *EventBus) Unsubscribe(eventType EventType, handler EventHandler) {
-	if !eb.running.Load() {
-		return
+// snapshotHandlers 在读锁下拷贝某事件类型的 handler 列表，
+// 避免 Publish 迭代期间被并发 Unsubscribe 修改底层数组。
+func (eb *EventBus) snapshotHandlers(eventType EventType) []EventHandler {
+	eb.mu.RLock()
+	defer eb.mu.RUnlock()
+	subs := eb.handlers[eventType]
+	if len(subs) == 0 {
+		return nil
 	}
-
-	eb.logger.Warn("Unsubscribe method is not fully implemented due to Go language limitations")
+	fns := make([]EventHandler, len(subs))
+	for i, s := range subs {
+		fns[i] = s.fn
+	}
+	return fns
 }
 
 func (eb *EventBus) Publish(event *Event) {
@@ -92,15 +138,12 @@ func (eb *EventBus) Publish(event *Event) {
 		return
 	}
 
-	eb.mu.RLock()
-	handlers, exists := eb.handlers[event.Type]
-	eb.mu.RUnlock()
-
-	if !exists || len(handlers) == 0 {
+	fns := eb.snapshotHandlers(event.Type)
+	if len(fns) == 0 {
 		return
 	}
 
-	for _, handler := range handlers {
+	for _, handler := range fns {
 		h := handler
 		e := event
 		err := eb.workerPool.Submit(func() error {
@@ -127,23 +170,22 @@ func (eb *EventBus) PublishSync(event *Event) {
 		return
 	}
 
-	eb.mu.RLock()
-	handlers, exists := eb.handlers[event.Type]
-	eb.mu.RUnlock()
-
-	if !exists || len(handlers) == 0 {
+	fns := eb.snapshotHandlers(event.Type)
+	if len(fns) == 0 {
 		return
 	}
 
-	for _, handler := range handlers {
-		defer func() {
-			if r := recover(); r != nil {
-				eb.logger.Error("Panic in event handler",
-					zap.Int("eventType", int(event.Type)),
-					zap.Any("recover", r))
-			}
+	for _, handler := range fns {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					eb.logger.Error("Panic in event handler",
+						zap.Int("eventType", int(event.Type)),
+						zap.Any("recover", r))
+				}
+			}()
+			handler(event)
 		}()
-		handler(event)
 	}
 }
 

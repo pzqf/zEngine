@@ -6,13 +6,14 @@ import (
 )
 
 type TestService struct {
-	BaseService
+	*BaseService
 	Name string
 }
 
 func NewTestService(serviceId string) *TestService {
 	bs := NewBaseService(serviceId)
-	a := &TestService{BaseService: *bs}
+	// 内嵌指针，避免拷贝含 atomic 的 BaseService（go vet: copylocks）
+	a := &TestService{BaseService: bs}
 	return a
 }
 

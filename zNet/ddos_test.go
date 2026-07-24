@@ -5,8 +5,23 @@ import (
 	"time"
 )
 
+// testDDoSConfig 给测试用的**小限额**配置。默认配置阈值很高（1GB 流量 / 10000 包/秒），
+// 这些测试断言"小流量应被限流"必然失败（此前 4 处 FAIL 的根因是测试假设旧的低阈值）。
+// 用显式低阈值让限流真正被触发，断言才有意义。
+func testDDoSConfig() *DDoSConfig {
+	return &DDoSConfig{
+		MaxConnPerIP:      100,
+		ConnTimeWindow:    600,
+		MaxPacketsPerIP:   30,               // 低阈值：>30 包/秒即限流
+		PacketTimeWindow:  1,                // 1s 窗口，便于 Recovery 测试等待重置
+		MaxBytesPerIP:     10 * 1024 * 1024, // 10MB，匹配"11MB 超限"用例
+		TrafficTimeWindow: 3600,
+		BanDuration:       1, // 短封禁，便于 Recovery 测试
+	}
+}
+
 func TestDDoSProtectionAllowTraffic(t *testing.T) {
-	ddos := NewDDoSProtection()
+	ddos := NewDDoSProtection(testDDoSConfig())
 
 	tests := []struct {
 		name      string
@@ -31,7 +46,7 @@ func TestDDoSProtectionAllowTraffic(t *testing.T) {
 }
 
 func TestDDoSProtectionRateLimit(t *testing.T) {
-	ddos := NewDDoSProtection()
+	ddos := NewDDoSProtection(testDDoSConfig())
 
 	ip := "192.168.1.1"
 
@@ -50,7 +65,7 @@ func TestDDoSProtectionRateLimit(t *testing.T) {
 }
 
 func TestDDoSProtectionMultipleIPs(t *testing.T) {
-	ddos := NewDDoSProtection()
+	ddos := NewDDoSProtection(testDDoSConfig())
 
 	ips := []string{
 		"192.168.1.1",
@@ -77,7 +92,7 @@ func TestDDoSProtectionMultipleIPs(t *testing.T) {
 }
 
 func TestDDoSProtectionRecovery(t *testing.T) {
-	ddos := NewDDoSProtection()
+	ddos := NewDDoSProtection(testDDoSConfig())
 
 	ip := "192.168.1.1"
 

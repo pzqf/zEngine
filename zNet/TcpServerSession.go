@@ -126,15 +126,20 @@ func (s *TcpServerSession) Start() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
+	// wg.Add 必须在启动 goroutine 之前完成，否则 Close 的 wg.Wait 可能在 goroutine 尚未
+	// Add 时以计数 0 返回，既不等待其退出又与其内部 Add 竞争（-race 实测报此竞争）。
+	s.wg.Add(1)
 	go s.receive(ctx) // 启动接收协程
 
 	// 根据配置决定是否启动处理协程
 	if !s.svr.config.UseWorkerPool {
 		// 传统模式：启动处理协程
+		s.wg.Add(1)
 		go s.process(ctx)
 	}
 
 	if s.svr.config.HeartbeatDuration > 0 {
+		s.wg.Add(1)
 		go s.heartbeatCheck(ctx) // 启动心跳检测协程
 	}
 }
@@ -145,6 +150,11 @@ func (s *TcpServerSession) Close() {
 	if s.ctxCancel != nil {
 		s.ctxCancel()
 	}
+	// 关闭底层 TCP 连接：让对端（客户端）检测到断开，并解除本端阻塞在 ReadFull 的
+	// receive goroutine，避免下面的 wg.Wait 挂起（此前从不关闭 conn）。
+	if s.conn != nil {
+		_ = s.conn.Close()
+	}
 	s.wg.Wait()
 }
 
@@ -154,7 +164,7 @@ func (s *TcpServerSession) Close() {
 // 参数:
 //   - ctx: 上下文
 func (s *TcpServerSession) receive(ctx context.Context) {
-	s.wg.Add(1)
+	// wg.Add 已由 Start 在启动本 goroutine 前完成。
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
@@ -200,6 +210,9 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 		// 解析数据包头
 		netPacket := NetPacket{}
 		if err = netPacket.UnmarshalHead(headBuf); err != nil {
+			if s.svr.metrics != nil {
+				s.svr.metrics.IncDecodingErrors()
+			}
 			if s.svr.logger != nil {
 				s.svr.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
 			}
@@ -249,6 +262,12 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 					netPacket.ProtoId, netPacket.DataSize, s.svr.config.MaxPacketDataSize)
 			}
 			continue
+		}
+
+		// 指标上报：整包（头+体）成功读入，计入接收字节与包数（Phase 3.5）。
+		if s.svr.metrics != nil {
+			s.svr.metrics.RecordBytesReceived(NetPacketHeadSize + int(netPacket.DataSize))
+			s.svr.metrics.RecordPacketsReceived(1)
 		}
 
 		// 非心跳包处理
@@ -324,14 +343,20 @@ func (s *TcpServerSession) processPacket(packet *NetPacket) {
 		}
 	}
 
-	// 分发到消息处理器
+	// 分发到消息处理器。就地 recover 隔离单条消息的 panic——避免一条坏包连累整个会话
+	// （传统模式下会被 process() 的终端 recover 关闭会话）或 worker goroutine 乃至进程崩溃
+	// （工作池模式）。单包 panic 只丢该包，会话/worker 继续。
 	if s.svr.dispatcher != nil {
-		err := s.svr.dispatcher(s, packet)
-		if err != nil {
-			if s.svr.logger != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil && s.svr.logger != nil {
+					s.svr.logger.Error("Dispatcher panic recovered, ProtoId:%d, sid:%d, panic:%v", packet.ProtoId, s.sid, r)
+				}
+			}()
+			if err := s.svr.dispatcher(s, packet); err != nil && s.svr.logger != nil {
 				s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, packet.ProtoId)
 			}
-		}
+		}()
 	}
 }
 
@@ -341,7 +366,7 @@ func (s *TcpServerSession) processPacket(packet *NetPacket) {
 // 参数:
 //   - ctx: 上下文
 func (s *TcpServerSession) process(ctx context.Context) {
-	s.wg.Add(1)
+	// wg.Add 已由 Start 在启动本 goroutine 前完成。
 	defer s.wg.Done()
 	defer func() {
 		s.triggerOnClose()
@@ -436,9 +461,25 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 	}
 	netPacket.KeyID = keyID
 
-	// 加密数据
+	// 先压缩后加密（compress→encrypt）：压缩作用于明文（可压缩），并与接收端
+	// decrypt→decompress 顺序互逆。旧实现 encrypt→compress 与接收端不互逆，
+	// 仅因密文高熵压不小、IsCompressed 通常不置位而侥幸未暴露。
+	payload := data
+
+	// 压缩数据（基于明文大小判断阈值）
+	if !s.svr.config.DisableCompression && s.svr.compressionConfig.Enabled &&
+		len(payload) > s.svr.compressionConfig.CompressionThreshold &&
+		len(payload) <= s.svr.compressionConfig.MaxCompressSize {
+		compressed := snappy.Encode(nil, payload)
+		if len(compressed) < len(payload) {
+			payload = compressed
+			netPacket.IsCompressed = CompressionSnappy
+		}
+	}
+
+	// 加密（压缩后的）数据
 	if key != nil && !s.svr.config.DisableEncryption {
-		if encrypted, err := zCrypto.AESEncrypt(data, key, nil, zCrypto.AESModeGCM); err == nil {
+		if encrypted, err := zCrypto.AESEncrypt(payload, key, nil, zCrypto.AESModeGCM); err == nil {
 			netPacket.Data = encrypted
 		} else {
 			if s.svr.logger != nil {
@@ -447,17 +488,7 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 			return err
 		}
 	} else {
-		netPacket.Data = data
-	}
-
-	// 压缩数据
-	if !s.svr.config.DisableCompression && s.svr.compressionConfig.Enabled && len(netPacket.Data) > s.svr.compressionConfig.CompressionThreshold && len(netPacket.Data) <= s.svr.compressionConfig.MaxCompressSize {
-		compressed := snappy.Encode(nil, netPacket.Data)
-		// 只有当压缩后的数据小于原始数据时才使用压缩数据
-		if len(compressed) < len(netPacket.Data) {
-			netPacket.Data = compressed
-			netPacket.IsCompressed = CompressionSnappy
-		}
+		netPacket.Data = payload
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
@@ -467,7 +498,11 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 		}
 		return errors.New("send packet illegal, data size negative")
 	}
-	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId {
+	// 允许负的保留协议 ID：HeartbeatProtoId(-1) 与 KeyRotationNotifyProtoId(-2)。
+	// 此前漏了 KeyRotationNotifyProtoId，导致服务端密钥轮换通知(-2)被 Send 拒绝、
+	// 客户端拿不到新密钥 → 后续密文用新密钥、客户端用旧密钥解 → 乱码。此为真实缺陷，
+	// 仅在会话存活超过 KeyRotationInterval（默认30s）时才暴露。
+	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId && netPacket.ProtoId != KeyRotationNotifyProtoId {
 		if s.svr.logger != nil {
 			s.svr.logger.Error("Send packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
 		}
@@ -502,6 +537,10 @@ func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
 		}
 		return 0, err
 	}
+	if s.svr.metrics != nil {
+		s.svr.metrics.RecordBytesSent(n)
+		s.svr.metrics.RecordPacketsSent(1)
+	}
 	return n, nil
 }
 
@@ -516,7 +555,7 @@ func (s *TcpServerSession) heartbeatUpdate() {
 // 参数:
 //   - ctx: 上下文
 func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
-	s.wg.Add(1)
+	// wg.Add 已由 Start 在启动本 goroutine 前完成。
 	defer s.wg.Done()
 	duration := time.Second * time.Duration(s.svr.config.HeartbeatDuration)
 	breakDuration := time.Second * time.Duration(s.svr.config.HeartbeatDuration*2)

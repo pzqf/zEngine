@@ -7,7 +7,6 @@ import (
 
 	"github.com/pzqf/zEngine/zLog"
 	"github.com/pzqf/zEngine/zObject"
-	"github.com/pzqf/zEngine/zService"
 	"github.com/pzqf/zUtil/zMap"
 )
 
@@ -27,7 +26,6 @@ type BaseServer struct {
 	startTime      time.Time
 	ctx            context.Context
 	cancel         context.CancelFunc
-	serviceMgr     *zService.ServiceManager
 	hooks          LifecycleHooks
 	logger         Logger
 }
@@ -48,7 +46,6 @@ func NewBaseServer(serverType ServerType, serverId, serverName, version string, 
 		startTime:      time.Now(),
 		ctx:            ctx,
 		cancel:         cancel,
-		serviceMgr:     zService.NewServiceManager(),
 		hooks:          hooks,
 	}
 	bs.state.Store(StateStarting)
@@ -83,38 +80,11 @@ func (s *BaseServer) GetServerVersion() string {
 	return s.ServerVersion
 }
 
-func (s *BaseServer) GetServiceManager() *zService.ServiceManager {
-	return s.serviceMgr
-}
-
-func (s *BaseServer) AddService(svc zService.Service, deps ...interface{}) error {
-	return s.serviceMgr.AddService(svc, deps...)
-}
-
-func (s *BaseServer) GetService(id interface{}) (zService.Service, error) {
-	return s.serviceMgr.GetService(id)
-}
-
-func (s *BaseServer) InitServices() error {
-	return s.serviceMgr.InitServices()
-}
-
-func (s *BaseServer) ServeServices() {
-	s.serviceMgr.ServeServices()
-}
-
-func (s *BaseServer) CloseServices() error {
-	return s.serviceMgr.CloseServices()
-}
-
-func (s *BaseServer) RegisterDependency(name string, factory interface{}) {
-	s.serviceMgr.RegisterDependency(name, factory)
-}
-
-func (s *BaseServer) RegisterSingleton(name string, instance interface{}) {
-	s.serviceMgr.RegisterSingleton(name, instance)
-}
-
-func (s *BaseServer) ResolveDependency(name string) (interface{}, error) {
-	return s.serviceMgr.ResolveDependency(name)
-}
+// 说明（成熟化改造 Phase 1.3）：BaseServer 曾内嵌 zService.ServiceManager 并暴露
+// AddService/InitServices/ServeServices/CloseServices/RegisterDependency/Singleton/
+// ResolveDependency 一整套服务编排 + DI 门面，但全项目零调用方——各服要么用
+// RegisterComponent（组件注册表），要么自建 zInject.Container（如 GameServer）。
+// 该门面与组件注册表职责重叠、构成死 API，已移除以厘清职责边界：
+//   - zServer：进程生命周期 + 7 态状态机 + 组件注册表（RegisterComponent）。
+//   - zService：独立可选的服务编排模块（拓扑排序 Init/Serve/Close + DI），需要时由业务
+//     直接 zService.NewServiceManager() 使用，不再由 BaseServer 强制内嵌。

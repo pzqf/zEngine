@@ -91,6 +91,7 @@ type BaseActor struct {
 	hooks         LifecycleHooks
 	stopCh        chan struct{}
 	self          Actor
+	dropped       atomic.Uint64
 }
 
 func NewBaseActor(id int64, chanSize int) *BaseActor {
@@ -143,6 +144,7 @@ func (a *BaseActor) Start() error {
 
 	a.running.Store(true)
 	a.stopCh = make(chan struct{})
+	a.restartTimes = nil // 显式启动重置重启预算
 
 	if a.hooks != nil {
 		if err := a.hooks.OnStart(); err != nil {
@@ -164,8 +166,9 @@ func (a *BaseActor) Stop() error {
 	}
 
 	a.running.Store(false)
-	close(a.ActorMsgChan)
-	close(a.highPriority)
+	// 只关闭 stopCh 作为退出信号；不关闭消息 channel。
+	// 关闭消息 channel 会与并发的 SendMessage 形成 send-on-closed panic（TOCTOU）。
+	// 未消费的缓冲消息随 actor 停止一并丢弃并由 GC 回收。
 	close(a.stopCh)
 
 	if a.hooks != nil {
@@ -191,13 +194,17 @@ func (a *BaseActor) SendMessage(msg ActorMessage) {
 		select {
 		case a.highPriority <- msg:
 		default:
-			a.logger.Warn("Actor high priority queue is full", zap.Int64("actor_id", a.id))
+			a.dropped.Add(1)
+			a.logger.Warn("Actor high priority queue is full, message dropped",
+				zap.Int64("actor_id", a.id), zap.Uint64("dropped_total", a.dropped.Load()))
 		}
 	default:
 		select {
 		case a.ActorMsgChan <- msg:
 		default:
-			a.logger.Warn("Actor message queue is full", zap.Int64("actor_id", a.id))
+			a.dropped.Add(1)
+			a.logger.Warn("Actor message queue is full, message dropped",
+				zap.Int64("actor_id", a.id), zap.Uint64("dropped_total", a.dropped.Load()))
 		}
 	}
 }
@@ -218,13 +225,17 @@ func (a *BaseActor) SendPriority(msg ActorMessage, priority MessagePriority) {
 		select {
 		case a.highPriority <- pMsg:
 		default:
-			a.logger.Warn("Actor high priority queue is full", zap.Int64("actor_id", a.id))
+			a.dropped.Add(1)
+			a.logger.Warn("Actor high priority queue is full, message dropped",
+				zap.Int64("actor_id", a.id), zap.Uint64("dropped_total", a.dropped.Load()))
 		}
 	default:
 		select {
 		case a.ActorMsgChan <- pMsg:
 		default:
-			a.logger.Warn("Actor message queue is full", zap.Int64("actor_id", a.id))
+			a.dropped.Add(1)
+			a.logger.Warn("Actor message queue is full, message dropped",
+				zap.Int64("actor_id", a.id), zap.Uint64("dropped_total", a.dropped.Load()))
 		}
 	}
 }
@@ -235,6 +246,11 @@ func (a *BaseActor) ProcessMessage(msg ActorMessage) {
 
 func (a *BaseActor) IsRunning() bool {
 	return a.running.Load()
+}
+
+// DroppedMessages 返回因邮箱满而被丢弃的消息累计数，用于监控/告警。
+func (a *BaseActor) DroppedMessages() uint64 {
+	return a.dropped.Load()
 }
 
 func (a *BaseActor) run() {
@@ -252,44 +268,50 @@ func (a *BaseActor) run() {
 	processFn := a.ProcessMessage
 	if a.self != nil {
 		processFn = a.self.ProcessMessage
+	} else {
+		// 未调用 SetSelf 时，嵌入 BaseActor 的子类重写的 ProcessMessage 不会被分派，
+		// 只会走 BaseActor 的空实现——显式告警，避免静默退化难以排查。
+		a.logger.Warn("Actor has no self set; messages will use BaseActor.ProcessMessage default (missing SetSelf?)",
+			zap.Int64("actor_id", a.id))
 	}
 
 	for {
+		// 高优先级优先：先非阻塞排空 highPriority；同时始终监听 stopCh。
 		select {
 		case <-a.stopCh:
 			a.logger.Info("Actor stopped via stop channel", zap.Int64("actor_id", a.id))
 			return
-		case msg, ok := <-a.highPriority:
-			if !ok {
-				return
-			}
+		case msg := <-a.highPriority:
 			processFn(msg)
+			continue
 		default:
-			select {
-			case msg, ok := <-a.highPriority:
-				if !ok {
-					return
-				}
-				processFn(msg)
-			case msg, ok := <-a.ActorMsgChan:
-				if !ok {
-					return
-				}
-				processFn(msg)
-			}
+		}
+
+		// 无高优先消息时阻塞等待，stopCh 始终在选择集内，保证停止能被及时感知。
+		select {
+		case <-a.stopCh:
+			a.logger.Info("Actor stopped via stop channel", zap.Int64("actor_id", a.id))
+			return
+		case msg := <-a.highPriority:
+			processFn(msg)
+		case msg := <-a.ActorMsgChan:
+			processFn(msg)
 		}
 	}
 }
 
 func (a *BaseActor) handlePanic() {
-	a.running.Store(false)
-
 	switch a.supervisorCfg.Strategy {
 	case SupervisorStrategyRestart:
+		// 保持 running=true 跨越重启窗口：panic 的 run() 已退出，但 actor 语义上仍存活、
+		// 正在重启。这样退避期间的 SendMessage 会缓冲（不丢弃），且并发 Stop() 不会因
+		// "not running" 被拒—— Stop 能关闭 stopCh，tryRestart 据此放弃重启，停止意图得以生效。
 		a.tryRestart()
 	case SupervisorStrategyStop:
+		a.running.Store(false)
 		a.logger.Info("Actor stopped by supervisor strategy", zap.Int64("actor_id", a.id))
 	case SupervisorStrategyEscalate:
+		a.running.Store(false)
 		a.logger.Error("Actor panic escalated", zap.Int64("actor_id", a.id))
 	}
 }
@@ -306,7 +328,8 @@ func (a *BaseActor) tryRestart() {
 	a.restartTimes = recentRestarts
 
 	if len(recentRestarts) >= a.supervisorCfg.MaxRestarts {
-		a.logger.Error("Actor exceeded max restarts",
+		a.running.Store(false)
+		a.logger.Error("Actor exceeded max restarts, giving up",
 			zap.Int64("actor_id", a.id),
 			zap.Int("max_restarts", a.supervisorCfg.MaxRestarts))
 		return
@@ -315,11 +338,20 @@ func (a *BaseActor) tryRestart() {
 	time.Sleep(a.supervisorCfg.RestartBackoff)
 
 	a.mu.Lock()
-	a.ActorMsgChan = make(chan ActorMessage, cap(a.ActorMsgChan))
-	a.highPriority = make(chan ActorMessage, cap(a.highPriority))
-	a.stopCh = make(chan struct{})
-	a.running.Store(true)
+	// 若退避期间 Stop() 已关闭 stopCh，尊重停止意图、放弃重启。
+	select {
+	case <-a.stopCh:
+		a.running.Store(false)
+		a.mu.Unlock()
+		a.logger.Info("Actor restart aborted: stopped during backoff", zap.Int64("actor_id", a.id))
+		return
+	default:
+	}
+	// 不重建 ActorMsgChan/highPriority/stopCh：panic（来自 ProcessMessage）并未关闭它们，
+	// 重建会（1）丢弃邮箱里所有在途消息且不计入 dropped，（2）与无锁读取这些字段的并发
+	// SendMessage/run() 形成数据竞争。复用既有 channel 即可消除两者。
 	a.restartTimes = append(a.restartTimes, time.Now())
+	restartCount := len(a.restartTimes)
 	a.mu.Unlock()
 
 	if a.hooks != nil {
@@ -335,5 +367,5 @@ func (a *BaseActor) tryRestart() {
 	go a.run()
 	a.logger.Info("Actor restarted",
 		zap.Int64("actor_id", a.id),
-		zap.Int("restart_count", len(a.restartTimes)))
+		zap.Int("restart_count", restartCount))
 }

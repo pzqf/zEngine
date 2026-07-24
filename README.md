@@ -43,7 +43,7 @@ zEngine/
 ├── zDistributed/  # 分布式工具 - etcd 排他锁/共享锁
 ├── zMetrics/      # 监控指标 - Prometheus Counter/Gauge/Histogram
 ├── zSignal/       # 信号处理 - 优雅退出
-└── zSystem/       # ECS 系统 - SystemManager + StateManager
+└── zConfig/       # 配置管理 - ini/yaml 加载 + 热更新 watcher
 ```
 
 ## 核心模块
@@ -164,9 +164,9 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 
 轻量级依赖注入容器，支持 Factory 和 Singleton 两种依赖类型。
 
-### zSystem - ECS 系统
+### zConfig - 配置管理
 
-系统管理器 + 状态管理器，支持系统注册/初始化/更新/关闭的完整生命周期。
+基于 ini/yaml 的配置加载，支持文件监听热更新（watcher）。
 
 ## 依赖
 
@@ -189,8 +189,8 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 | 中 | zNet option.go 使用 reflect 做类型分支 | 性能差且脆弱，建议接口断言 |
 | 中 | zNet TcpServerSession.onClose 被调用两次 | defer 和方法末尾重复调用 |
 | 中 | zMetrics 与 zNet 未集成 | 网络指标需手动采集 |
-| 低 | zEvent.Unsubscribe 未实现 | Go 函数值无法直接比较 |
-| 低 | zServer 与 zService 职责重叠 | 两者都管理服务生命周期 |
+
+> 已解决（2026-07-23 成熟化改造）：`zEvent.Unsubscribe` 已实现（Subscribe 返回 SubscriptionID，按句柄退订）；`zServer 与 zService 职责重叠`已解耦（BaseServer 移除零调用方的 zService 服务门面，zService 改为独立可选模块）。
 
 ## 安装
 

@@ -143,12 +143,18 @@ func (tl *TrafficLimiter) AllowTraffic(ip string, bytes int64) bool {
 	}
 
 	traffic, _ := tl.ipTraffic.LoadOrStore(ip, &atomicTraffic{})
-	current := traffic.bytes.Load()
-	if current+bytes > tl.maxBytesPerIP {
-		return false
+	// 循环 CAS：CAS 失败意味着有并发更新（同 IP 的其他会话在同时上报流量），应重试，
+	// 而非把 CAS 失败当成"流量超限"返回 false——后者是 bug，会在同 IP 并发（NAT/多连接）
+	// 下随机误判超限并断连（server_test.go 实测：8 个同 IP 会话并发时随机丢消息+断连）。
+	for {
+		current := traffic.bytes.Load()
+		if current+bytes > tl.maxBytesPerIP {
+			return false
+		}
+		if traffic.bytes.CompareAndSwap(current, current+bytes) {
+			return true
+		}
 	}
-
-	return traffic.bytes.CompareAndSwap(current, current+bytes)
 }
 
 type DDoSProtection struct {

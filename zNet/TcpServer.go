@@ -15,7 +15,8 @@ import (
 // 支持多客户端连接、会话管理、DDoS防护、密钥交换等功能
 type TcpServer struct {
 	clientSIDAtomic   SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
-	listener          *net.TCPListener                                 // TCP监听器
+	listener          atomic.Pointer[net.TCPListener]                  // TCP监听器（原子读写：Start 写，Accept/Close/GetListenAddress 读，消除数据竞争）
+	closing           atomic.Bool                                      // 关服信号：置位后 accept 循环与 AddSession 停止注册新会话
 	clientSessionMap  *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
 	wg                sync.WaitGroup                                   // 等待组，用于优雅关闭
 	onAddSession      SessionCallBackFunc                              // 会话添加回调
@@ -29,6 +30,7 @@ type TcpServer struct {
 	workerPool        *zConcurrency.WorkerPool                         // 工作池
 	keyRotationMgr    *KeyRotationManager                              // 密钥轮换管理器
 	sequenceManager   *SequenceManager                                 // 序列号管理器
+	metrics           NetworkMetricsRecorder                           // 可选网络指标上报器（nil 则不上报）
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -111,7 +113,8 @@ func (svr *TcpServer) Start() error {
 		}
 		return err
 	}
-	svr.listener = listener
+	svr.listener.Store(listener)
+	svr.closing.Store(false)
 
 	if svr.logger != nil {
 		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
@@ -138,7 +141,7 @@ func (svr *TcpServer) Start() error {
 				time.Sleep(5 * time.Millisecond)
 				continue
 			}
-			conn, err := svr.listener.AcceptTCP()
+			conn, err := svr.listener.Load().AcceptTCP()
 			if err != nil {
 				if svr.logger != nil {
 					svr.logger.Error("Failed to accept TCP connection: %v", err)
@@ -158,7 +161,13 @@ func (svr *TcpServer) Start() error {
 				continue
 			}
 
-		go svr.AddSession(conn)
+			// 纳入 svr.wg 跟踪：Close 的 wg.Wait() 会等待所有在飞 AddSession 完成注册，
+			// 之后再统一关闭会话，避免"关闭后又有会话被 Store"的时序竞争与 goroutine 泄漏。
+			svr.wg.Add(1)
+			go func(c *net.TCPConn) {
+				defer svr.wg.Done()
+				svr.AddSession(c)
+			}(conn)
 		}
 	}()
 
@@ -172,28 +181,33 @@ func (svr *TcpServer) Close() {
 		svr.logger.Info("Close tcp server, session count: %d", svr.clientSessionMap.Len())
 	}
 
-	// 关闭监听器，停止接受新连接
-	if err := svr.listener.Close(); err != nil {
-		if svr.logger != nil {
-			svr.logger.Error("Failed to close listener: %v", err)
+	// 1) 置关服信号：accept 循环与 AddSession 不再注册新会话。
+	svr.closing.Store(true)
+
+	// 2) 关闭监听器，令 accept 循环的 AcceptTCP 立即返回错误而退出。
+	if l := svr.listener.Load(); l != nil {
+		if err := l.Close(); err != nil {
+			if svr.logger != nil {
+				svr.logger.Error("Failed to close listener: %v", err)
+			}
 		}
 	}
 
-	// 关闭所有客户端会话
+	// 3) 等待 accept 循环 + 所有在飞 AddSession goroutine 退出。此后 clientSessionMap
+	//    不再有新会话写入，可安全遍历关闭——消除"关闭后又被 Store"的时序竞争。
+	svr.wg.Wait()
+
+	// 4) 关闭所有客户端会话（session.Close 内部同步等待该会话的收发 goroutine 退出）。
 	svr.clientSessionMap.Range(func(sid SessionIdType, value *TcpServerSession) bool {
-		session := value
-		session.Close()
-		svr.clientSessionMap.Delete(session.sid)
+		value.Close()
+		svr.clientSessionMap.Delete(sid)
 		return true
 	})
 
-	// 停止工作池
+	// 5) 会话已全部停止、不再向工作池投递，最后停工作池。
 	if svr.workerPool != nil {
 		svr.workerPool.Stop()
 	}
-
-	// 等待所有goroutine退出
-	svr.wg.Wait()
 
 	if svr.logger != nil {
 		svr.logger.Info("Tcp server closed")
@@ -206,6 +220,12 @@ func (svr *TcpServer) Close() {
 // 参数:
 //   - conn: TCP连接
 func (svr *TcpServer) AddSession(conn *net.TCPConn) {
+	// 关服中：不再接纳新会话，直接关连接返回（避免在关闭序列中被 Store 后遗漏）。
+	if svr.closing.Load() {
+		conn.Close()
+		return
+	}
+
 	var aesKey []byte
 	var err error
 
@@ -222,8 +242,8 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	}
 
 	if !svr.config.DisableEncryption {
-		// 执行DH密钥协商，生成AES密钥
-		aesKey, err = PerformKeyExchange(conn)
+		// 执行DH密钥协商，生成AES密钥（带握手超时，防对端不配合导致永久阻塞）
+		aesKey, err = PerformKeyExchangeWithDeadline(conn, DefaultKeyExchangeTimeout)
 		if err != nil {
 			if svr.logger != nil {
 				svr.logger.Error("DH key exchange failed: %v", err)
@@ -241,6 +261,12 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 		}
 	}
 
+	// 握手可能耗时（DH+超时），期间若已进入关服则放弃注册，加速关闭并避免遗漏会话。
+	if svr.closing.Load() {
+		conn.Close()
+		return
+	}
+
 	// 生成唯一会话ID并创建会话
 	sid := atomic.AddUint64(&svr.clientSIDAtomic, 1)
 	newSession := NewTcpServerSession(svr, conn, sid, svr.RemoveSession, aesKey)
@@ -249,6 +275,10 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 	if svr.logger != nil {
 		clientAddr := conn.RemoteAddr().String()
 		svr.logger.Info("New client connected, sid=%d, client=%s, total_clients=%d", sid, clientAddr, svr.clientSessionMap.Len())
+	}
+
+	if svr.metrics != nil {
+		svr.metrics.IncActiveConnections()
 	}
 
 	if svr.onAddSession != nil {
@@ -263,6 +293,10 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 // 参数:
 //   - cli: 要移除的客户端会话
 func (svr *TcpServer) RemoveSession(cli *TcpServerSession) {
+	if svr.metrics != nil {
+		svr.metrics.DecActiveConnections()
+	}
+
 	if svr.onRemoveSession != nil {
 		svr.onRemoveSession(cli.sid)
 	}
@@ -294,10 +328,11 @@ func (svr *TcpServer) GetSession(sid SessionIdType) *TcpServerSession {
 // 返回:
 //   - string: 服务器监听地址
 func (svr *TcpServer) GetListenAddress() string {
-	if svr.listener == nil {
+	l := svr.listener.Load()
+	if l == nil {
 		return ""
 	}
-	return svr.listener.Addr().String()
+	return l.Addr().String()
 }
 
 // GetAllSession 获取所有客户端会话

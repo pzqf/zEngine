@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,7 +38,7 @@ func TestClientServerCommunication(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -48,6 +49,7 @@ func TestClientServerCommunication(t *testing.T) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: false,
@@ -85,16 +87,16 @@ func TestClientServerMultipleMessages(t *testing.T) {
 	server := NewTcpServer(cfg)
 	defer server.Close()
 
-	receivedCount := 0
+	var receivedCount atomic.Int64
 	server.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
-		t.Logf("Server received packet %d: ProtoId=%d", receivedCount, netPacket.ProtoId)
+		receivedCount.Add(1)
+		t.Logf("Server received packet %d: ProtoId=%d", receivedCount.Load(), netPacket.ProtoId)
 		return nil
 	})
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -105,6 +107,7 @@ func TestClientServerMultipleMessages(t *testing.T) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: false,
@@ -127,11 +130,11 @@ func TestClientServerMultipleMessages(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	if receivedCount != messageCount {
-		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount)
+	if int(receivedCount.Load()) != messageCount {
+		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount.Load())
 	}
 
-	t.Logf("Client-Server multiple messages test passed: %d messages", receivedCount)
+	t.Logf("Client-Server multiple messages test passed: %d messages", receivedCount.Load())
 }
 
 func TestClientServerWithEncryption(t *testing.T) {
@@ -154,7 +157,7 @@ func TestClientServerWithEncryption(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -208,7 +211,7 @@ func TestClientServerWithCompression(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -219,6 +222,7 @@ func TestClientServerWithCompression(t *testing.T) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: false,
@@ -261,15 +265,15 @@ func TestClientServerPerformance(t *testing.T) {
 	server := NewTcpServer(cfg)
 	defer server.Close()
 
-	receivedCount := 0
+	var receivedCount atomic.Int64
 	server.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
+		receivedCount.Add(1)
 		return nil
 	})
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -280,6 +284,7 @@ func TestClientServerPerformance(t *testing.T) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: false,
@@ -308,8 +313,8 @@ func TestClientServerPerformance(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	if receivedCount != messageCount {
-		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount)
+	if int(receivedCount.Load()) != messageCount {
+		t.Errorf("Expected %d messages, received %d", messageCount, receivedCount.Load())
 	}
 
 	totalBytes := int64(messageCount * messageSize)
@@ -333,15 +338,15 @@ func TestClientServerConcurrent(t *testing.T) {
 	server := NewTcpServer(cfg)
 	defer server.Close()
 
-	receivedCount := 0
+	var receivedCount atomic.Int64
 	server.RegisterDispatcher(func(session Session, netPacket *NetPacket) error {
-		receivedCount++
+		receivedCount.Add(1)
 		return nil
 	})
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -356,6 +361,7 @@ func TestClientServerConcurrent(t *testing.T) {
 
 	for i := 0; i < clientCount; i++ {
 		clientCfg := &TcpClientConfig{
+			DisableEncryption: true,
 			ServerAddr:    host,
 			ServerPort:    port,
 			AutoReconnect: false,
@@ -385,12 +391,12 @@ func TestClientServerConcurrent(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	expectedMessages := clientCount * messagesPerClient
-	if receivedCount != expectedMessages {
-		t.Errorf("Expected %d messages, received %d", expectedMessages, receivedCount)
+	if int(receivedCount.Load()) != expectedMessages {
+		t.Errorf("Expected %d messages, received %d", expectedMessages, receivedCount.Load())
 	}
 
 	t.Logf("Concurrent test passed: %d clients, %d messages per client, total %d messages",
-		clientCount, messagesPerClient, receivedCount)
+		clientCount, messagesPerClient, receivedCount.Load())
 }
 
 func TestClientServerSessionManagement(t *testing.T) {
@@ -430,7 +436,7 @@ func TestClientServerSessionManagement(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -446,6 +452,7 @@ func TestClientServerSessionManagement(t *testing.T) {
 
 	for idx := 0; idx < clientCount; idx++ {
 		clientCfg := &TcpClientConfig{
+			DisableEncryption: true,
 			ServerAddr:    host,
 			ServerPort:    port,
 			AutoReconnect: false,
@@ -460,20 +467,24 @@ func TestClientServerSessionManagement(t *testing.T) {
 		sessionIDs[idx] = client.GetSession().GetSid()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// 在 mutex 下读 map 长度（回调在其它 goroutine 持锁写入，裸 len() 读会数据竞争）；
+	// 用 waitFor 替代固定 sleep，稳健等待回调完成。
+	count := func(m map[SessionIdType]bool) int {
+		sessionsMutex.Lock()
+		defer sessionsMutex.Unlock()
+		return len(m)
+	}
 
-	if len(connectedSessions) != clientCount {
-		t.Errorf("Expected %d connected sessions, got %d", clientCount, len(connectedSessions))
+	if !waitFor(t, 2*time.Second, func() bool { return count(connectedSessions) == clientCount }) {
+		t.Errorf("Expected %d connected sessions, got %d", clientCount, count(connectedSessions))
 	}
 
 	for _, client := range clients {
 		client.Close()
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	if len(disconnectedSessions) != clientCount {
-		t.Errorf("Expected %d disconnected sessions, got %d", clientCount, len(disconnectedSessions))
+	if !waitFor(t, 3*time.Second, func() bool { return count(disconnectedSessions) == clientCount }) {
+		t.Errorf("Expected %d disconnected sessions, got %d", clientCount, count(disconnectedSessions))
 	}
 
 	t.Logf("Session management test passed: %d sessions connected and disconnected", clientCount)
@@ -498,7 +509,7 @@ func BenchmarkClientServerCommunication(b *testing.B) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			b.Fatalf("Server start failed: %v", err)
+			b.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -509,6 +520,7 @@ func BenchmarkClientServerCommunication(b *testing.B) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: false,
@@ -557,7 +569,7 @@ func TestClientServerRealScenario(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -609,6 +621,7 @@ func TestClientServerRealScenario(t *testing.T) {
 
 func TestClientServerConnectionFailure(t *testing.T) {
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    "127.0.0.1",
 		ServerPort:    9999,
 		AutoReconnect: false,
@@ -642,7 +655,7 @@ func TestClientServerReconnect(t *testing.T) {
 
 	go func() {
 		if err := server.Start(); err != nil {
-			t.Fatalf("Server start failed: %v", err)
+			t.Errorf("Server start failed: %v", err)
 		}
 	}()
 
@@ -653,6 +666,7 @@ func TestClientServerReconnect(t *testing.T) {
 	host, port := parseAddr(addr)
 
 	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
 		ServerAddr:    host,
 		ServerPort:    port,
 		AutoReconnect: true,
@@ -673,4 +687,76 @@ func TestClientServerReconnect(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	t.Log("Reconnect test passed")
+}
+
+// TestClientServerReconnect_RecoversAfterDrop 真正验证断线自动重连：强制关闭当前会话模拟
+// 掉线，唯一的 monitorConnection 应检测到 IsClosed 并经重连循环重连到仍在运行的 server，
+// 重连后可正常发送。回归点：旧实现每次重连都 spawn 新 monitor（goroutine 泄漏 + 多监控
+// 重复重连），且单次 Connect 失败即放弃不重试；本测试确保修复后能稳定恢复。
+func TestClientServerReconnect_RecoversAfterDrop(t *testing.T) {
+	cfg := &TcpConfig{
+		ListenAddress:     "127.0.0.1:0",
+		MaxClientCount:    100,
+		ChanSize:          1024,
+		HeartbeatDuration: 30,
+		MaxPacketDataSize: 1024 * 1024,
+		DisableEncryption: true,
+	}
+	server := NewTcpServer(cfg)
+	defer server.Close()
+	server.RegisterDispatcher(func(session Session, netPacket *NetPacket) error { return nil })
+	go func() {
+		if err := server.Start(); err != nil {
+			t.Errorf("Server start failed: %v", err)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	host, port := parseAddr(server.GetListenAddress())
+	clientCfg := &TcpClientConfig{
+		DisableEncryption: true,
+		ServerAddr:        host,
+		ServerPort:        port,
+		AutoReconnect:     true,
+		ReconnectDelay:    1,
+	}
+	client := NewTcpClient(clientCfg)
+	defer client.Close()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("client connect failed: %v", err)
+	}
+
+	// 强制断开当前会话，模拟网络掉线。
+	oldSession := client.GetSession()
+	oldSession.Close()
+
+	// 阶段一：等待监控检测到掉线（状态离开 Connected）。若不先见证掉线，
+	// 直接判 Connected 会命中掉线前的陈旧状态而假通过。
+	// 注意：monitor 每 1s 轮询一次 IsClosed；`-race` 下整机负载重、定时器慢，故给足裕量
+	// （避免测试自身时序假失败——已确认非数据竞争）。
+	dropDeadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(dropDeadline) && client.GetState() == ClientStateConnected {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if client.GetState() == ClientStateConnected {
+		t.Fatalf("monitor did not detect the drop (state still Connected)")
+	}
+
+	// 阶段二：等待自动重连恢复到 Connected。
+	upDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(upDeadline) && client.GetState() != ClientStateConnected {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if client.GetState() != ClientStateConnected {
+		t.Fatalf("client did not auto-reconnect, state=%d", client.GetState())
+	}
+
+	// 应确实换了新会话（旧会话已关闭），并能正常发送。
+	if client.GetSession() == oldSession {
+		t.Fatalf("expected a fresh session after reconnect")
+	}
+	if err := client.Send(100, []byte("after-reconnect")); err != nil {
+		t.Fatalf("send after reconnect failed: %v", err)
+	}
+	t.Log("auto-reconnect after drop verified")
 }

@@ -7,7 +7,25 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
+	"time"
 )
+
+// DefaultKeyExchangeTimeout 密钥交换握手默认超时。
+// 握手期间若对端不发送公钥（如两端加密配置不一致，或慢速/恶意连接），
+// ReceivePublicKey 的 io.ReadFull 会永久阻塞——这是一个挂起/DoS 向量。
+const DefaultKeyExchangeTimeout = 15 * time.Second
+
+// PerformKeyExchangeWithDeadline 在带读超时的前提下执行密钥交换。
+// 握手期间设置读截止时间，避免对端不配合导致 ReceivePublicKey 永久阻塞；
+// 握手完成后清除截止时间，不影响后续正常读写。timeout<=0 时退化为无超时。
+func PerformKeyExchangeWithDeadline(conn net.Conn, timeout time.Duration) ([]byte, error) {
+	if timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	}
+	return PerformKeyExchange(conn)
+}
 
 // DHKeyExchange Diffie-Hellman密钥交换
 // 基于椭圆曲线的密钥交换算法，用于在不安全信道上安全地协商共享密钥
