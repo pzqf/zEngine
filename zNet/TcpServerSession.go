@@ -131,12 +131,12 @@ func (s *TcpServerSession) Start() {
 	s.wg.Add(1)
 	go s.receive(ctx) // 启动接收协程
 
-	// 根据配置决定是否启动处理协程
-	if !s.svr.config.UseWorkerPool {
-		// 传统模式：启动处理协程
-		s.wg.Add(1)
-		go s.process(ctx)
-	}
+	// process() 是 sendChan 的**唯一消费者**，必须无条件启动（NET-2）——否则 worker-pool 模式下
+	// 收包走工作池、但没人消费 sendChan，session.Send 填满 sendChan 后永久阻塞（Gateway 默认开池，
+	// 一旦某客户端积压 ChanSize 条推送即死锁）。worker-pool 模式下 receiveChan 不被喂（收包走池），
+	// process() 的 receiveChan 分支不触发、仅服务发送侧。
+	s.wg.Add(1)
+	go s.process(ctx)
 
 	if s.svr.config.HeartbeatDuration > 0 {
 		s.wg.Add(1)
