@@ -122,6 +122,10 @@ func (s *TcpClientSession) IsClosed() bool {
 //   - ctx: 上下文
 func (s *TcpClientSession) receive(ctx context.Context) {
 	// wg.Add 已由 Start 在启动本 goroutine 前完成。
+	// 关键：receive 因**真实网络掉线**（读错误，非优雅 Close）退出时也要标记 closed，
+	// 否则 IsClosed() 恒为 false，TcpClient.monitorConnection 靠它判定掉线，将永远
+	// 检测不到真实断线、AutoReconnect 永不触发（此前只有显式 Close 才会重连）。
+	defer s.closed.Store(true)
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {

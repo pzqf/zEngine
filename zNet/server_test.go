@@ -218,3 +218,23 @@ func TestServer_TwoServersIndependent(t *testing.T) {
 		t.Fatalf("independent servers: got1=%d(want 1) got2=%d(want 2)", got1.Load(), got2.Load())
 	}
 }
+
+// TestClientSession_ClosedOnRealNetworkDrop 回归守护：**真实网络掉线**（服务端关闭连接，
+// 而非客户端显式 Close）后，客户端会话必须报告 IsClosed()=true。否则 TcpClient.monitorConnection
+// 靠 IsClosed() 判定掉线将永远检测不到、AutoReconnect 永不触发（此前 receive 读错误退出时
+// 不设 closed，是真实的重连失效 bug）。
+func TestClientSession_ClosedOnRealNetworkDrop(t *testing.T) {
+	addr, srv := startTestServer(t, nil)
+	client := dialTestClient(t, addr, nil) // AutoReconnect 默认 false：只验证 closed 标志，不掺入重连
+	session := client.GetSession()
+	if session == nil || session.IsClosed() {
+		t.Fatal("precondition: connected session should exist and not be closed")
+	}
+
+	// 服务端关闭 → 客户端 receive 读到 EOF/连接错误而退出 → 应标记 closed。
+	srv.Close()
+
+	if !waitFor(t, 6*time.Second, func() bool { return session.IsClosed() }) {
+		t.Fatal("client session must report IsClosed()=true after real network drop (server closed)")
+	}
+}

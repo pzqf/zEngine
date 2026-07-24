@@ -48,7 +48,10 @@ func NewKeyRotationManager(interval time.Duration, maxHistoryKeys int) *KeyRotat
 
 func generateAESKey() []byte {
 	key := make([]byte, 16)
-	rand.Read(key)
+	// crypto/rand 失败极罕见但一旦发生会得到全零密钥（安全灾难）。密钥生成失败不可恢复，直接 panic。
+	if _, err := rand.Read(key); err != nil {
+		panic("zNet: failed to generate AES key from crypto/rand: " + err.Error())
+	}
 	return key
 }
 
@@ -233,13 +236,19 @@ func (sm *SequenceManager) ValidateSequence(sid SessionIdType, seq uint64, times
 
 	info.window.Store(seq, true)
 
-	if seq-lastSeq > sm.windowSize {
-		newWindowStart := seq - sm.windowSize + 1
-		info.windowStart.Store(newWindowStart)
-		oldWindowStart := info.windowStart.Load()
+	// 滑动窗口：始终只保留最近 windowSize 个序号并裁掉更早的。此前两处 bug 致 window map 无界增长：
+	// ① 先 Store windowStart 再 Load 回来 → oldWindowStart==newWindowStart → 清理循环空转从不删除；
+	// ② 仅在 seq 大跳变(>windowSize)时才尝试清理，顺序流量(seq=lastSeq+1)永不清理。
+	oldWindowStart := info.windowStart.Load()
+	var newWindowStart uint64
+	if seq+1 > sm.windowSize {
+		newWindowStart = seq + 1 - sm.windowSize
+	}
+	if newWindowStart > oldWindowStart {
 		for i := oldWindowStart; i < newWindowStart; i++ {
 			info.window.Delete(i)
 		}
+		info.windowStart.Store(newWindowStart)
 	}
 
 	info.lastSeq.Store(seq)

@@ -133,6 +133,11 @@ func (svr *TcpServer) Start() error {
 	go func() {
 		defer svr.wg.Done()
 		for {
+			// 关服信号：满员空转分支必须检查 closing 并退出，否则 accept goroutine 永不
+			// 退出、Close 的 wg.Wait 永久挂起（满员时关服死锁）。
+			if svr.closing.Load() {
+				break
+			}
 			// 检查是否达到最大客户端数量
 			if svr.config.MaxClientCount > 0 && int(svr.clientSessionMap.Len()) >= svr.config.MaxClientCount {
 				if svr.logger != nil {
