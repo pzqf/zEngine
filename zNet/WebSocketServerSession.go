@@ -57,9 +57,14 @@ func (s *WebSocketServerSession) Start() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
+	// NET-4: wg.Add 必须在 go 之前，否则 Close 的 wg.Wait 可能在 goroutine 尚未 Add 时看到计数 0
+	// 提前返回，既不等待又与 goroutine 竞争（与 TCP 会话同类修复）。
+	s.wg.Add(1)
 	go s.receive(ctx)
+	s.wg.Add(1)
 	go s.process(ctx)
 	if s.svr.config.HeartbeatDuration > 0 {
+		s.wg.Add(1)
 		go s.heartbeatCheck(ctx)
 	}
 }
@@ -70,7 +75,6 @@ func (s *WebSocketServerSession) Close() {
 }
 
 func (s *WebSocketServerSession) receive(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.ctxCancel()
 	defer s.wg.Done()
 	defer func() {
@@ -138,8 +142,19 @@ func (s *WebSocketServerSession) receive(ctx context.Context) {
 	s.ctxCancel()
 }
 
+// dispatchSafely 调用 dispatcher 处理单个包，并隔离其 error 与 panic——绝不因单包问题拆掉会话（NET-4）。
+func (s *WebSocketServerSession) dispatchSafely(receivePacket *NetPacket) {
+	defer func() {
+		if r := recover(); r != nil && s.svr.logger != nil {
+			s.svr.logger.Error("Dispatcher panic: %v, ProtoId: %d", r, receivePacket.ProtoId)
+		}
+	}()
+	if err := s.svr.dispatcher(s, receivePacket); err != nil && s.svr.logger != nil {
+		s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
+	}
+}
+
 func (s *WebSocketServerSession) process(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
 		s.triggerOnClose()
@@ -165,13 +180,9 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 				receivePacket.Data = plaintext
 			}
 			if s.svr.dispatcher != nil {
-				err := s.svr.dispatcher(s, receivePacket)
-				if err != nil {
-					if s.svr.logger != nil {
-						s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-					}
-					return
-				}
+				// NET-4: 单个包的 dispatcher 报错/panic 不能拆掉整条会话（原来 return 会终止 process
+				// goroutine→会话停摆）。就地隔离：记录并继续处理后续包（与 TCP 会话同类修复）。
+				s.dispatchSafely(receivePacket)
 			}
 
 		case sendPacket := <-s.sendChan:
@@ -186,13 +197,7 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
 					if s.svr.dispatcher != nil {
-						err := s.svr.dispatcher(s, receivePacket)
-						if err != nil {
-							if s.svr.logger != nil {
-								s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-							}
-							return
-						}
+						s.dispatchSafely(receivePacket)
 					}
 
 					continue
@@ -282,7 +287,6 @@ func (s *WebSocketServerSession) heartbeatUpdate() {
 }
 
 func (s *WebSocketServerSession) heartbeatCheck(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.wg.Done()
 	duration := time.Second * time.Duration(s.svr.config.HeartbeatDuration)
 	breakDuration := time.Second * time.Duration(s.svr.config.HeartbeatDuration*2)

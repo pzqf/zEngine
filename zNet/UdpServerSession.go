@@ -59,8 +59,11 @@ func (s *UdpServerSession) Start() {
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
+	// NET-4: wg.Add 必须在 go 之前（否则 Close 的 wg.Wait 可能计数 0 提前返回，与 goroutine 竞争）。
+	s.wg.Add(1)
 	go s.process(ctx)
 	if s.svr.config.HeartbeatDuration > 0 {
+		s.wg.Add(1)
 		go s.heartbeatCheck(ctx)
 	}
 }
@@ -152,8 +155,19 @@ func (s *UdpServerSession) handlePacket(data []byte) {
 	s.heartbeatUpdate()
 }
 
+// dispatchSafely 调用 dispatcher 处理单个包，并隔离其 error 与 panic——绝不因单包问题拆掉会话（NET-4）。
+func (s *UdpServerSession) dispatchSafely(receivePacket *NetPacket) {
+	defer func() {
+		if r := recover(); r != nil && s.svr.logger != nil {
+			s.svr.logger.Error("Dispatcher panic: %v, ProtoId: %d", r, receivePacket.ProtoId)
+		}
+	}()
+	if err := s.svr.dispatcher(s, receivePacket); err != nil && s.svr.logger != nil {
+		s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
+	}
+}
+
 func (s *UdpServerSession) process(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.wg.Done()
 	defer func() {
 		s.triggerOnClose()
@@ -179,13 +193,8 @@ func (s *UdpServerSession) process(ctx context.Context) {
 				receivePacket.Data = plaintext
 			}
 			if s.svr.dispatcher != nil {
-				err := s.svr.dispatcher(s, receivePacket)
-				if err != nil {
-					if s.svr.logger != nil {
-						s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-					}
-					return
-				}
+				// NET-4: 单包 dispatcher 报错/panic 不拆整条会话（原 return 会终止 process→会话停摆）。
+				s.dispatchSafely(receivePacket)
 			}
 
 		case sendPacket := <-s.sendChan:
@@ -200,13 +209,7 @@ func (s *UdpServerSession) process(ctx context.Context) {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
 					if s.svr.dispatcher != nil {
-						err := s.svr.dispatcher(s, receivePacket)
-						if err != nil {
-							if s.svr.logger != nil {
-								s.svr.logger.Error("Dispatcher error: %v, ProtoId: %d", err, receivePacket.ProtoId)
-							}
-							return
-						}
+						s.dispatchSafely(receivePacket)
 					}
 
 					continue
@@ -291,7 +294,6 @@ func (s *UdpServerSession) heartbeatUpdate() {
 }
 
 func (s *UdpServerSession) heartbeatCheck(ctx context.Context) {
-	s.wg.Add(1)
 	defer s.wg.Done()
 	duration := time.Second * time.Duration(s.svr.config.HeartbeatDuration)
 	breakDuration := time.Second * time.Duration(s.svr.config.HeartbeatDuration*2)
