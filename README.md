@@ -244,10 +244,9 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 
 基于 Go AST 的表达式求值与状态机脚本引擎。
 
-**已知问题**：
-- 全局 `map` 非线程安全
-- 重复注册使用 `panic`（应改为返回错误）
-- 调试输出使用 `fmt.Println`（应使用日志系统）
+**说明**：`RegisterScriptFunc` 对重复注册采用 `panic`——这是**启动期 fail-fast**（同名脚本函数
+重复绑定属编程错误，与 stdlib `http.Handle` 对重复 pattern 的处理同理）。全局表已加 `sync.RWMutex`
+并发保护，调试输出已改用日志。
 
 ### zNavMap - 导航寻路
 
@@ -257,7 +256,8 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 
 基于 Prometheus 的指标管理器，支持 Counter/Gauge/Histogram 三种指标类型，含网络指标（连接数/延迟/流量/错误率）。
 
-**注意**：zMetrics 与 zNet 当前未集成，网络指标需要手动采集。
+**集成**：zNet 已提供上报接口 `NetworkMetricsRecorder`，用 `zNet.WithServerMetrics(recorder)`
+注入即可（`zMetrics.NetworkMetrics` 满足该接口）——连接数/延迟/流量/错误率交由 zNet 自动采集。
 
 ### zInject - 依赖注入
 
@@ -283,13 +283,16 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 
 | 优先级 | 问题 | 说明 |
 |--------|------|------|
-| 高 | zScript 全局 map 非线程安全 | `scriptFileList` 和 `funcList` 需加并发保护 |
-| 高 | zScript.RegisterScriptFunc 使用 panic | 应改为返回 error |
-| 中 | zNet option.go 使用 reflect 做类型分支 | 性能差且脆弱，建议接口断言 |
-| 中 | zNet TcpServerSession.onClose 被调用两次 | defer 和方法末尾重复调用 |
-| 中 | zMetrics 与 zNet 未集成 | 网络指标需手动采集 |
+| 低（可选） | zScript.RegisterScriptFunc 重复注册 `panic` | 属启动期 fail-fast，非运行时隐患；若要改为返回 error 会波及全部调用方，按需权衡 |
 
-> 已解决（2026-07-23 成熟化改造）：`zEvent.Unsubscribe` 已实现（Subscribe 返回 SubscriptionID，按句柄退订）；`zServer 与 zService 职责重叠`已解耦（BaseServer 移除零调用方的 zService 服务门面，zService 改为独立可选模块）。
+> **已解决**（2026-07 成熟化改造，逐条经代码核实）：
+> - `zScript` 全局 `map` 非线程安全 → 已加 `sync.RWMutex`（`funcListMu` / `ScriptHolder.mu`）
+> - `zScript` 调试输出 `fmt.Println` → 已改用日志
+> - `zNet option.go` 用 reflect 做类型分支 → 已改为函数式 Options（`WithMaxClientCount` 等），去 reflect
+> - `zNet TcpServerSession.onClose` 被调用两次 → 已用 `sync.Once`（`closeOnce`）幂等收口
+> - `zMetrics` 与 `zNet` 未集成 → 已提供 `NetworkMetricsRecorder` 接口 + `WithServerMetrics` 注入
+> - `zEvent.Unsubscribe` 已实现（Subscribe 返回 SubscriptionID，按句柄退订）
+> - `zServer 与 zService 职责重叠`已解耦（zService 改为独立可选模块）
 
 ## 安装
 
