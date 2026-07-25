@@ -67,7 +67,16 @@ func (m *MetricsManager) RegisterCounterWithCategory(name, help string, category
 		ConstLabels: labels,
 	})
 
-	m.registry.MustRegister(counter)
+	// OPT-5: 用 Register（返错）而非 MustRegister（panic）。此前只查 m.counters，若同名已被
+	// gauge/histogram 注册则漏检、MustRegister 撞名 panic 崩进程。优雅降级：撞名时缓存并返回
+	// 未注册的本地计数器（可正常 Inc、只是不被 /metrics 抓取），不崩进程。
+	if err := m.registry.Register(counter); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok2 := are.ExistingCollector.(prometheus.Counter); ok2 {
+				counter = existing
+			}
+		}
+	}
 	m.counters[name] = counter
 
 	// 记录指标分类
@@ -105,7 +114,14 @@ func (m *MetricsManager) RegisterGaugeWithCategory(name, help string, category M
 		ConstLabels: labels,
 	})
 
-	m.registry.MustRegister(gauge)
+	// OPT-5: 同 counter，用 Register 优雅处理跨类型撞名，避免 MustRegister panic。
+	if err := m.registry.Register(gauge); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok2 := are.ExistingCollector.(prometheus.Gauge); ok2 {
+				gauge = existing
+			}
+		}
+	}
 	m.gauges[name] = gauge
 
 	// 记录指标分类
@@ -148,7 +164,14 @@ func (m *MetricsManager) RegisterHistogramWithCategory(name, help string, catego
 		ConstLabels: labels,
 	})
 
-	m.registry.MustRegister(histogram)
+	// OPT-5: 同 counter，用 Register 优雅处理跨类型撞名，避免 MustRegister panic。
+	if err := m.registry.Register(histogram); err != nil {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok2 := are.ExistingCollector.(prometheus.Histogram); ok2 {
+				histogram = existing
+			}
+		}
+	}
 	m.histograms[name] = histogram
 
 	// 记录指标分类

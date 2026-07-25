@@ -1,7 +1,9 @@
 package zLog
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap/zapcore"
@@ -15,8 +17,9 @@ type AsyncWriter struct {
 	stopChan      chan struct{}       // 停止信号通道
 	flushInterval time.Duration       // 刷新间隔
 	wg            sync.WaitGroup      // 等待组
-	mu            sync.Mutex          // 互斥锁
-	closed        bool                // 是否已关闭
+	mu            sync.Mutex          // 互斥锁（串行化对底层 writer 的写）
+	closed        atomic.Bool         // 是否已关闭（OPT-14：Write 热路径无锁检查）
+	dropped       atomic.Int64        // OPT-14：因缓冲满/已关闭而丢弃的日志条数
 }
 
 // NewAsyncWriter 创建一个新的异步写入器
@@ -91,6 +94,12 @@ func (aw *AsyncWriter) flushBuffer() {
 //   - n: 写入的字节数
 //   - error: 写入失败时返回错误
 func (aw *AsyncWriter) Write(p []byte) (n int, err error) {
+	// OPT-14: 关闭后拒收——run() 已退出，再往 buffer 发只会无人消费/静默丢失。计数并返回。
+	if aw.closed.Load() {
+		aw.dropped.Add(1)
+		return len(p), nil
+	}
+
 	data := make([]byte, len(p))
 	copy(data, p)
 
@@ -98,7 +107,9 @@ func (aw *AsyncWriter) Write(p []byte) (n int, err error) {
 	case aw.buffer <- data:
 		return len(p), nil
 	default:
-		aw.write(data)
+		// OPT-14: 缓冲满时不再同步直写——那样会插到仍排队在 buffer 里、尚未刷出的日志之前，
+		// 造成日志乱序。改为丢弃并计数（异步日志过载下丢弃优于乱序或阻塞业务），Close 时汇报。
+		aw.dropped.Add(1)
 		return len(p), nil
 	}
 }
@@ -125,16 +136,17 @@ func (aw *AsyncWriter) Flush() {
 // 返回:
 //   - error: 关闭失败时返回错误
 func (aw *AsyncWriter) Close() error {
-	aw.mu.Lock()
-	if aw.closed {
-		aw.mu.Unlock()
+	// OPT-14: 幂等关闭（CAS）。closed 置位后 Write 立即拒收，避免向无人消费的 buffer 发送。
+	if !aw.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	aw.closed = true
-	aw.mu.Unlock()
 
 	close(aw.stopChan)
 	aw.wg.Wait()
 	aw.flushBuffer()
+
+	if d := aw.dropped.Load(); d > 0 {
+		aw.write([]byte(fmt.Sprintf("[async-writer] dropped %d log messages (buffer full or closed)\n", d)))
+	}
 	return aw.writer.Sync()
 }

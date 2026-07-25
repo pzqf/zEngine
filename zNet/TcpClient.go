@@ -2,12 +2,17 @@ package zNet
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// ErrClientNotConnected 客户端未连接时发送返回的错误（OPT-11）。
+// 此前返回 net.ErrWriteToConnected（语义相反：那是"写到已连接的连接"）。
+var ErrClientNotConnected = errors.New("tcp client not connected")
 
 // ClientState 客户端连接状态
 type ClientState int
@@ -218,7 +223,7 @@ func (cli *TcpClient) handleDisconnect() {
 func (cli *TcpClient) Send(protoId ProtoIdType, data []byte) error {
 	s := cli.session.Load()
 	if s == nil {
-		return net.ErrWriteToConnected
+		return ErrClientNotConnected // OPT-11: 语义正确的"未连接"错误
 	}
 	return s.Send(protoId, data)
 }

@@ -60,6 +60,10 @@ func (s *BaseServer) Start() error {
 		return err
 	}
 
+	// OPT-11: 启动成功后置 isRunning=true。此前从无处 Store(true)→IsRunning() 恒 false，是个
+	// 永远返回假的死 API。现在与生命周期同步（Stop 里置 false）。
+	s.isRunning.Store(true)
+
 	if logger != nil {
 		logger.Info("%s Server started successfully!", serverType)
 	}
@@ -84,6 +88,9 @@ func (s *BaseServer) Stop() {
 	if err := s.SetState(StateDraining, "server stopping"); err != nil && logger != nil {
 		logger.Warn("Failed to set draining state", "error", err)
 	}
+
+	// OPT-11: 置 isRunning=false（与 Start 的 true 对称）。
+	s.isRunning.Store(false)
 
 	// 停止前的工作 - 调用子类实现
 	s.hooks.OnBeforeStop()
