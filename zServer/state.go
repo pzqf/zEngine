@@ -3,7 +3,6 @@ package zServer
 import (
 	"fmt"
 	"time"
-	"unsafe"
 )
 
 // ServerState 服务器生命周期状态
@@ -102,7 +101,7 @@ func (s *BaseServer) SetState(state ServerState, reason string) error {
 	}
 
 	// 通知所有监听器
-	s.stateListeners.Range(func(_ uintptr, listener StateChangeListener) bool {
+	s.stateListeners.Range(func(_ uint64, listener StateChangeListener) bool {
 		go listener(event) // 异步通知，避免阻塞
 		return true
 	})
@@ -113,17 +112,22 @@ func (s *BaseServer) SetState(state ServerState, reason string) error {
 	return nil
 }
 
-// AddStateChangeListener 添加状态变化监听器
-func (s *BaseServer) AddStateChangeListener(listener StateChangeListener) {
-	if listener != nil {
-		s.stateListeners.Store(uintptr(unsafe.Pointer(&listener)), listener)
+// AddStateChangeListener 添加状态变化监听器，返回用于移除的句柄（NET-7）。
+// 此前用 &listener（参数栈地址）作 key：Add 与 Remove 的地址不同→永远删不掉，且栈地址
+// 复用可能相互覆盖。改为自增句柄，稳定且可精确移除。
+func (s *BaseServer) AddStateChangeListener(listener StateChangeListener) uint64 {
+	if listener == nil {
+		return 0
 	}
+	handle := s.listenerSeq.Add(1)
+	s.stateListeners.Store(handle, listener)
+	return handle
 }
 
-// RemoveStateChangeListener 移除状态变化监听器
-func (s *BaseServer) RemoveStateChangeListener(listener StateChangeListener) {
-	if listener != nil {
-		s.stateListeners.Delete(uintptr(unsafe.Pointer(&listener)))
+// RemoveStateChangeListener 按 AddStateChangeListener 返回的句柄移除监听器。
+func (s *BaseServer) RemoveStateChangeListener(handle uint64) {
+	if handle != 0 {
+		s.stateListeners.Delete(handle)
 	}
 }
 

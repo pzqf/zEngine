@@ -22,7 +22,8 @@ type BaseServer struct {
 	isRunning      atomic.Bool
 	state          atomic.Value
 	components     *zMap.TypedMap[string, interface{}]
-	stateListeners *zMap.TypedMap[uintptr, StateChangeListener]
+	stateListeners *zMap.TypedMap[uint64, StateChangeListener]
+	listenerSeq    atomic.Uint64 // NET-7: 监听器句柄自增源，替代不可靠的栈地址作 key
 	startTime      time.Time
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -42,7 +43,7 @@ func NewBaseServer(serverType ServerType, serverId, serverName, version string, 
 		ServerName:     serverName,
 		ServerVersion:  version,
 		components:     zMap.NewTypedMap[string, interface{}](),
-		stateListeners: zMap.NewTypedMap[uintptr, StateChangeListener](),
+		stateListeners: zMap.NewTypedMap[uint64, StateChangeListener](),
 		startTime:      time.Now(),
 		ctx:            ctx,
 		cancel:         cancel,

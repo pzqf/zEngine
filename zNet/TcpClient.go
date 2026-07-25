@@ -123,7 +123,11 @@ func (cli *TcpClient) Connect() error {
 
 	s.Init(cli, conn, aesKey)
 	s.Start()
-	cli.session.Store(s) // 完成初始化+启动后再发布，避免暴露半初始化会话
+	// NET-8: 原子换入新会话并关闭旧会话——重复调用 Connect（如手动重连）若只 Store 不 Close
+	// 旧会话，旧会话的 goroutine 与底层 conn 会泄漏。
+	if old := cli.session.Swap(s); old != nil {
+		old.Close()
+	}
 	cli.setState(ClientStateConnected)
 	cli.reconnectCount = 0
 
