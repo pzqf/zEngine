@@ -120,12 +120,12 @@ func (svr *TcpServer) Start() error {
 		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
 	}
 
-	// 启动自动密钥轮换
+	// NET-6: 自动密钥轮换未完整实现——轮换只向客户端发新 KeyID、不下发新密钥材料（缺安全密钥
+	// 下发信道），一旦轮换服务端换新 key 而客户端仍持旧 key → 双方失配、加解密全乱。故暂不启用：
+	// 即便配置开启也只告警不启动，会话保持握手协商的稳定密钥。待实现安全再密钥（如 DH 再交换）恢复。
 	if svr.config.EnableKeyRotation && svr.config.KeyRotationInterval > 0 {
-		svr.StartAutoKeyRotation()
 		if svr.logger != nil {
-			svr.logger.Info("Auto key rotation started, interval=%v, max_history_keys=%d",
-				svr.config.KeyRotationInterval, svr.config.MaxHistoryKeys)
+			svr.logger.Warn("EnableKeyRotation is set but auto key rotation is NOT started: feature incomplete (no secure key delivery to clients would desync keys). Sessions keep the handshake key. See NET-6")
 		}
 	}
 

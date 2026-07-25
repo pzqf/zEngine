@@ -385,13 +385,12 @@ func (s *TcpClientSession) handleKeyRotationNotify(packet *NetPacket) {
 		return
 	}
 
-	// 这里需要从安全通道获取新密钥
-	// 简化处理：使用通知中的KeyID作为新密钥的标识
-	// 实际应用中应该通过安全通道协商新密钥
-	s.currentKeyID.Store(notify.KeyID)
-
+	// NET-6: 轮换通知只带新 KeyID、不含新密钥材料，客户端无从获取新密钥（缺安全密钥下发信道）。
+	// 若在此仅 Store(notify.KeyID) 会让 keyID 与实际持有的密钥失配 → 之后用错 key 加解密全乱。
+	// 故不应用该变更（保持握手协商的稳定密钥），仅告警。服务端亦已暂停自动轮换（见 TcpServer）。
+	// 待实现安全再密钥（如 DH 再交换下发新 key）后再恢复处理。
 	if s.cli.logger != nil {
-		s.cli.logger.Info("Key rotation notify received, new key ID: %d", notify.KeyID)
+		s.cli.logger.Warn("Key rotation notify ignored: feature unsupported (no secure key delivery), keeping current key. keyID=%d. See NET-6", notify.KeyID)
 	}
 }
 
