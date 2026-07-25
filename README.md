@@ -14,6 +14,18 @@ zEngine 是一个轻量级**分布式游戏服务器引擎框架**，采用 Go �
 - **易扩展**：清晰的接口设计，便于扩展新功能
 - **类型安全**：利用 Go 泛型提供类型安全的容器和工具
 
+### 适用范围
+
+**适合**：需要自建高并发长连接后端的场景——游戏服务器、实时对战/房间服务、IoT 网关、
+需要自定义二进制协议 + 加密 + 防重放的 TCP/UDP/WebSocket 服务。你想要"骨架 + 并发/网络/
+生命周期原语"，但自己掌控业务与协议。
+
+**不适合**：普通 Web/CRUD（用 Echo/Gin 等更省事）；开箱即用的成品游戏服务器（zEngine 只是引擎，
+不含玩法——需要成品参考见 [zMmoServer](https://github.com/pzqf/zMmoServer)）；对第三方依赖零容忍的场景
+（zEngine 依赖 etcd/zap 等；若只要纯工具且零依赖，用下层的 [zUtil](https://github.com/pzqf/zUtil)）。
+
+**定位**：`0.0.x`，接口仍可能调整；生产使用请自行压测与固化。架构全貌见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 技术栈
 
 | 类别 | 技术 |
@@ -45,6 +57,93 @@ zEngine/
 ├── zSignal/       # 信号处理 - 优雅退出
 └── zConfig/       # 配置管理 - ini/yaml 加载 + 热更新 watcher
 ```
+
+模块如何组合成一个进程、数据如何流动、并发与安全模型 —— 见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 快速开始
+
+```bash
+go get github.com/pzqf/zEngine
+```
+
+### 30 行起一个 TCP 回显服务器
+
+```go
+package main
+
+import "github.com/pzqf/zEngine/zNet"
+
+const ProtoEcho zNet.ProtoIdType = 1
+
+func main() {
+    svr := zNet.NewTcpServer(&zNet.TcpConfig{
+        ListenAddress:     "0.0.0.0:9000",
+        MaxClientCount:    10000,
+        ChanSize:          1024,
+        HeartbeatDuration: 30,
+        MaxPacketDataSize: 1 << 20,
+        DisableEncryption: true, // 示例简化；生产建议开 ECDH+AES
+    })
+    // 收到任意包即原样回显
+    svr.RegisterDispatcher(func(session zNet.Session, pkt *zNet.NetPacket) error {
+        return session.Send(pkt.ProtoId, pkt.Data)
+    })
+    if err := svr.Start(); err != nil {
+        panic(err)
+    }
+    select {} // 阻塞主 goroutine
+}
+```
+
+### 对应的客户端
+
+```go
+cli := zNet.NewTcpClient(&zNet.TcpClientConfig{
+    ServerAddr: "127.0.0.1", ServerPort: 9000,
+    HeartbeatDuration: 30, MaxPacketDataSize: 1 << 20,
+    DisableEncryption: true, ChanSize: 100,
+})
+cli.RegisterDispatcher(func(s zNet.Session, pkt *zNet.NetPacket) error {
+    fmt.Printf("收到回显: proto=%d data=%s\n", pkt.ProtoId, pkt.Data)
+    return nil
+})
+if err := cli.Connect(); err != nil { panic(err) }
+cli.Send(ProtoEcho, []byte("hello zEngine"))
+```
+
+### 用 zServer 托管完整生命周期
+
+真实服务器把网络、服务、状态机交给 `zServer.BaseServer` 统一管理：
+
+```go
+type GameServer struct {
+    *zServer.BaseServer
+    tcp *zNet.TcpServer
+}
+
+func (s *GameServer) OnBeforeStart() error {
+    s.tcp = zNet.NewTcpServer(cfg)
+    s.tcp.RegisterDispatcher(s.dispatch) // 按 ProtoId 分发；有状态逻辑投递给 Actor
+    return s.Initialize()                 // Starting → Initializing
+}
+func (s *GameServer) OnAfterStart() error {
+    if err := s.tcp.Start(); err != nil { return err }
+    if err := s.Ready(); err != nil { return err }
+    return s.Healthy()                    // Ready → Healthy
+}
+func (s *GameServer) OnBeforeStop() { /* 停监听 → 排空 → 关连接（优雅关闭） */ }
+
+func main() {
+    s := &GameServer{}
+    s.BaseServer = zServer.NewBaseServer(
+        zServer.ServerType("game"), "101", "GameServer", "0.0.1", s)
+    if err := s.Run(); err != nil { // 依次驱动 OnBeforeStart → OnAfterStart → 等待退出 → OnBeforeStop
+        panic(err)
+    }
+}
+```
+
+更完整的落地用例（四层分布式 MMORPG 服务端）见 [zMmoServer](https://github.com/pzqf/zMmoServer)。
 
 ## 核心模块
 
@@ -204,4 +303,4 @@ MIT License
 
 ---
 
-*最后更新: 2026-04-14*
+*最后更新: 2026-07-25*
