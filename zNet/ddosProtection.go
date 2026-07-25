@@ -39,10 +39,43 @@ func (r *ipRecord) addAndCheck(now time.Time, window time.Duration, maxCount int
 	return true
 }
 
+// cleanupIPRecords 移除 window 内已无有效记录的 IP 条目（INF-11）。此前 records 每见一个 IP 就
+// LoadOrStore 一个 *ipRecord 且从不删除→随独立 IP 数无界增长（ipRecord.times 会自裁剪但 map 条目常驻）。
+// best-effort：与并发 Allow 存在极小竞争（可能误删刚被重新填充的条目使该 IP 少量放宽），对空闲 IP 无害。
+func cleanupIPRecords(records *zMap.TypedMap[string, *ipRecord], now time.Time, window time.Duration) {
+	records.Range(func(ip string, r *ipRecord) bool {
+		r.mu.Lock()
+		empty := true
+		for _, t := range r.times {
+			if now.Sub(t) < window {
+				empty = false
+				break
+			}
+		}
+		r.mu.Unlock()
+		if empty {
+			records.Delete(ip)
+		}
+		return true
+	})
+}
+
+// maybeCleanupIPRecords 每过一个 window 至多清理一次（CAS 防并发重复清理），无需独立 goroutine/生命周期。
+func maybeCleanupIPRecords(records *zMap.TypedMap[string, *ipRecord], lastCleanup *atomic.Int64, window time.Duration) {
+	now := time.Now()
+	last := lastCleanup.Load()
+	if now.UnixNano()-last > window.Nanoseconds() {
+		if lastCleanup.CompareAndSwap(last, now.UnixNano()) {
+			cleanupIPRecords(records, now, window)
+		}
+	}
+}
+
 type ConnectionLimiter struct {
 	records      *zMap.TypedMap[string, *ipRecord]
 	maxConnPerIP int
 	timeWindow   time.Duration
+	lastCleanup  atomic.Int64
 }
 
 func NewConnectionLimiter(maxConnPerIP int, timeWindow time.Duration) *ConnectionLimiter {
@@ -54,6 +87,7 @@ func NewConnectionLimiter(maxConnPerIP int, timeWindow time.Duration) *Connectio
 }
 
 func (cl *ConnectionLimiter) AllowConnection(ip string) bool {
+	maybeCleanupIPRecords(cl.records, &cl.lastCleanup, cl.timeWindow) // INF-11
 	record, _ := cl.records.LoadOrStore(ip, newIPRecord())
 	return record.addAndCheck(time.Now(), cl.timeWindow, cl.maxConnPerIP)
 }
@@ -62,6 +96,7 @@ type PacketLimiter struct {
 	records         *zMap.TypedMap[string, *ipRecord]
 	maxPacketsPerIP int
 	timeWindow      time.Duration
+	lastCleanup     atomic.Int64
 }
 
 func NewPacketLimiter(maxPacketsPerIP int, timeWindow time.Duration) *PacketLimiter {
@@ -73,6 +108,7 @@ func NewPacketLimiter(maxPacketsPerIP int, timeWindow time.Duration) *PacketLimi
 }
 
 func (pl *PacketLimiter) AllowPacket(ip string) bool {
+	maybeCleanupIPRecords(pl.records, &pl.lastCleanup, pl.timeWindow) // INF-11
 	record, _ := pl.records.LoadOrStore(ip, newIPRecord())
 	return record.addAndCheck(time.Now(), pl.timeWindow, pl.maxPacketsPerIP)
 }
