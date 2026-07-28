@@ -176,7 +176,29 @@ func expressionEval(holder *ScriptHolder, e interface{}) interface{} {
 		}
 		return nil
 	case *ast.BinaryExpr:
-		// 二元表达式：先求值左右操作数，再执行运算
+		// 逻辑与/或**短路求值**：右侧多半是 IsCastingSpell() 这类会打到游戏世界的函数，
+		// 左侧已定胜负时不该再调它（既浪费也可能有副作用），语义也与 Go 保持一致。
+		if e.Op == token.LAND || e.Op == token.LOR {
+			x := expressionEval(holder, e.X)
+			xb, ok := x.(bool)
+			if !ok {
+				return nil
+			}
+			if e.Op == token.LAND && !xb {
+				return false
+			}
+			if e.Op == token.LOR && xb {
+				return true
+			}
+			y := expressionEval(holder, e.Y)
+			yb, ok := y.(bool)
+			if !ok {
+				return nil
+			}
+			return yb
+		}
+
+		// 其余二元运算：先求值左右操作数，再执行运算
 		x := expressionEval(holder, e.X)
 		y := expressionEval(holder, e.Y)
 		result := binaryExprEval(x, y, e.Op)
@@ -222,8 +244,8 @@ func functionCall(holder *ScriptHolder, funcName string, args []interface{}) int
 
 // binaryExprEval 二元表达式求值
 // 根据操作数类型和运算符执行相应的运算
-// 支持的类型: string, int, float64, uint8
-// 支持的运算符: +, -, *, /, %, &, |, ^, <<, >>, &^, ==, !=, <, >, <=, >=
+// 支持的类型: bool, string, int, float64, uint8
+// 支持的运算符: &&, ||, +, -, *, /, %, &, |, ^, <<, >>, &^, ==, !=, <, >, <=, >=
 // 参数:
 //   - x: 左操作数
 //   - y: 右操作数
@@ -237,6 +259,26 @@ func binaryExprEval(x, y interface{}, op token.Token) interface{} {
 	}
 
 	switch reflect.TypeOf(x).String() {
+	case "bool":
+		// 布尔类型运算。**必须有这一支**：条件边几乎全是 IsA() && !IsB() 这类布尔表达式
+		// （本包自带的 test.json 就满是 &&/||）。缺了它这些表达式一律求值为 nil，
+		// 于是所有复合条件边都走不通，且 nil 会一路传到调用方引发崩溃。
+		// 注：&&/|| 的短路在 expressionEval 里做（避免白调右侧的游戏函数），这里兜非短路调用方。
+		yb, ok := y.(bool)
+		if !ok {
+			return nil
+		}
+		switch op {
+		case token.LAND:
+			return x.(bool) && yb
+		case token.LOR:
+			return x.(bool) || yb
+		case token.EQL:
+			return x.(bool) == yb
+		case token.NEQ:
+			return x.(bool) != yb
+		}
+		return nil
 	case "string":
 		// 字符串类型运算
 		switch op {

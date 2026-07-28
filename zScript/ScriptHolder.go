@@ -2,7 +2,6 @@ package zScript
 
 import (
 	"errors"
-	"reflect"
 	"sync"
 )
 
@@ -71,7 +70,11 @@ func (sh *ScriptHolder) Update(deltaTime int) {
 
 		ret := expressionEval(sh, edge.Stmt.X)
 
-		if reflect.TypeOf(ret).String() == "bool" && ret.(bool) {
+		// 条件求值结果可能是 nil（不支持的表达式 / 函数返回 nil / 操作数类型不匹配）。
+		// 用类型断言而不是 reflect.TypeOf(ret).String()——后者在 ret 为 nil 时返回 nil *rtype，
+		// 再调 .String() 直接空指针崩溃（本包自带脚本第一次跑到复合条件边就会炸）。
+		// 条件求不出布尔真值 = 这条边不通，继续看下一条。
+		if b, ok := ret.(bool); ok && b {
 			newNodeId = edge.Target
 			break
 		}
