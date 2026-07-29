@@ -238,30 +238,43 @@ func (dp *DDoSProtection) AllowConnection(ip string) bool {
 	return true
 }
 
-func (dp *DDoSProtection) AllowPacket(ip string) bool {
+// AllowPacketFrom 包频率限制。
+//
+// subject = 限流**主体**，调用方应传**每连接唯一**的键（如 "ip#sid"）；ip 只用于查黑名单。
+// 超限时**只拒这一条连接的包，不再拉黑整个 IP**——原来的做法在 NAT/CGNAT 下是灾难：
+// 网吧/公司/运营商出口后面成千上万玩家共用一个 IP，任何一个人（甚至只是网络抖动导致的重传突发）
+// 越过阈值，整段 IP 就被封 24 小时，全部无辜玩家一起掉线且连不回来。
+// 连接洪水仍由 AllowConnection 按 IP 拦截并拉黑——那才是真正只能按 IP 判断的维度。
+func (dp *DDoSProtection) AllowPacketFrom(subject, ip string) bool {
+	if _, ok := dp.whitelist.Load(ip); ok {
+		return true
+	}
 	if dp.ipBlacklist.IsBlacklisted(ip) {
 		return false
 	}
-
-	if !dp.packetLimiter.AllowPacket(ip) {
-		dp.ipBlacklist.BlacklistIP(ip)
-		return false
-	}
-
-	return true
+	return dp.packetLimiter.AllowPacket(subject)
 }
 
-func (dp *DDoSProtection) AllowTraffic(ip string, bytes int64) bool {
+// AllowTrafficFrom 流量限制，语义同 AllowPacketFrom（按连接限，不拉黑 IP）。
+func (dp *DDoSProtection) AllowTrafficFrom(subject, ip string, bytes int64) bool {
+	if _, ok := dp.whitelist.Load(ip); ok {
+		return true
+	}
 	if dp.ipBlacklist.IsBlacklisted(ip) {
 		return false
 	}
+	return dp.trafficLimiter.AllowTraffic(subject, bytes)
+}
 
-	if !dp.trafficLimiter.AllowTraffic(ip, bytes) {
-		dp.ipBlacklist.BlacklistIP(ip)
-		return false
-	}
+// AllowPacket 无连接身份可用时（如 HTTP）的退化形式：主体即 IP。
+// 同样不再拉黑 IP，原因见 AllowPacketFrom。
+func (dp *DDoSProtection) AllowPacket(ip string) bool {
+	return dp.AllowPacketFrom(ip, ip)
+}
 
-	return true
+// AllowTraffic 无连接身份可用时的退化形式，语义同 AllowPacket。
+func (dp *DDoSProtection) AllowTraffic(ip string, bytes int64) bool {
+	return dp.AllowTrafficFrom(ip, ip, bytes)
 }
 
 func (dp *DDoSProtection) IsBlacklisted(ip string) bool {

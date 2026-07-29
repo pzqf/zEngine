@@ -71,12 +71,20 @@ type TcpClientConfig struct {
 
 // DDoSConfig DDoS保护配置
 // 定义DDoS防护的各项阈值参数
+//
+// ⚠ 统计维度不一样，看清楚再调：
+//   - MaxConnPerIP / BanDuration 是**按 IP** 的（建连时还没有任何会话身份，只能按 IP）。
+//     超限会拉黑该 IP —— 这是唯一会拉黑 IP 的路径。
+//   - MaxPacketsPerIP / MaxBytesPerIP 名字带 PerIP 是历史遗留，**实际按连接**计
+//     （见 DDoSProtection.AllowPacketFrom / AllowTrafficFrom，主体为 "ip#sid"）。
+//     超限只断那一条连接、**不拉黑 IP**：NAT/CGNAT 下同 IP 后面可能是成千上万无关玩家，
+//     按 IP 聚合会让一个人的突发把整段 IP 的人一起封掉。配置键名未改以免破坏既有 ini。
 type DDoSConfig struct {
 	MaxConnPerIP      int      `toml:"max_conn_per_ip" json:"max_conn_per_ip"`
 	ConnTimeWindow    int      `toml:"conn_time_window" json:"conn_time_window"`
-	MaxPacketsPerIP   int      `toml:"max_packets_per_ip" json:"max_packets_per_ip"`
+	MaxPacketsPerIP   int      `toml:"max_packets_per_ip" json:"max_packets_per_ip"` // 实为每连接
 	PacketTimeWindow  int      `toml:"packet_time_window" json:"packet_time_window"`
-	MaxBytesPerIP     int64    `toml:"max_bytes_per_ip" json:"max_bytes_per_ip"`
+	MaxBytesPerIP     int64    `toml:"max_bytes_per_ip" json:"max_bytes_per_ip"` // 实为每连接
 	TrafficTimeWindow int      `toml:"traffic_time_window" json:"traffic_time_window"`
 	BanDuration       int      `toml:"ban_duration" json:"ban_duration"`
 	WhitelistIPs      []string `toml:"whitelist_ips" json:"whitelist_ips"`

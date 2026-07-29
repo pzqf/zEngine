@@ -178,6 +178,10 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 
 	headBuf := make([]byte, NetPacketHeadSize)
 	clientIP := s.conn.RemoteAddr().(*net.TCPAddr).IP.String()
+	// ddosSubject: 包/流量限流的主体 = **本条连接**（IP+会话号）。
+	// 不用裸 IP：NAT/CGNAT 下同 IP 后面是大量互不相干的玩家，按 IP 聚合会让一个人的突发
+	// 把整段 IP 的人一起限掉（原实现还会顺手拉黑 IP 24 小时）。连接洪水另有 AllowConnection 按 IP 管。
+	ddosSubject := fmt.Sprintf("%s#%d", clientIP, s.sid)
 	for {
 		if ctx.Err() != nil {
 			break
@@ -199,10 +203,11 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			break
 		}
 
-		// 检查流量是否超过限制（DDoS防护）
-		if !s.svr.ddosProtection.AllowTraffic(clientIP, int64(n)) {
+		// 检查流量是否超过限制（DDoS防护）。按**连接**限流：超限只断这一条连接，
+		// 不牵连同 IP 的其他玩家（NAT/CGNAT 下同 IP 后面可能是成千上万无关玩家）。
+		if !s.svr.ddosProtection.AllowTrafficFrom(ddosSubject, clientIP, int64(n)) {
 			if s.svr.logger != nil {
-				s.svr.logger.Warn("Traffic limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
+				s.svr.logger.Warn("Traffic limit exceeded, ip: %s, sid: %d", clientIP, s.sid)
 			}
 			break
 		}
@@ -238,19 +243,19 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 				break
 			}
 
-			// 检查流量是否超过限制
-			if !s.svr.ddosProtection.AllowTraffic(clientIP, int64(n)) {
+			// 检查流量是否超过限制（按连接，同上）
+			if !s.svr.ddosProtection.AllowTrafficFrom(ddosSubject, clientIP, int64(n)) {
 				if s.svr.logger != nil {
-					s.svr.logger.Warn("Traffic limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
+					s.svr.logger.Warn("Traffic limit exceeded, ip: %s, sid: %d", clientIP, s.sid)
 				}
 				break
 			}
 		}
 
-		// 检查数据包频率是否超过限制
-		if !s.svr.ddosProtection.AllowPacket(clientIP) {
+		// 检查数据包频率是否超过限制（按连接，同上）
+		if !s.svr.ddosProtection.AllowPacketFrom(ddosSubject, clientIP) {
 			if s.svr.logger != nil {
-				s.svr.logger.Warn("Packet rate limit exceeded from IP: %s, sid: %d", clientIP, s.sid)
+				s.svr.logger.Warn("Packet rate limit exceeded, ip: %s, sid: %d", clientIP, s.sid)
 			}
 			break
 		}
