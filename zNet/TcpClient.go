@@ -3,6 +3,7 @@ package zNet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -90,21 +91,42 @@ func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
 // 返回:
 //   - error: 连接失败时返回错误
 func (cli *TcpClient) Connect() error {
+	return cli.connect(context.Background())
+}
+
+// ConnectContext establishes the initial TCP session within the caller's
+// deadline. Context cancellation covers both dialing and the optional key
+// exchange; a canceled handshake never publishes a partial session.
+func (cli *TcpClient) ConnectContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("tcp client connect: nil context")
+	}
+	return cli.connect(ctx)
+}
+
+func (cli *TcpClient) connect(ctx context.Context) error {
 	if cli.packetCodecErr != nil {
 		return cli.packetCodecErr
 	}
-	cli.setState(ClientStateConnecting)
-
-	tcpAddr, err := net.ResolveTCPAddr("tcp", cli.config.ServerAddr+":"+strconv.Itoa(cli.config.ServerPort))
-	if err != nil {
-		cli.setState(ClientStateDisconnected)
+	if err := ctx.Err(); err != nil {
 		return err
 	}
+	cli.setState(ClientStateConnecting)
 
-	conn, err := net.DialTCP("tcp", nil, tcpAddr)
+	endpoint := net.JoinHostPort(cli.config.ServerAddr, strconv.Itoa(cli.config.ServerPort))
+	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", endpoint)
 	if err != nil {
 		cli.setState(ClientStateDisconnected)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
+	}
+	conn, ok := rawConn.(*net.TCPConn)
+	if !ok {
+		_ = rawConn.Close()
+		cli.setState(ClientStateDisconnected)
+		return fmt.Errorf("tcp client connect: unexpected connection type %T", rawConn)
 	}
 
 	s := &TcpClientSession{}
@@ -113,11 +135,31 @@ func (cli *TcpClient) Connect() error {
 
 	// 检查是否禁用加密
 	if !cli.config.DisableEncryption {
-		// 带握手超时，防对端不配合（如两端加密配置不一致）导致永久阻塞
-		aesKey, err = PerformKeyExchangeWithDeadline(conn, DefaultKeyExchangeTimeout)
+		// Context cancellation closes conn to interrupt both reads and writes.
+		// The existing handshake timeout remains the upper bound when the caller
+		// supplies a longer deadline or no deadline.
+		contextCloseDone := make(chan struct{})
+		stopContextClose := context.AfterFunc(ctx, func() {
+			_ = conn.Close()
+			close(contextCloseDone)
+		})
+		handshakeTimeout := DefaultKeyExchangeTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining < handshakeTimeout {
+				handshakeTimeout = remaining
+			}
+		}
+		aesKey, err = PerformKeyExchangeWithDeadline(conn, handshakeTimeout)
+		if !stopContextClose() {
+			<-contextCloseDone
+		}
 		if err != nil {
-			conn.Close()
+			_ = conn.Close()
 			cli.setState(ClientStateDisconnected)
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return err
 		}
 
@@ -128,6 +170,11 @@ func (cli *TcpClient) Connect() error {
 		if cli.logger != nil {
 			cli.logger.Info("Encryption disabled, skipping key exchange")
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		_ = conn.Close()
+		cli.setState(ClientStateDisconnected)
+		return err
 	}
 
 	s.Init(cli, conn, aesKey)
