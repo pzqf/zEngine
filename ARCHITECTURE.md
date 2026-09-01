@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.18
+**文档版本**：0.0.19
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -69,7 +69,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 | **zHealth** | liveness/readiness/diagnostics 通用 probe 与不可变快照；支持 timeout、CacheTTL、LastSuccess、panic 隔离和单 in-flight，空集合/未执行/占位检查保持 Unknown。旧 checker API 复用同一模型；具体“可接流量”策略由应用注入。 |
 | **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 可取消、可释放的 OS signal-to-context 桥接；不定义业务排空，不注册不可捕获的 SIGKILL。 |
-| **zDistributed** | 基于官方 etcd Session/Mutex 的 fenced 排他锁：Acquire 返回只读 LockHandle，lease/owner key 丢失会失效；Release compare-delete，create revision 提供单调 fence，Validate/GuardedTxn 可原子校验受保护 etcd 写入。retry 可取消，shared 明确 unsupported；旧 Lock/Unlock 仅作 advisory 兼容。当前无 zMmoServer 生产调用。 |
+| **zDistributed** | fenced 排他锁与不透明 resource 的 OwnershipStore：显式 handle 随 lease/owner key 丢失而失效；owner token + lease + create/mod revision 提供 compare-delete、单调 fence、显式 handoff、Get/Watch 与 guarded etcd 写入。旧 Lock/Unlock 仅作 advisory 兼容。zMmoServer 服务实例注册已真实接线，业务 resource/state 仍留上层。 |
 | **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格三阶段/三态、显式终结、重试/dead-letter 和 fail-closed；`SQLExecutor` 允许 store 绑定 DB/Tx，业务提交点和事务 ownership 仍在上层。真实 MySQL E3 与 zMmoServer grant 生产调用已通过。`InMemoryTransactionCoordinator` 只是一致加锁、锁外回调的 experimental 单进程原语，当前无生产构造，不承诺 durable/recovery 或传输 exactly-once；旧 `TransactionManager` 仅作兼容。 |
 
 ### 可复用游戏领域原语（可选）
@@ -174,9 +174,10 @@ Client                                             Server
 
 - **服务发现**：zEngine 依赖 etcd 客户端；具体的注册/发现封装通常放在业务侧（如 zMmoServer 的
   `discovery` 包统一 etcd 接入），zEngine 侧提供 `zDistributed` 分布式锁作协调原语。
-- **ownership/fencing**：`FencedLock` 返回 owner/lease/fence handle，旧 lease 失效后 compare-delete 和
-  guarded transaction 都不能越过新 owner。它只提供 game-agnostic 机制；resource key、业务 owner 状态机、
-  epoch 持久化及非 etcd 存储如何拒绝旧 fence 仍由上层 `OWN-01` 定义。当前 zMmoServer 无生产接线。
+- **ownership/fencing**：`FencedLock` 和 `OwnershipStore` 返回 owner/lease/fence handle，旧 lease 失效后
+  compare-delete、renew 和 guarded transaction 都不能越过新 owner；Get/Watch 提供值化、单调 revision
+  快照与断线恢复。zMmoServer 已将其接到四角色服务实例注册，但 resource kind/ID、服务状态、迁移/排空
+  工作流及非 etcd 存储如何拒绝旧 fence 仍由上层定义。
 - **一致性存储**：V2 Outbox 把持久入队、传输完成和业务应用分开，调用者按自身 ACK 契约显式终结；
   V2 Inbox 把首次接受、处理中和已处理分开，存储失败不默认接受。内置 Memory/SQL 共享相同状态契约并已
   通过并发/重启测试；SQL store 可绑定调用者的 DB/Tx executor 参与本地事务。旧 API 与
@@ -199,7 +200,7 @@ Client                                             Server
 | 加一个进程级组件 | `BaseServer.RegisterComponent` |
 | 加指标 | zMetrics `Register*Checked` 注册 Counter/Gauge/Histogram，并处理 schema 错误 |
 | 加健康检查 | zHealth `RegisterProbe` 声明 scope/timeout/cache；应用层决定哪些依赖阻断 readiness |
-| 加分布式协调 | zDistributed `FencedLock.Acquire` + `LockHandle`；etcd 写入用 `GuardedTxn`，业务 ownership 状态和存储 fence 留上层 |
+| 加分布式协调 | 单个锁用 `FencedLock`；具名资源用 `OwnershipStore`；etcd 写入用 `GuardedTxn`，业务 resource/state 和非 etcd fence 留上层 |
 
 ---
 
@@ -210,6 +211,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.19 | 完成 OWN-01：记录 OwnershipStore 的 owner/lease/ModRevision epoch、显式 CAS handoff、Get/Watch 恢复与 guarded write，并由 zMmoServer 服务实例注册验证；业务状态机和滚动兼容仍留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：记录 zServer 启动事务/资源栈/幂等停止/after-stop/Wait/signal，zService DAG 回滚与错误聚合、zSignal 可取消桥接，以及四角色真实资源 E4/E5；业务疏散仍归 DRN-01。 |
 | 2026-09-01 | 0.0.17 | 完成 HLT-01：记录统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight、Unknown/只读 GC 和 zServer provider 边界；四角色策略与真实故障恢复留在并已由 zMmoServer 验证。 |
 | 2026-09-01 | 0.0.16 | 完成 CON-03：记录进程内 experimental 事务协调器的准确命名、并发状态机、旧 API 兼容及无 durable/生产接线边界。 |

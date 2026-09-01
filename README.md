@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.18
+**文档版本**：0.0.19
 
 ## 项目概述
 
@@ -305,20 +305,23 @@ zService 仍是可选组件 DAG，不嵌入 zServer。zMmoServer 只用 Gateway 
 
 ### zDistributed - 分布式锁与协调原语
 
-基于 etcd 官方 `concurrency.Session/Mutex` 的排他 ownership 原语。`FencedLock.Acquire` 返回只读
-`LockHandle`（resource key、唯一 owner key、LeaseID、以 create revision 表示的 FencingToken）；lease 或
-owner key 丢失会使 handle 失效。`Release` 以 owner/fence/lease compare-delete，旧 handle 不能删除新 owner；
-`Validate` 和 `GuardedTxn` 可把 ownership compare 放进同一 etcd 事务。获取 context 只约束获取过程，
-不偷走已取得 lease 的生命周期；retry 有确定次数和可取消等待。
+基于 etcd 的排他 ownership 原语。`FencedLock` 保留官方 `concurrency.Session/Mutex` 基座；
+`OwnershipStore` 则按应用提供的不透明 resource key 执行 `Acquire/Renew/Release/Get/Watch`，返回只读
+`OwnershipHandle`（owner token、LeaseID、以 owner key `ModRevision` 表示的 epoch/revision）。两者都以
+owner/fence/lease compare-delete，旧 handle 不能删除新 owner；`Validate` 和 `GuardedTxn` 可把 ownership
+compare 放进同一 etcd 事务。获取 context 只约束获取过程，不偷走已取得 lease 的生命周期。
 
 旧 `DistributedLock.Lock/Unlock` 保留兼容，但因不能把 fencing token 传给受保护写入，只能视为 advisory。
 `LockTypeShared` 明确返回 unsupported，watchdog 不再静默重获新 fence。上述机制已通过真实 etcd 的 lease
-丢失、旧 owner 攻击、client 重连/自然过期和并发 `-race`；zMmoServer 生产调用仍为零，resource key、
-owner 状态机和业务存储 fence 接线属于 `OWN-01`，不能从包级 E3 外推为业务 ownership 闭环。
+丢失、旧 owner 攻击、client 重连/自然过期、watch 恢复和并发 `-race`。zMmoServer 已用
+`OwnershipStore` 保护四角色服务实例注册；`service-instance` key、`ServerInfo` 和状态策略仍在 zCommon。
+活动分配、迁移、排空、非 etcd 存储 fence 与混合旧版本兼容不由这条接线证明。
 
 **关键类型**：
 - `FencedLock` / `EtcdLock` - 显式 handle 的 fenced 排他锁
 - `LockHandle` - owner/lease/fencing 身份与失效通知
+- `OwnershipStore` / `EtcdOwnershipStore` - 不透明 resource 的 acquire/renew/release/get/watch
+- `OwnershipHandle` - owner token、lease、epoch/revision 与失效通知
 - `GuardedTxn` - 与 ownership compare 原子组合的 etcd 写入
 - `LockManager` - 锁管理器
 - `DistributedLock` / `LockWithAutoRenew` - deprecated/advisory 兼容入口
@@ -448,6 +451,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.19 | 完成 OWN-01：新增不透明 resource 的 OwnershipStore、ModRevision epoch/revision、owner+lease+revision CAS、watch 恢复，并由 zMmoServer 四角色服务实例注册真实接线验证；业务状态机继续留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：zServer 增加命名资源栈、启动失败回滚、并发幂等停止、完整 Wait/after-stop 和 signal 释放；zService 固化 DAG 回滚/聚合错误，zSignal 提供可取消桥接，并由四角色真实生命周期 E4/E5 验证。 |
 | 2026-09-01 | 0.0.17 | 完成 HLT-01：统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight 与兼容 API；空集合/占位检查不再假 Healthy，GC 改为只读，并由四进程真实依赖故障恢复验证。 |
 | 2026-09-01 | 0.0.16 | 完成 CON-03：通用 2PC 裁决为 experimental `InMemoryTransactionCoordinator`，修复并发状态转换并保留旧名兼容；无 durable/recovery 或生产接线承诺。 |
