@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.15
+**文档版本**：0.0.16
 
 ## 项目概述
 
@@ -27,7 +27,8 @@ zEngine 是一个轻量级**分布式游戏服务器引擎框架**，采用 Go �
 （zEngine 依赖 etcd/zap 等；若只要纯工具且零依赖，用下层的 [zUtil](https://github.com/pzqf/zUtil)）。
 
 **定位**：`0.0.x`，接口仍可能调整；生产使用请自行压测与固化。架构全貌见 [ARCHITECTURE.md](ARCHITECTURE.md)，
-引擎与上层游戏业务的归属规则见 [层次边界与演进原则.md](docs/层次边界与演进原则.md)。
+引擎与上层游戏业务的归属规则见 [层次边界与演进原则.md](docs/层次边界与演进原则.md)。通用事务协调
+边界见 [ADR-001：进程内事务协调器](docs/ADR-001-进程内事务协调器.md)。
 
 **能力口径**：下文“支持”表示包或 API 当前存在，不等于 zMmoServer 已生产接线，也不等于饱和、部分失败、
 重启和滚动升级已经通过验证。当前成熟度和加固任务以 zMmoServer 的架构审计基线与执行计划为准。
@@ -329,8 +330,10 @@ SQL store 可通过 `SQLExecutor` 绑定 `*sql.DB` 或调用者持有的 `*sql.T
 已把 Inbox 去重、资产写入和 `MarkProcessed` 同事务提交，并让 Game/Map 可靠角色启动时强制 SQL store。
 
 这些机制只承诺“至少一次投递 + 幂等效果”，不承诺跨进程 exactly-once。业务 ACK、路由、资产事务和
-恢复状态机继续留在上层；其它业务路径仍须分别证明事务与恢复，Map 普通请求也仍没有响应缓存。单进程
-2PC 没有持久日志或跨进程 fencing，仍是 experimental，归 `CON-03` 决策。
+恢复状态机继续留在上层；其它业务路径仍须分别证明事务与恢复，Map 普通请求也仍没有响应缓存。
+`InMemoryTransactionCoordinator` 是无持久日志的 experimental 单进程原语，只提供原子状态转换、锁外
+participant callback 和并发安全 snapshot；旧 `TransactionManager` 名称仅作 deprecated 源兼容。当前没有
+生产构造，它不提供跨进程 fencing、重启恢复或 exactly-once，迁移仍须使用持久领域状态机。
 
 ### zHealth - 健康检查原语
 
@@ -430,6 +433,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.16 | 完成 CON-03：通用 2PC 裁决为 experimental `InMemoryTransactionCoordinator`，修复并发状态转换并保留旧名兼容；无 durable/recovery 或生产接线承诺。 |
 | 2026-09-01 | 0.0.15 | 完成 CON-02：SQL Outbox/Inbox 可绑定 DB/Tx executor 参与调用者本地事务，zMmoServer grant 生产链和真实 MySQL E3 已验证；业务 ACK/提交点仍留上层。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：增加 context/error V2 API、严格 Outbox 三阶段与显式终结、Inbox 三态/fail-closed、旧 API 兼容；Memory/SQL 并发与真实 MySQL 重启 E3 通过，事务原子性仍归 CON-02。 |
 | 2026-09-01 | 0.0.13 | 完成 LOCK-01 引擎机制：官方 etcd session/mutex、只读 LockHandle、compare-delete、单调 fencing、guarded transaction、确定性 retry 和 lease/reconnect E3；zMmoServer 业务 ownership 仍待 OWN-01。 |

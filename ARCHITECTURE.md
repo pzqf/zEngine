@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.15
+**文档版本**：0.0.16
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -70,7 +70,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 | **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 进程信号处理，驱动优雅退出。 |
 | **zDistributed** | 基于官方 etcd Session/Mutex 的 fenced 排他锁：Acquire 返回只读 LockHandle，lease/owner key 丢失会失效；Release compare-delete，create revision 提供单调 fence，Validate/GuardedTxn 可原子校验受保护 etcd 写入。retry 可取消，shared 明确 unsupported；旧 Lock/Unlock 仅作 advisory 兼容。当前无 zMmoServer 生产调用。 |
-| **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格三阶段/三态、显式终结、重试/dead-letter 和 fail-closed；`SQLExecutor` 允许 store 绑定 DB/Tx，业务提交点和事务 ownership 仍在上层。真实 MySQL 重启/并发/commit/rollback E3 与 zMmoServer grant 生产调用已通过；不承诺传输 exactly-once，内存 2PC 仍为 experimental。 |
+| **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格三阶段/三态、显式终结、重试/dead-letter 和 fail-closed；`SQLExecutor` 允许 store 绑定 DB/Tx，业务提交点和事务 ownership 仍在上层。真实 MySQL E3 与 zMmoServer grant 生产调用已通过。`InMemoryTransactionCoordinator` 只是一致加锁、锁外回调的 experimental 单进程原语，当前无生产构造，不承诺 durable/recovery 或传输 exactly-once；旧 `TransactionManager` 仅作兼容。 |
 
 ### 可复用游戏领域原语（可选）
 | 模块 | 职责 |
@@ -210,6 +210,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.16 | 完成 CON-03：记录进程内 experimental 事务协调器的准确命名、并发状态机、旧 API 兼容及无 durable/生产接线边界。 |
 | 2026-09-01 | 0.0.15 | 完成 CON-02：记录 SQL store 的 DB/Tx executor 事务参与边界及 zMmoServer grant 生产验证；引擎不拥有业务事务、ACK 或恢复策略。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：记录 V2 context/error、Outbox 严格三阶段/显式终结、Inbox 三态/fail-closed 和真实 MySQL 并发/重启 E3；事务原子性、上层 ACK 和 experimental 2PC 边界不变。 |
 | 2026-09-01 | 0.0.13 | 完成 LOCK-01：记录 fenced handle、compare-delete、释放竞态、lease/owner 失效、guarded etcd 写入和真实重连 E3；业务 owner 状态机仍留 zMmoServer。 |
