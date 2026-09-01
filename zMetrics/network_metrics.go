@@ -10,21 +10,33 @@ type NetworkMetrics struct {
 	totalConnections   atomic.Int64
 	droppedConnections atomic.Int64
 
-	avgLatencyNano     atomic.Int64
-	maxLatencyNano     atomic.Int64
-	minLatencyNano     atomic.Int64
-	totalLatencyNano   atomic.Int64
-	latencySamples     atomic.Int64
+	avgLatencyNano   atomic.Int64
+	maxLatencyNano   atomic.Int64
+	minLatencyNano   atomic.Int64
+	totalLatencyNano atomic.Int64
+	latencySamples   atomic.Int64
 
 	totalBytesSent       atomic.Int64
 	totalBytesReceived   atomic.Int64
 	totalPacketsSent     atomic.Int64
 	totalPacketsReceived atomic.Int64
 
-	encodingErrors    atomic.Int64
-	decodingErrors    atomic.Int64
-	compressionErrors atomic.Int64
-	droppedPackets    atomic.Int64
+	encodingErrors              atomic.Int64
+	decodingErrors              atomic.Int64
+	compressionErrors           atomic.Int64
+	droppedPackets              atomic.Int64
+	wirePacketOversizeErrors    atomic.Int64
+	decodedPacketOversizeErrors atomic.Int64
+	decryptErrors               atomic.Int64
+	decompressErrors            atomic.Int64
+	sendQueueCapacity           atomic.Int64
+	sendQueueDepth              atomic.Int64
+	latestFrameDropped          atomic.Int64
+	bestEffortEventRejected     atomic.Int64
+	reliableCommandRejected     atomic.Int64
+	sendQueueWaitNano           atomic.Int64
+	workerQueueRejected         atomic.Int64
+	workerQueueWaitNano         atomic.Int64
 
 	lastSampleTime atomic.Int64
 }
@@ -95,12 +107,60 @@ func (m *NetworkMetrics) IncDecodingErrors() {
 	m.decodingErrors.Add(1)
 }
 
+func (m *NetworkMetrics) IncWirePacketOversizeErrors() {
+	m.wirePacketOversizeErrors.Add(1)
+}
+
+func (m *NetworkMetrics) IncDecodedPacketOversizeErrors() {
+	m.decodedPacketOversizeErrors.Add(1)
+}
+
+func (m *NetworkMetrics) IncDecryptErrors() {
+	m.decryptErrors.Add(1)
+}
+
+func (m *NetworkMetrics) IncDecompressErrors() {
+	m.decompressErrors.Add(1)
+}
+
 func (m *NetworkMetrics) IncCompressionErrors() {
 	m.compressionErrors.Add(1)
 }
 
 func (m *NetworkMetrics) IncDroppedPackets() {
 	m.droppedPackets.Add(1)
+}
+
+func (m *NetworkMetrics) AddSendQueueCapacity(delta int) {
+	m.sendQueueCapacity.Add(int64(delta))
+}
+
+func (m *NetworkMetrics) AddSendQueueDepth(delta int) {
+	m.sendQueueDepth.Add(int64(delta))
+}
+
+func (m *NetworkMetrics) IncLatestFrameDropped() {
+	m.latestFrameDropped.Add(1)
+}
+
+func (m *NetworkMetrics) IncBestEffortEventRejected() {
+	m.bestEffortEventRejected.Add(1)
+}
+
+func (m *NetworkMetrics) IncReliableCommandRejected() {
+	m.reliableCommandRejected.Add(1)
+}
+
+func (m *NetworkMetrics) RecordSendQueueWait(duration time.Duration) {
+	m.sendQueueWaitNano.Add(int64(duration))
+}
+
+func (m *NetworkMetrics) IncWorkerQueueRejected() {
+	m.workerQueueRejected.Add(1)
+}
+
+func (m *NetworkMetrics) RecordWorkerQueueWait(duration time.Duration) {
+	m.workerQueueWaitNano.Add(int64(duration))
 }
 
 func (m *NetworkMetrics) GetActiveConnections() int {
@@ -151,12 +211,45 @@ func (m *NetworkMetrics) GetDecodingErrors() int64 {
 	return m.decodingErrors.Load()
 }
 
+func (m *NetworkMetrics) GetWirePacketOversizeErrors() int64 {
+	return m.wirePacketOversizeErrors.Load()
+}
+
+func (m *NetworkMetrics) GetDecodedPacketOversizeErrors() int64 {
+	return m.decodedPacketOversizeErrors.Load()
+}
+
+func (m *NetworkMetrics) GetDecryptErrors() int64 {
+	return m.decryptErrors.Load()
+}
+
+func (m *NetworkMetrics) GetDecompressErrors() int64 {
+	return m.decompressErrors.Load()
+}
+
 func (m *NetworkMetrics) GetCompressionErrors() int64 {
 	return m.compressionErrors.Load()
 }
 
 func (m *NetworkMetrics) GetDroppedPackets() int64 {
 	return m.droppedPackets.Load()
+}
+
+func (m *NetworkMetrics) GetSendQueueCapacity() int64  { return m.sendQueueCapacity.Load() }
+func (m *NetworkMetrics) GetSendQueueDepth() int64     { return m.sendQueueDepth.Load() }
+func (m *NetworkMetrics) GetLatestFrameDropped() int64 { return m.latestFrameDropped.Load() }
+func (m *NetworkMetrics) GetBestEffortEventRejected() int64 {
+	return m.bestEffortEventRejected.Load()
+}
+func (m *NetworkMetrics) GetReliableCommandRejected() int64 {
+	return m.reliableCommandRejected.Load()
+}
+func (m *NetworkMetrics) GetSendQueueWait() time.Duration {
+	return time.Duration(m.sendQueueWaitNano.Load())
+}
+func (m *NetworkMetrics) GetWorkerQueueRejected() int64 { return m.workerQueueRejected.Load() }
+func (m *NetworkMetrics) GetWorkerQueueWait() time.Duration {
+	return time.Duration(m.workerQueueWaitNano.Load())
 }
 
 func (m *NetworkMetrics) Reset() {
@@ -176,5 +269,17 @@ func (m *NetworkMetrics) Reset() {
 	m.decodingErrors.Store(0)
 	m.compressionErrors.Store(0)
 	m.droppedPackets.Store(0)
+	m.wirePacketOversizeErrors.Store(0)
+	m.decodedPacketOversizeErrors.Store(0)
+	m.decryptErrors.Store(0)
+	m.decompressErrors.Store(0)
+	m.sendQueueCapacity.Store(0)
+	m.sendQueueDepth.Store(0)
+	m.latestFrameDropped.Store(0)
+	m.bestEffortEventRejected.Store(0)
+	m.reliableCommandRejected.Store(0)
+	m.sendQueueWaitNano.Store(0)
+	m.workerQueueRejected.Store(0)
+	m.workerQueueWaitNano.Store(0)
 	m.lastSampleTime.Store(time.Now().UnixNano())
 }

@@ -1,13 +1,262 @@
 package zConsistency
 
 import (
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
+
+func TestSQLStoresV2_StateContractAcrossRestart(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	suffix := time.Now().UnixNano()
+	outboxTable := fmt.Sprintf("test_outbox_v2_%d", suffix)
+	inboxTable := fmt.Sprintf("test_inbox_v2_%d", suffix)
+	defer db.Exec("DROP TABLE IF EXISTS " + outboxTable)
+	defer db.Exec("DROP TABLE IF EXISTS " + inboxTable)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	outbox := NewSQLOutbox(db, WithSQLOutboxTable(outboxTable), WithSQLRetryBackoff(time.Millisecond))
+	inbox := NewSQLInbox(db, inboxTable)
+	if err := outbox.EnsureOutboxSchemaContext(ctx); err != nil {
+		t.Fatalf("EnsureOutboxSchemaContext() error = %v", err)
+	}
+	if err := inbox.EnsureInboxSchemaContext(ctx); err != nil {
+		t.Fatalf("EnsureInboxSchemaContext() error = %v", err)
+	}
+
+	const outboxID = uint64(300001)
+	if err := outbox.Enqueue(ctx, OutboxMessage{RequestID: outboxID, Topic: "v2", Payload: []byte("payload")}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	assertSQLV2OutboxState(t, ctx, outbox, outboxID, OutboxStateEnqueued)
+	if err := outbox.MarkApplied(ctx, outboxID); !errors.Is(err, ErrInvalidConsistencyTransition) {
+		t.Fatalf("MarkApplied(enqueued) error = %v, want ErrInvalidConsistencyTransition", err)
+	}
+	if err := outbox.MarkTransported(ctx, outboxID); err != nil {
+		t.Fatalf("MarkTransported() error = %v", err)
+	}
+	assertSQLV2OutboxState(t, ctx, NewSQLOutbox(db, WithSQLOutboxTable(outboxTable)), outboxID, OutboxStateTransported)
+	if err := outbox.MarkApplied(ctx, outboxID); err != nil {
+		t.Fatalf("MarkApplied() error = %v", err)
+	}
+	assertSQLV2OutboxState(t, ctx, outbox, outboxID, OutboxStateApplied)
+	if err := outbox.Complete(ctx, outboxID, OutboxStateApplied); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if _, err := outbox.Get(ctx, outboxID); !errors.Is(err, ErrConsistencyEntryNotFound) {
+		t.Fatalf("Get() after Complete error = %v, want ErrConsistencyEntryNotFound", err)
+	}
+
+	const inboxID = uint64(400001)
+	if result, err := inbox.Acquire(ctx, inboxID); err != nil || result != InboxAccepted {
+		t.Fatalf("first Acquire() = (%v, %v), want (InboxAccepted, nil)", result, err)
+	}
+	if result, err := inbox.Acquire(ctx, inboxID); err != nil || result != InboxInProgress {
+		t.Fatalf("second Acquire() = (%v, %v), want (InboxInProgress, nil)", result, err)
+	}
+	if err := inbox.MarkProcessed(ctx, inboxID); err != nil {
+		t.Fatalf("MarkProcessed() error = %v", err)
+	}
+	restartedInbox := NewSQLInbox(db, inboxTable)
+	if result, err := restartedInbox.Acquire(ctx, inboxID); err != nil || result != InboxProcessed {
+		t.Fatalf("Acquire() after restart = (%v, %v), want (InboxProcessed, nil)", result, err)
+	}
+	if err := restartedInbox.Abandon(ctx, inboxID); !errors.Is(err, ErrInvalidConsistencyTransition) {
+		t.Fatalf("Abandon(processed) error = %v, want ErrInvalidConsistencyTransition", err)
+	}
+
+	const retryID = uint64(400002)
+	if result, err := inbox.Acquire(ctx, retryID); err != nil || result != InboxAccepted {
+		t.Fatalf("Acquire(retry) = (%v, %v)", result, err)
+	}
+	if err := inbox.Abandon(ctx, retryID); err != nil {
+		t.Fatalf("Abandon(retry) error = %v", err)
+	}
+	if result, err := inbox.Acquire(ctx, retryID); err != nil || result != InboxAccepted {
+		t.Fatalf("Acquire(after abandon) = (%v, %v), want (InboxAccepted, nil)", result, err)
+	}
+}
+
+func TestSQLStoresV2_ConcurrentTransitionsHaveStableResults(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	suffix := time.Now().UnixNano()
+	outboxTable := fmt.Sprintf("test_outbox_v2_concurrent_%d", suffix)
+	inboxTable := fmt.Sprintf("test_inbox_v2_concurrent_%d", suffix)
+	defer db.Exec("DROP TABLE IF EXISTS " + outboxTable)
+	defer db.Exec("DROP TABLE IF EXISTS " + inboxTable)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	outbox := NewSQLOutbox(db, WithSQLOutboxTable(outboxTable), WithSQLRetryBackoff(time.Millisecond))
+	inbox := NewSQLInbox(db, inboxTable)
+	if err := outbox.EnsureOutboxSchemaContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := inbox.EnsureInboxSchemaContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const idempotentOutboxID = uint64(310001)
+	if err := outbox.Enqueue(ctx, OutboxMessage{RequestID: idempotentOutboxID}); err != nil {
+		t.Fatal(err)
+	}
+	assertConcurrentErrors(t, 32, func() error {
+		return outbox.MarkTransported(ctx, idempotentOutboxID)
+	}, nil)
+	assertConcurrentErrors(t, 32, func() error {
+		return outbox.MarkApplied(ctx, idempotentOutboxID)
+	}, nil)
+	assertSQLV2OutboxState(t, ctx, outbox, idempotentOutboxID, OutboxStateApplied)
+
+	const competingOutboxID = uint64(310002)
+	if err := outbox.Enqueue(ctx, OutboxMessage{RequestID: competingOutboxID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.MarkTransported(ctx, competingOutboxID); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errorsByOperation := make(chan error, 32)
+	var wg sync.WaitGroup
+	for index := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if index == 0 {
+				errorsByOperation <- outbox.MarkApplied(ctx, competingOutboxID)
+				return
+			}
+			errorsByOperation <- outbox.RecordAttempt(ctx, competingOutboxID, errors.New("retry"))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errorsByOperation)
+	for err := range errorsByOperation {
+		if err != nil && !errors.Is(err, ErrInvalidConsistencyTransition) {
+			t.Fatalf("competing outbox transition error = %v, want nil or ErrInvalidConsistencyTransition", err)
+		}
+	}
+
+	const inboxID = uint64(410001)
+	results := make(chan InboxAcceptResult, 64)
+	operationErrors := make(chan error, 64)
+	start = make(chan struct{})
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := inbox.Acquire(ctx, inboxID)
+			results <- result
+			operationErrors <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(operationErrors)
+	accepted, inProgress := 0, 0
+	for result := range results {
+		switch result {
+		case InboxAccepted:
+			accepted++
+		case InboxInProgress:
+			inProgress++
+		default:
+			t.Fatalf("concurrent Acquire() result = %v", result)
+		}
+	}
+	for err := range operationErrors {
+		if err != nil {
+			t.Fatalf("concurrent Acquire() error = %v", err)
+		}
+	}
+	if accepted != 1 || inProgress != 63 {
+		t.Fatalf("concurrent Acquire() states = accepted:%d in-progress:%d, want 1/63", accepted, inProgress)
+	}
+
+	const finalizationID = uint64(410002)
+	if result, err := inbox.Acquire(ctx, finalizationID); err != nil || result != InboxAccepted {
+		t.Fatalf("Acquire(finalization) = (%v, %v)", result, err)
+	}
+	start = make(chan struct{})
+	finalizationErrors := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		finalizationErrors <- inbox.MarkProcessed(ctx, finalizationID)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		finalizationErrors <- inbox.Abandon(ctx, finalizationID)
+	}()
+	close(start)
+	wg.Wait()
+	close(finalizationErrors)
+	succeeded := 0
+	for err := range finalizationErrors {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		if !errors.Is(err, ErrInvalidConsistencyTransition) && !errors.Is(err, ErrConsistencyEntryNotFound) {
+			t.Fatalf("competing inbox finalization error = %v", err)
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("competing inbox finalizations succeeded = %d, want 1", succeeded)
+	}
+}
+
+func assertConcurrentErrors(t *testing.T, count int, operation func() error, want error) {
+	t.Helper()
+	start := make(chan struct{})
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- operation()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, want) {
+			t.Fatalf("concurrent operation error = %v, want %v", err, want)
+		}
+	}
+}
+
+func assertSQLV2OutboxState(t *testing.T, ctx context.Context, outbox *SQLOutbox, requestID uint64, want OutboxState) {
+	t.Helper()
+	message, err := outbox.Get(ctx, requestID)
+	if err != nil {
+		t.Fatalf("Get(%d) error = %v", requestID, err)
+	}
+	if message.State != want {
+		t.Fatalf("Get(%d).State = %v, want %v", requestID, message.State, want)
+	}
+}
 
 // openTestDB 打开测试用 MySQL。未设置 ZMMO_TEST_MYSQL_DSN 则跳过（CI 无需 DB）。
 // DSN 示例：root:123456@tcp(192.168.251.134:3306)/global?parseTime=true&loc=Local

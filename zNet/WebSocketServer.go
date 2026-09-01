@@ -25,12 +25,16 @@ type WebSocketServer struct {
 	logger           Logger
 	// 防DDoS相关
 	ddosProtection *DDoSProtection
+	packetCodec    PacketCodec
+	packetCodecErr error
+	metrics        NetworkMetricsRecorder
 }
 
 func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer {
 	if cfg.ChanSize <= 0 {
 		cfg.ChanSize = DefaultChanSize
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
 
 	svr := &WebSocketServer{
 		clientSIDAtomic:  10000,
@@ -48,11 +52,16 @@ func NewWebSocketServer(cfg *WebSocketConfig, opts ...Options) *WebSocketServer 
 	for _, opt := range opts {
 		opt(svr)
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
+	svr.packetCodec, svr.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
 
 	return svr
 }
 
 func (svr *WebSocketServer) Start() error {
+	if svr.packetCodecErr != nil {
+		return svr.packetCodecErr
+	}
 	http.HandleFunc("/ws", svr.handleWebSocket)
 
 	svr.wg.Add(1)

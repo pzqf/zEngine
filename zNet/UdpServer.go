@@ -22,12 +22,17 @@ type UdpServer struct {
 	logger           Logger
 	// 防DDoS相关
 	ddosProtection *DDoSProtection
+	packetCodec    PacketCodec
+	packetCodecErr error
+	metrics        NetworkMetricsRecorder
+	writeMu        sync.Mutex
 }
 
 func NewUdpServer(cfg *UdpConfig, opts ...Options) *UdpServer {
 	if cfg.ChanSize <= 0 {
 		cfg.ChanSize = DefaultChanSize
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
 
 	svr := &UdpServer{
 		clientSIDAtomic:  10000,
@@ -40,11 +45,16 @@ func NewUdpServer(cfg *UdpConfig, opts ...Options) *UdpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
+	svr.packetCodec, svr.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
 
 	return svr
 }
 
 func (svr *UdpServer) Start() error {
+	if svr.packetCodecErr != nil {
+		return svr.packetCodecErr
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp4", svr.config.ListenAddress)
 	if err != nil {
 		if svr.logger != nil {
@@ -80,8 +90,12 @@ func (svr *UdpServer) Start() error {
 				break
 			}
 
-			// 处理收到的数据包
-			go svr.handleUdpPacket(addr, buffer[:n])
+			// ReadFromUDP 的 buffer 会在下一轮复用，DecodeFrame 的 Data 又引用输入切片，
+			// 因此入 session 队列前必须复制。解析按到达顺序同步完成；业务仍由 session.process
+			// goroutine 执行，避免 per-packet goroutine 并发修改握手/心跳状态和无界堆积。
+			packetData := append([]byte(nil), buffer[:n]...)
+			addrCopy := *addr
+			svr.handleUdpPacket(&addrCopy, packetData)
 		}
 	}()
 

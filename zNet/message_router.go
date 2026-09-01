@@ -1,71 +1,139 @@
 package zNet
 
 import (
-	"github.com/pzqf/zUtil/zMap"
+	"errors"
+	"fmt"
+	"sync"
 )
 
-// MessageRouter 按协议 ID（ProtoId）分派消息的路由表。
-//
-// 背景（成熟化改造 Phase 1.1.1）：zNet 的 Server/Client 只提供单个
-// RegisterDispatcher(HandlerFun)，协议分派需业务自行 switch(protoId)。
-// MessageRouter 提供开箱即用的 protoId→handler 注册表，其 Dispatch 方法本身即
-// 一个 HandlerFun，可直接注册到任意 Server/Client：
-//
-//	router := zNet.NewMessageRouter()
-//	router.RegisterHandler(1001, onLogin).
-//	       RegisterHandler(1002, onMove).
-//	       SetFallback(onUnknown)
-//	server.RegisterDispatcher(router.Dispatch)
-//
-// 纯附加能力，不改变现有 dispatcher 行为。并发安全（基于 zMap.TypedMap）。
+var (
+	ErrHandlerAlreadyRegistered = errors.New("message handler already registered")
+	ErrMessageRouterSealed      = errors.New("message router is sealed")
+	ErrNilMessageHandler        = errors.New("message handler is nil")
+)
+
+// MessageRouter 按 ProtoId 分派消息。构造阶段使用严格注册 API，装配完成后调用 Seal，运行期 Dispatch
+// 只读稳定路由表。handler 与 fallback 始终在锁外执行。
 type MessageRouter struct {
-	handlers *zMap.TypedMap[int32, HandlerFun]
+	mu       sync.RWMutex
+	handlers map[int32]HandlerFun
 	fallback HandlerFun
+	sealed   bool
 }
 
-// NewMessageRouter 创建空的消息路由表。
+// NewMessageRouter 创建空路由表。
 func NewMessageRouter() *MessageRouter {
-	return &MessageRouter{
-		handlers: zMap.NewTypedMap[int32, HandlerFun](),
-	}
+	return &MessageRouter{handlers: make(map[int32]HandlerFun)}
 }
 
-// RegisterHandler 注册某协议 ID 的处理函数（重复注册以最后一次为准）。返回自身以支持链式调用。
-func (r *MessageRouter) RegisterHandler(protoId int32, h HandlerFun) *MessageRouter {
-	if h != nil {
-		r.handlers.Store(protoId, h)
+// TryRegisterHandler 严格注册 handler。重复 ProtoId 不允许静默覆盖。
+func (r *MessageRouter) TryRegisterHandler(protoID int32, handler HandlerFun) error {
+	if handler == nil {
+		return ErrNilMessageHandler
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sealed {
+		return ErrMessageRouterSealed
+	}
+	if r.handlers == nil {
+		r.handlers = make(map[int32]HandlerFun)
+	}
+	if _, exists := r.handlers[protoID]; exists {
+		return fmt.Errorf("%w: %d", ErrHandlerAlreadyRegistered, protoID)
+	}
+	r.handlers[protoID] = handler
+	return nil
+}
+
+// RegisterHandler 保留旧链式 API，在未 seal 时维持 last-wins 兼容语义。
+// 新代码应使用 TryRegisterHandler 取得重复注册错误。
+// Deprecated: use TryRegisterHandler.
+func (r *MessageRouter) RegisterHandler(protoID int32, handler HandlerFun) *MessageRouter {
+	if handler == nil {
+		return r
+	}
+	r.mu.Lock()
+	if !r.sealed {
+		if r.handlers == nil {
+			r.handlers = make(map[int32]HandlerFun)
+		}
+		r.handlers[protoID] = handler
+	}
+	r.mu.Unlock()
 	return r
 }
 
-// UnregisterHandler 移除某协议 ID 的处理函数。
-func (r *MessageRouter) UnregisterHandler(protoId int32) {
-	r.handlers.Delete(protoId)
+// TryUnregisterHandler 在构造阶段移除 handler。
+func (r *MessageRouter) TryUnregisterHandler(protoID int32) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sealed {
+		return ErrMessageRouterSealed
+	}
+	delete(r.handlers, protoID)
+	return nil
 }
 
-// SetFallback 设置兜底处理函数：收到未注册协议 ID 时调用。返回自身以支持链式调用。
-func (r *MessageRouter) SetFallback(h HandlerFun) *MessageRouter {
-	r.fallback = h
+// UnregisterHandler 保留旧 API。seal 后不再修改路由表。
+// Deprecated: use TryUnregisterHandler.
+func (r *MessageRouter) UnregisterHandler(protoID int32) {
+	_ = r.TryUnregisterHandler(protoID)
+}
+
+// TrySetFallback 设置或清除 fallback。与 Dispatch 并发安全。
+func (r *MessageRouter) TrySetFallback(handler HandlerFun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sealed {
+		return ErrMessageRouterSealed
+	}
+	r.fallback = handler
+	return nil
+}
+
+// SetFallback 保留旧链式 API。seal 后不再修改 fallback。
+// Deprecated: use TrySetFallback.
+func (r *MessageRouter) SetFallback(handler HandlerFun) *MessageRouter {
+	_ = r.TrySetFallback(handler)
 	return r
 }
 
-// HasHandler 判断某协议 ID 是否已注册处理函数。
-func (r *MessageRouter) HasHandler(protoId int32) bool {
-	_, ok := r.handlers.Load(protoId)
-	return ok
+// Seal 冻结路由表。重复调用幂等。
+func (r *MessageRouter) Seal() {
+	r.mu.Lock()
+	r.sealed = true
+	r.mu.Unlock()
 }
 
-// Dispatch 是一个 HandlerFun：按 packet.ProtoId 查表分派；未命中则走 fallback（若已设），
-// 否则返回 nil（丢弃未知消息，交由使用方决定是否设 fallback 记录/告警）。
+// IsSealed 返回路由表是否已冻结。
+func (r *MessageRouter) IsSealed() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sealed
+}
+
+// HasHandler 判断是否已注册。
+func (r *MessageRouter) HasHandler(protoID int32) bool {
+	r.mu.RLock()
+	_, exists := r.handlers[protoID]
+	r.mu.RUnlock()
+	return exists
+}
+
+// Dispatch 锁内只取 handler 快照，锁外执行上层代码。
 func (r *MessageRouter) Dispatch(session Session, packet *NetPacket) error {
 	if packet == nil {
 		return nil
 	}
-	if h, ok := r.handlers.Load(int32(packet.ProtoId)); ok {
-		return h(session, packet)
+	r.mu.RLock()
+	handler := r.handlers[int32(packet.ProtoId)]
+	if handler == nil {
+		handler = r.fallback
 	}
-	if r.fallback != nil {
-		return r.fallback(session, packet)
+	r.mu.RUnlock()
+	if handler == nil {
+		return nil
 	}
-	return nil
+	return handler(session, packet)
 }

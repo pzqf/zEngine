@@ -24,11 +24,11 @@ type MemoryStats struct {
 }
 
 type AlertConfig struct {
-	HeapAllocThreshold  uint64
-	GoroutineThreshold  int
-	GCCountThreshold    uint32
-	CheckInterval       time.Duration
-	AlertCooldown       time.Duration
+	HeapAllocThreshold uint64
+	GoroutineThreshold int
+	GCCountThreshold   uint32
+	CheckInterval      time.Duration
+	AlertCooldown      time.Duration
 }
 
 func DefaultAlertConfig() AlertConfig {
@@ -60,8 +60,11 @@ type AlertHandler func(alert Alert)
 
 type MemoryMonitor struct {
 	config      AlertConfig
-	running     atomic.Bool
+	lifecycleMu sync.Mutex
+	running     bool
+	stopCh      chan struct{}
 	wg          sync.WaitGroup
+	handlersMu  sync.RWMutex
 	handlers    []AlertHandler
 	lastAlert   sync.Map
 	history     []MemoryStats
@@ -84,6 +87,11 @@ func NewMemoryMonitor(config AlertConfig) *MemoryMonitor {
 }
 
 func (mm *MemoryMonitor) OnAlert(handler AlertHandler) {
+	if handler == nil {
+		return
+	}
+	mm.handlersMu.Lock()
+	defer mm.handlersMu.Unlock()
 	mm.handlers = append(mm.handlers, handler)
 }
 
@@ -134,7 +142,11 @@ func (mm *MemoryMonitor) fireAlert(alert Alert) {
 
 	mm.lastAlert.Store(alert.Type, alert.Timestamp)
 
-	for _, handler := range mm.handlers {
+	mm.handlersMu.RLock()
+	handlers := append([]AlertHandler(nil), mm.handlers...)
+	mm.handlersMu.RUnlock()
+
+	for _, handler := range handlers {
 		func(h AlertHandler) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -165,19 +177,27 @@ func (mm *MemoryMonitor) History() []MemoryStats {
 }
 
 func (mm *MemoryMonitor) Start() {
-	if !mm.running.CompareAndSwap(false, true) {
+	mm.lifecycleMu.Lock()
+	if mm.running {
+		mm.lifecycleMu.Unlock()
 		return
 	}
+	mm.running = true
+	mm.stopCh = make(chan struct{})
+	stopCh := mm.stopCh
 
 	mm.wg.Add(1)
+	mm.lifecycleMu.Unlock()
 	go func() {
 		defer mm.wg.Done()
 
 		ticker := time.NewTicker(mm.config.CheckInterval)
 		defer ticker.Stop()
 
-		for mm.running.Load() {
+		for {
 			select {
+			case <-stopCh:
+				return
 			case <-ticker.C:
 				stats := mm.Collect()
 				mm.recordHistory(stats)
@@ -193,10 +213,15 @@ func (mm *MemoryMonitor) Start() {
 }
 
 func (mm *MemoryMonitor) Stop() {
-	if !mm.running.CompareAndSwap(true, false) {
+	mm.lifecycleMu.Lock()
+	if !mm.running {
+		mm.lifecycleMu.Unlock()
 		return
 	}
+	mm.running = false
+	close(mm.stopCh)
 	mm.wg.Wait()
+	mm.lifecycleMu.Unlock()
 	zLog.Info("Memory monitor stopped")
 }
 

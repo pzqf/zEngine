@@ -3,7 +3,6 @@ package zNet
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -12,18 +11,20 @@ import (
 )
 
 type WebSocketServerSession struct {
-	conn          *websocket.Conn
-	sid           SessionIdType
-	sendChan      chan *NetPacket
-	receiveChan   chan *NetPacket
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	onClose       WebSocketCloseCallBackFunc
-	closeOnce     sync.Once
-	aesKey        []byte
-	svr           *WebSocketServer
-	obj           interface{}
+	conn              *websocket.Conn
+	sid               SessionIdType
+	sendQueue         *outboundQueue
+	receiveChan       chan *NetPacket
+	wg                sync.WaitGroup
+	lastHeartBeat     time.Time
+	ctxCancel         context.CancelFunc
+	onClose           WebSocketCloseCallBackFunc
+	closeOnce         sync.Once
+	aesKey            []byte
+	svr               *WebSocketServer
+	obj               interface{}
+	packetCodec       PacketCodec
+	invalidPacketLogs packetErrorLogLimiter
 }
 
 type WebSocketCloseCallBackFunc func(c *WebSocketServerSession)
@@ -40,12 +41,13 @@ func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid S
 	newSession := WebSocketServerSession{
 		conn:          conn,
 		sid:           sid,
-		sendChan:      make(chan *NetPacket, svr.config.ChanSize),
+		sendQueue:     newOutboundQueue(svr.config.ChanSize, backpressureMetrics(svr.metrics)),
 		receiveChan:   make(chan *NetPacket, svr.config.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       closeCallBack,
 		aesKey:        aesKey,
 		svr:           svr,
+		packetCodec:   svr.packetCodec,
 	}
 	return &newSession
 }
@@ -53,6 +55,9 @@ func NewWebSocketServerSession(svr *WebSocketServer, conn *websocket.Conn, sid S
 func (s *WebSocketServerSession) Start() {
 	if s.conn == nil {
 		return
+	}
+	if maxSize := s.svr.config.MaxWirePacketSize; maxSize > 0 {
+		s.conn.SetReadLimit(int64(NetPacketHeadSize) + int64(maxSize))
 	}
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
@@ -70,7 +75,10 @@ func (s *WebSocketServerSession) Start() {
 }
 
 func (s *WebSocketServerSession) Close() {
-	s.ctxCancel()
+	s.sendQueue.Close(ErrSessionClosed)
+	if s.ctxCancel != nil {
+		s.ctxCancel()
+	}
 	s.wg.Wait()
 }
 
@@ -99,36 +107,12 @@ func (s *WebSocketServerSession) receive(ctx context.Context) {
 			break
 		}
 
-		// 解析数据包
-		if len(data) < NetPacketHeadSize {
-			if s.svr.logger != nil {
-				s.svr.logger.Error("WebSocket packet too small: %d bytes", len(data))
-			}
-			continue
-		}
-
-		netPacket := NetPacket{}
-		if err := netPacket.UnmarshalHead(data[:NetPacketHeadSize]); err != nil {
-			if s.svr.logger != nil {
-				s.svr.logger.Error("WebSocket packet unmarshal head error: %v", err)
-			}
-			continue
-		}
-
-		if netPacket.DataSize > 0 {
-			dataSize := int(netPacket.DataSize)
-			if len(data) < NetPacketHeadSize+dataSize {
-				if s.svr.logger != nil {
-					s.svr.logger.Error("WebSocket packet data size mismatch: expected %d, got %d", dataSize, len(data)-NetPacketHeadSize)
-				}
-				continue
-			}
-			netPacket.Data = data[NetPacketHeadSize : NetPacketHeadSize+dataSize]
-		}
-
-		if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-			if s.svr.logger != nil {
-				s.svr.logger.Warn("WebSocket packet data size over max size: %d, max: %d", netPacket.DataSize, s.svr.config.MaxPacketDataSize)
+		// WebSocket 消息保留帧边界：非法帧只丢当前消息。
+		netPacket, decodeErr := s.packetCodec.DecodeFrame(data, s.svr.config.MaxWirePacketSize)
+		if decodeErr != nil {
+			recordPacketDecodeError(s.svr.metrics, decodeErr)
+			if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.svr.logger.Error("Invalid WebSocket packet: %v", decodeErr)
 			}
 			continue
 		}
@@ -154,6 +138,20 @@ func (s *WebSocketServerSession) dispatchSafely(receivePacket *NetPacket) {
 	}
 }
 
+func (s *WebSocketServerSession) processReceivedPacket(receivePacket *NetPacket) {
+	encrypted := len(receivePacket.Data) > 0 && s.aesKey != nil
+	if err := decodePacketPayload(receivePacket, s.aesKey, encrypted, s.svr.config.MaxDecodedPacketSize); err != nil {
+		recordPacketDecodeError(s.svr.metrics, err)
+		if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+			s.svr.logger.Error("Decode WebSocket payload error: %v, sid:%d", err, s.sid)
+		}
+		return
+	}
+	if s.svr.dispatcher != nil {
+		s.dispatchSafely(receivePacket)
+	}
+}
+
 func (s *WebSocketServerSession) process(ctx context.Context) {
 	defer s.wg.Done()
 	defer func() {
@@ -168,49 +166,36 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 	for {
 		select {
 		case receivePacket := <-s.receiveChan:
-			if receivePacket.DataSize > 0 && s.aesKey != nil {
-				// 使用GCM模式解密
-				plaintext, err := zCrypto.AESDecrypt(receivePacket.Data, s.aesKey, nil, zCrypto.AESModeGCM)
-				if err != nil {
-					if s.svr.logger != nil {
-						s.svr.logger.Error("AESDecrypt error: %v", err)
-					}
-					continue
-				}
-				receivePacket.Data = plaintext
-			}
-			if s.svr.dispatcher != nil {
-				// NET-4: 单个包的 dispatcher 报错/panic 不能拆掉整条会话（原来 return 会终止 process
-				// goroutine→会话停摆）。就地隔离：记录并继续处理后续包（与 TCP 会话同类修复）。
-				s.dispatchSafely(receivePacket)
-			}
+			s.processReceivedPacket(receivePacket)
 
-		case sendPacket := <-s.sendChan:
-			_, err := s.send(sendPacket)
+		case <-s.sendQueue.Ready():
+			sendPacket, ok := s.sendQueue.TryDequeue()
+			if !ok {
+				continue
+			}
+			_, err := s.sendOutbound(sendPacket)
 			if err != nil {
 				if s.svr.logger != nil {
-					s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+					s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.packet.ProtoId)
 				}
 			}
 		case <-ctx.Done():
 			for {
 				if len(s.receiveChan) > 0 {
 					receivePacket := <-s.receiveChan
-					if s.svr.dispatcher != nil {
-						s.dispatchSafely(receivePacket)
-					}
+					s.processReceivedPacket(receivePacket)
 
 					continue
 				}
 				break
 			}
+			s.sendQueue.Close(ErrSessionClosed)
 			for {
-				if len(s.sendChan) > 0 {
-					sendPacket := <-s.sendChan
-					_, err := s.send(sendPacket)
+				if sendPacket, ok := s.sendQueue.TryDequeue(); ok {
+					_, err := s.sendOutbound(sendPacket)
 					if err != nil {
 						if s.svr.logger != nil {
-							s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+							s.svr.logger.Error("Send WebSocket packet error:%v, ProtoId:%d", err, sendPacket.packet.ProtoId)
 						}
 						break
 					}
@@ -235,6 +220,29 @@ func (s *WebSocketServerSession) process(ctx context.Context) {
 }
 
 func (s *WebSocketServerSession) Send(protoId ProtoIdType, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *WebSocketServerSession) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *WebSocketServerSession) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	ctx, cancel := normalizeSendContext(ctx, DefaultSendTimeout)
+	defer cancel()
+	if options.Class == LatestFrame && options.CoalesceKey == 0 {
+		options.CoalesceKey = uint64(uint32(protoId))
+	}
+	netPacket, err := s.buildOutboundPacket(protoId, data)
+	if err != nil {
+		return err
+	}
+	return s.sendQueue.Enqueue(ctx, &outboundPacket{packet: netPacket, deadline: outboundDeadline(ctx)}, options)
+}
+
+func (s *WebSocketServerSession) buildOutboundPacket(protoId ProtoIdType, data []byte) (*NetPacket, error) {
 	netPacket := NetPacket{
 		ProtoId: protoId,
 	}
@@ -244,34 +252,37 @@ func (s *WebSocketServerSession) Send(protoId ProtoIdType, data []byte) error {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("AESEncrypt error: %v", err)
 			}
-			return err
+			return nil, err
 		}
 		netPacket.Data = encryptedData
 	} else {
-		netPacket.Data = data
+		netPacket.Data = append([]byte(nil), data...)
 	}
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
+	if err := ValidatePacketHeader(&netPacket, s.svr.config.MaxWirePacketSize); err != nil {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Send WebSocket packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
+			s.svr.logger.Error("Send WebSocket packet illegal: %v", err)
 		}
-		return errors.New("send WebSocket packet illegal")
+		return nil, err
 	}
-	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-		if s.svr.logger != nil {
-			s.svr.logger.Error("Send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-				netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
-		}
-		return fmt.Errorf("send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
-	}
+	return &netPacket, nil
+}
 
-	s.sendChan <- &netPacket
-	return nil
+func (s *WebSocketServerSession) sendOutbound(outbound *outboundPacket) (int, error) {
+	if outbound == nil || outbound.packet == nil {
+		return 0, errors.New("nil outbound packet")
+	}
+	if !outbound.deadline.IsZero() {
+		if err := s.conn.SetWriteDeadline(outbound.deadline); err != nil {
+			return 0, err
+		}
+		defer s.conn.SetWriteDeadline(time.Time{})
+	}
+	return s.send(outbound.packet)
 }
 
 func (s *WebSocketServerSession) send(netPacket *NetPacket) (int, error) {
-	data := netPacket.Marshal()
+	data := s.packetCodec.Marshal(netPacket)
 	err := s.conn.WriteMessage(websocket.BinaryMessage, data)
 	if err != nil {
 		if s.svr.logger != nil {

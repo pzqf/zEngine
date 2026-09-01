@@ -2,43 +2,40 @@ package zNet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pzqf/zEngine/zLog"
-	"github.com/pzqf/zUtil/zMap"
 	"go.uber.org/zap"
 )
 
-// RequestRouter 是一个通用的「异步请求-响应关联器」：把「无状态发送 + 异步到达的响应」缝合成
-// 一次同步的请求-响应调用（Call）。零业务语义——任何「发出去一个带 requestID 的请求、稍后由另一
-// 条路径把响应按 requestID 送回来」的场景都能用（跨进程 RPC / 跨服消息 / 设备回执 等）。
-//
-// 用法：
-//
-//	reqID := rr.NextRequestID()
-//	data, err := rr.SendRequest(ctx, reqID, func() error { return conn.Send(encode(reqID, req)) })
-//	// 另一条 goroutine 收到响应时：rr.CompleteRequest(reqID, respData, nil)
-//
-// 需由外部周期调用 Cleanup() 清理超时未回的挂起请求（否则超时的 pending 项会积累）。
-//
-// 从 zMmoServer/crossserver 下沉——此前每个上层各自实现这套关联逻辑，现统一为引擎能力。
+var (
+	ErrDuplicateRequestID  = errors.New("request ID is already pending")
+	ErrRequestRouterClosed = errors.New("request router is closed")
+	ErrRequestExpired      = errors.New("request expired")
+)
+
+// RequestRouter 把异步响应按 requestID 关联回等待中的调用。它只提供通用关联和生命周期机制，
+// 不定义 requestID 的业务生成规则或远端成功语义。
 type RequestRouter struct {
-	pending   *zMap.TypedMap[uint64, *PendingResponse]
-	nextReqID atomic.Uint64
-	timeout   time.Duration
-	cleanupMu sync.Mutex
+	mu         sync.Mutex
+	pending    map[uint64]*PendingResponse
+	nextReqID  atomic.Uint64
+	timeout    time.Duration
+	closed     bool
+	closeCause error
 }
 
-// PendingResponse 一个挂起中的请求：响应到达时经 ch 送回，deadline 供 Cleanup 判超时。
+// PendingResponse 一个挂起中的请求。
 type PendingResponse struct {
 	ch       chan *ResponseResult
 	deadline time.Time
 }
 
-// ResponseResult 一次请求的结果（成功携带 Data，失败携带 Error）。
+// ResponseResult 一次请求的结果。
 type ResponseResult struct {
 	Data  []byte
 	Error error
@@ -50,7 +47,7 @@ func NewRequestRouter(timeout time.Duration) *RequestRouter {
 		timeout = 10 * time.Second
 	}
 	return &RequestRouter{
-		pending: zMap.NewTypedMap[uint64, *PendingResponse](),
+		pending: make(map[uint64]*PendingResponse),
 		timeout: timeout,
 	}
 }
@@ -60,40 +57,79 @@ func (rr *RequestRouter) NextRequestID() uint64 {
 	return rr.nextReqID.Add(1)
 }
 
-// RegisterPending 登记一个挂起请求并返回接收响应的 channel（缓冲 1，单发一收）。
-func (rr *RequestRouter) RegisterPending(requestID uint64) <-chan *ResponseResult {
-	ch := make(chan *ResponseResult, 1)
-	rr.pending.Store(requestID, &PendingResponse{
-		ch:       ch,
+// TryRegisterPending 严格登记挂起请求。重复 ID 不覆盖旧等待者；关闭后拒绝新请求。
+func (rr *RequestRouter) TryRegisterPending(requestID uint64) (<-chan *ResponseResult, error) {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	if rr.closed {
+		return nil, rr.closedError()
+	}
+	if _, exists := rr.pending[requestID]; exists {
+		return nil, fmt.Errorf("%w: %d", ErrDuplicateRequestID, requestID)
+	}
+	pending := &PendingResponse{
+		ch:       make(chan *ResponseResult, 1),
 		deadline: time.Now().Add(rr.timeout),
-	})
-	return ch
+	}
+	rr.pending[requestID] = pending
+	return pending.ch, nil
 }
 
-// CompleteRequest 把响应按 requestID 送回对应的挂起请求。返回是否命中一个挂起项（未命中=已超时/未知）。
+// RegisterPending 保留旧 API。新代码应使用 TryRegisterPending 取得明确注册错误。
+// 发生错误时返回一个已装入错误结果的 channel，避免旧调用者永久等待。
+// Deprecated: use TryRegisterPending.
+func (rr *RequestRouter) RegisterPending(requestID uint64) <-chan *ResponseResult {
+	ch, err := rr.TryRegisterPending(requestID)
+	if err == nil {
+		return ch
+	}
+	failed := make(chan *ResponseResult, 1)
+	failed <- &ResponseResult{Error: err}
+	return failed
+}
+
+// CompleteRequest 送达响应。返回 false 表示请求未知、已超时或 router 已关闭。
 func (rr *RequestRouter) CompleteRequest(requestID uint64, data []byte, err error) bool {
-	pending, exists := rr.pending.LoadAndDelete(requestID)
+	rr.mu.Lock()
+	pending, exists := rr.pending[requestID]
+	if exists {
+		delete(rr.pending, requestID)
+	}
+	rr.mu.Unlock()
 	if !exists {
 		return false
 	}
-
-	result := &ResponseResult{Data: data, Error: err}
-	select {
-	case pending.ch <- result:
-	default:
-	}
+	pending.ch <- &ResponseResult{Data: data, Error: err}
 	return true
 }
 
-// SendRequest 注册挂起 → 调用 sendFn 发送 → 等待响应 / ctx 取消 / 超时。返回响应数据或错误。
+// SendRequest 注册挂起、执行发送，再等待响应、context、router 关闭或内部超时。
 func (rr *RequestRouter) SendRequest(ctx context.Context, requestID uint64, sendFn func() error) ([]byte, error) {
-	respCh := rr.RegisterPending(requestID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	respCh, err := rr.TryRegisterPending(requestID)
+	if err != nil {
+		return nil, err
+	}
 
+	rr.mu.Lock()
+	pending := rr.pending[requestID]
+	rr.mu.Unlock()
+	if sendFn == nil {
+		rr.removePending(requestID, pending)
+		return nil, errors.New("send request failed: nil send function")
+	}
 	if err := sendFn(); err != nil {
-		rr.pending.Delete(requestID)
+		rr.removePending(requestID, pending)
 		return nil, fmt.Errorf("send request failed: %w", err)
 	}
 
+	timer := time.NewTimer(rr.timeout)
+	defer timer.Stop()
 	select {
 	case result := <-respCh:
 		if result.Error != nil {
@@ -101,44 +137,77 @@ func (rr *RequestRouter) SendRequest(ctx context.Context, requestID uint64, send
 		}
 		return result.Data, nil
 	case <-ctx.Done():
-		rr.pending.Delete(requestID)
+		rr.removePending(requestID, pending)
 		return nil, ctx.Err()
-	case <-time.After(rr.timeout):
-		rr.pending.Delete(requestID)
-		return nil, fmt.Errorf("request %d timed out after %v", requestID, rr.timeout)
+	case <-timer.C:
+		rr.removePending(requestID, pending)
+		return nil, fmt.Errorf("request %d timed out after %v: %w", requestID, rr.timeout, ErrRequestExpired)
 	}
 }
 
-// Cleanup 清理已超过 deadline 仍未回的挂起请求（给它们的等待方发一个 expired 错误）。须周期调用。
+func (rr *RequestRouter) removePending(requestID uint64, pending *PendingResponse) bool {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	current, exists := rr.pending[requestID]
+	if !exists || current != pending {
+		return false
+	}
+	delete(rr.pending, requestID)
+	return true
+}
+
+// Cleanup 清理超过 deadline 的挂起请求。
 func (rr *RequestRouter) Cleanup() {
-	rr.cleanupMu.Lock()
-	defer rr.cleanupMu.Unlock()
-
 	now := time.Now()
-	var expired []uint64
-	rr.pending.Range(func(reqID uint64, p *PendingResponse) bool {
-		if now.After(p.deadline) {
-			expired = append(expired, reqID)
-		}
-		return true
-	})
-
-	for _, reqID := range expired {
-		if p, exists := rr.pending.LoadAndDelete(reqID); exists {
-			select {
-			case p.ch <- &ResponseResult{Error: fmt.Errorf("request expired")}:
-			default:
-			}
+	var expired []*PendingResponse
+	rr.mu.Lock()
+	for requestID, pending := range rr.pending {
+		if now.After(pending.deadline) {
+			delete(rr.pending, requestID)
+			expired = append(expired, pending)
 		}
 	}
+	rr.mu.Unlock()
 
+	for _, pending := range expired {
+		pending.ch <- &ResponseResult{Error: ErrRequestExpired}
+	}
 	if len(expired) > 0 {
-		zLog.Debug("Cleaned up expired pending requests",
-			zap.Int("count", len(expired)))
+		zLog.Debug("Cleaned up expired pending requests", zap.Int("count", len(expired)))
 	}
+}
+
+// Close 原子拒绝新请求，并用 cause 失败全部 pending。首次 cause 是稳定关闭原因。
+func (rr *RequestRouter) Close(cause error) {
+	if cause == nil {
+		cause = ErrRequestRouterClosed
+	}
+	rr.mu.Lock()
+	if rr.closed {
+		rr.mu.Unlock()
+		return
+	}
+	rr.closed = true
+	rr.closeCause = cause
+	pending := rr.pending
+	rr.pending = make(map[uint64]*PendingResponse)
+	rr.mu.Unlock()
+
+	for _, request := range pending {
+		request.ch <- &ResponseResult{Error: cause}
+	}
+}
+
+func (rr *RequestRouter) closedError() error {
+	if rr.closeCause == nil || errors.Is(rr.closeCause, ErrRequestRouterClosed) {
+		return ErrRequestRouterClosed
+	}
+	return fmt.Errorf("%w: %w", ErrRequestRouterClosed, rr.closeCause)
 }
 
 // PendingCount 当前挂起请求数。
 func (rr *RequestRouter) PendingCount() int {
-	return int(rr.pending.Len())
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	return len(rr.pending)
 }

@@ -35,15 +35,39 @@ func WithMaxClientCount(count int) Options {
 // WithMaxPacketDataSize 设置最大数据包数据大小
 func WithMaxPacketDataSize(size int32) Options {
 	return func(svr Server) {
+		size = resolveWirePacketSize(size, size)
 		switch s := svr.(type) {
 		case *TcpServer:
 			s.config.MaxPacketDataSize = size
+			s.config.MaxWirePacketSize = size
 		case *UdpServer:
 			s.config.MaxPacketDataSize = size
+			s.config.MaxWirePacketSize = size
 		case *WebSocketServer:
 			s.config.MaxPacketDataSize = size
+			s.config.MaxWirePacketSize = size
 		case *HttpServer:
 			s.config.MaxPacketDataSize = size
+		}
+	}
+}
+
+// WithMaxWirePacketSize 设置线包 payload 上限，并同步旧字段供兼容调用者读取。
+func WithMaxWirePacketSize(size int32) Options {
+	return WithMaxPacketDataSize(size)
+}
+
+// WithMaxDecodedPacketSize 设置解密和解压后的 payload 上限。
+func WithMaxDecodedPacketSize(size int32) Options {
+	return func(svr Server) {
+		size = resolveDecodedPacketSize(size)
+		switch s := svr.(type) {
+		case *TcpServer:
+			s.config.MaxDecodedPacketSize = size
+		case *UdpServer:
+			s.config.MaxDecodedPacketSize = size
+		case *WebSocketServer:
+			s.config.MaxDecodedPacketSize = size
 		}
 	}
 }
@@ -96,12 +120,17 @@ func WithChanSize(chanSize int) Options {
 	}
 }
 
-// WithServerMetrics 注入网络指标上报器（Phase 3.5，仅 TcpServer 支持）。
+// WithServerMetrics 注入网络指标上报器。
 // 传入的对象需满足 NetworkMetricsRecorder（zMetrics.NetworkMetrics 即可）；
 // 注入后 zNet 会上报连接生命周期、收发字节/包数与解码错误。未注入则不上报。
 func WithServerMetrics(recorder NetworkMetricsRecorder) Options {
 	return func(svr Server) {
-		if s, ok := svr.(*TcpServer); ok {
+		switch s := svr.(type) {
+		case *TcpServer:
+			s.metrics = recorder
+		case *UdpServer:
+			s.metrics = recorder
+		case *WebSocketServer:
 			s.metrics = recorder
 		}
 	}

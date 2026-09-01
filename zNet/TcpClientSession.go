@@ -3,9 +3,7 @@ package zNet
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -18,15 +16,18 @@ import (
 // TcpClientSession TCP客户端会话
 // 管理与服务器的TCP连接，负责数据收发、心跳检测、加密解密
 type TcpClientSession struct {
-	conn          *net.TCPConn       // TCP连接
-	wg            sync.WaitGroup     // 等待组
-	lastHeartBeat time.Time          // 最后心跳时间
-	ctxCancel     context.CancelFunc // 上下文取消函数
-	aesKey        []byte             // AES加密密钥（初始密钥）
-	currentKey    atomic.Value       // 当前密钥（支持密钥轮换）
-	currentKeyID  atomic.Uint32      // 当前密钥ID
-	closed        atomic.Bool        // 是否已关闭
-	sendSequence  atomic.Uint64      // 发送序列号
+	conn              *net.TCPConn       // TCP连接
+	wg                sync.WaitGroup     // 等待组
+	lastHeartBeat     time.Time          // 最后心跳时间
+	ctxCancel         context.CancelFunc // 上下文取消函数
+	aesKey            []byte             // AES加密密钥（初始密钥）
+	currentKey        atomic.Value       // 当前密钥（支持密钥轮换）
+	currentKeyID      atomic.Uint32      // 当前密钥ID
+	closed            atomic.Bool        // 是否已关闭
+	sendSequence      atomic.Uint64      // 发送序列号
+	writeGate         contextWriteGate
+	packetCodec       PacketCodec
+	invalidPacketLogs packetErrorLogLimiter
 
 	cli *TcpClient // 所属客户端
 }
@@ -41,6 +42,8 @@ func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte
 	s.lastHeartBeat = time.Now()
 	s.aesKey = aesKey
 	s.cli = cli
+	s.packetCodec = cli.packetCodec
+	s.writeGate = newContextWriteGate()
 	// 初始化当前密钥
 	s.currentKey.Store(aesKey)
 	s.currentKeyID.Store(0) // 0表示使用初始密钥
@@ -166,11 +169,11 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			break
 		}
 
-		// 解析数据包头
-		netPacket := NetPacket{}
-		if err = netPacket.UnmarshalHead(headBuf); err != nil {
-			if s.cli.logger != nil {
-				s.cli.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
+		// 解析并校验数据包头。失败即关闭 TCP，避免按不可信长度分配或失去流边界。
+		netPacket, decodeErr := s.packetCodec.DecodeHeader(headBuf, s.cli.config.MaxWirePacketSize)
+		if decodeErr != nil {
+			if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.cli.logger.Error("Receive NetPacket, invalid head: %v, len: %d", decodeErr, len(headBuf))
 			}
 			break
 		}
@@ -195,51 +198,22 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 		}
 
-		// 校验协议ID
-		if netPacket.ProtoId < 0 {
-			log.Printf("receive NetPacket protoid empty")
-			continue
+		encrypted := len(netPacket.Data) > 0 && !s.cli.config.DisableEncryption
+		var decryptKey []byte
+		if encrypted {
+			decryptKey = s.GetDecryptKey(netPacket.KeyID)
 		}
-
-		// 检查数据包大小是否超过限制
-		if netPacket.DataSize > s.cli.config.MaxPacketDataSize {
-			if s.cli.logger != nil {
-				s.cli.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-					netPacket.ProtoId, netPacket.DataSize, s.cli.config.MaxPacketDataSize)
+		if err := decodePacketPayload(&netPacket, decryptKey, encrypted, s.cli.config.MaxDecodedPacketSize); err != nil {
+			if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.cli.logger.Error("Decode packet payload error: %v, keyID:%d", err, netPacket.KeyID)
 			}
 			continue
 		}
 
-		// 处理密钥轮换通知
+		// 密钥轮换载荷已经通过与业务包相同的解密和资源限制。
 		if netPacket.ProtoId == KeyRotationNotifyProtoId {
 			s.handleKeyRotationNotify(&netPacket)
 			continue
-		}
-
-		// 解密数据
-		if netPacket.DataSize > 0 && !s.cli.config.DisableEncryption {
-			key := s.GetDecryptKey(netPacket.KeyID)
-			if key != nil {
-				if decrypted, err := zCrypto.AESDecrypt(netPacket.Data, key, nil, zCrypto.AESModeGCM); err == nil {
-					netPacket.Data = decrypted
-				} else {
-					if s.cli.logger != nil {
-						s.cli.logger.Error("AES-GCM decrypt error: %v, keyID:%d", err, netPacket.KeyID)
-					}
-				}
-			}
-		}
-
-		// 解压缩数据
-		if netPacket.IsCompressed == CompressionSnappy && netPacket.DataSize > 0 {
-			if decompressed, err := snappy.Decode(nil, netPacket.Data); err == nil {
-				netPacket.Data = decompressed
-				netPacket.DataSize = int32(len(decompressed))
-			} else {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Decompress error: %v", err)
-				}
-			}
 		}
 
 		// 分发到消息处理器（异步）。nil 守卫 + recover：dispatcher 未注册或其内部 panic
@@ -274,6 +248,30 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 // 返回:
 //   - error: 发送失败时返回错误
 func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *TcpClientSession) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *TcpClientSession) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	ctx, cancel := normalizeSendContext(ctx, DefaultSendTimeout)
+	defer cancel()
+	if s.closed.Load() || s.conn == nil {
+		return ErrSessionClosed
+	}
+	acquired, err := s.writeGate.acquire(ctx, options.Class)
+	if err != nil || !acquired {
+		return err
+	}
+	defer s.writeGate.release()
+	return s.writePacket(ctx, protoId, data)
+}
+
+func (s *TcpClientSession) writePacket(ctx context.Context, protoId ProtoIdType, data []byte) error {
 	netPacket := NetPacket{
 		ProtoId:   protoId,
 		Sequence:  s.sendSequence.Add(1),
@@ -317,25 +315,22 @@ func (s *TcpClientSession) Send(protoId ProtoIdType, data []byte) error {
 				return err
 			}
 		} else {
-			netPacket.Data = payload
+			netPacket.Data = append([]byte(nil), payload...)
 		}
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.DataSize < 0 {
-		return errors.New("send packet illegal, data size negative")
-	}
-	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId {
-		return errors.New("send packet illegal, protoId invalid")
-	}
-	// 检查数据包大小是否超过限制
-	if netPacket.DataSize > s.cli.config.MaxPacketDataSize {
-		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.cli.config.MaxPacketDataSize, protoId)
+	if err := ValidatePacketHeader(&netPacket, s.cli.config.MaxWirePacketSize); err != nil {
+		return err
 	}
 
+	deadline, _ := ctx.Deadline()
+	if err := s.conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	defer s.conn.SetWriteDeadline(time.Time{})
 	// 发送数据包
-	_, err := s.conn.Write(netPacket.Marshal())
+	_, err := s.conn.Write(s.packetCodec.Marshal(&netPacket))
 	if err != nil {
 		return err
 	}
@@ -351,25 +346,8 @@ func (s *TcpClientSession) handleKeyRotationNotify(packet *NetPacket) {
 		return
 	}
 
-	// 使用当前密钥解密通知数据
-	key := s.GetDecryptKey(packet.KeyID)
-	if key == nil {
-		if s.cli.logger != nil {
-			s.cli.logger.Error("Failed to get decrypt key for key rotation notify, keyID:%d", packet.KeyID)
-		}
-		return
-	}
-
-	decryptedData, err := zCrypto.AESDecrypt(packet.Data, key, nil, zCrypto.AESModeGCM)
-	if err != nil {
-		if s.cli.logger != nil {
-			s.cli.logger.Error("Failed to decrypt key rotation notify: %v", err)
-		}
-		return
-	}
-
 	var notify KeyRotationNotify
-	if !notify.Unmarshal(decryptedData) {
+	if !notify.UnmarshalWithByteOrder(packet.Data, s.packetCodec.ByteOrder()) {
 		if s.cli.logger != nil {
 			s.cli.logger.Error("Failed to unmarshal key rotation notify")
 		}

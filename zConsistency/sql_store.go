@@ -29,8 +29,10 @@ const (
 
 // 编译期确认 SQL 实现满足与内存版相同的接口（drop-in 替换）。
 var (
-	_ OutboxStore = (*SQLOutbox)(nil)
-	_ InboxStore  = (*SQLInbox)(nil)
+	_ OutboxStore   = (*SQLOutbox)(nil)
+	_ InboxStore    = (*SQLInbox)(nil)
+	_ OutboxStoreV2 = (*SQLOutbox)(nil)
+	_ InboxStoreV2  = (*SQLInbox)(nil)
 )
 
 // ---------------- SQLOutbox ----------------

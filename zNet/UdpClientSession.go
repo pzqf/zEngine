@@ -3,7 +3,6 @@ package zNet
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -12,14 +11,17 @@ import (
 )
 
 type UdpClientSession struct {
-	conn          *net.UDPConn
-	sid           SessionIdType
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	aesKey        []byte
-	dhExchange    *DHKeyExchange
-	keyExchanged  bool
+	conn              *net.UDPConn
+	sid               SessionIdType
+	wg                sync.WaitGroup
+	lastHeartBeat     time.Time
+	ctxCancel         context.CancelFunc
+	aesKey            []byte
+	dhExchange        *DHKeyExchange
+	keyExchanged      bool
+	packetCodec       PacketCodec
+	invalidPacketLogs packetErrorLogLimiter
+	writeGate         contextWriteGate
 
 	cli *UdpClient
 }
@@ -29,6 +31,8 @@ func (s *UdpClientSession) Init(cli *UdpClient, conn *net.UDPConn) {
 	s.sid = 1 // 客户端会话ID，简单设置为1
 	s.lastHeartBeat = time.Now()
 	s.cli = cli
+	s.packetCodec = cli.packetCodec
+	s.writeGate = newContextWriteGate()
 
 	// 初始化ECDH密钥交换
 	dhExchange, err := NewDHKeyExchange()
@@ -118,9 +122,26 @@ func (s *UdpClientSession) handleKeyExchange(data []byte) bool {
 }
 
 func (s *UdpClientSession) Send(protoId ProtoIdType, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *UdpClientSession) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *UdpClientSession) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	ctx, cancel := normalizeSendContext(ctx, DefaultSendTimeout)
+	defer cancel()
 	if s.conn == nil {
 		return errors.New("udp connection is nil")
 	}
+	acquired, err := s.writeGate.acquire(ctx, options.Class)
+	if err != nil || !acquired {
+		return err
+	}
+	defer s.writeGate.release()
 
 	netPacket := NetPacket{
 		ProtoId: protoId,
@@ -136,28 +157,24 @@ func (s *UdpClientSession) Send(protoId ProtoIdType, data []byte) error {
 		}
 		netPacket.Data = encryptedData
 	} else {
-		netPacket.Data = data
+		netPacket.Data = append([]byte(nil), data...)
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
+	if err := ValidatePacketHeader(&netPacket, s.cli.wirePacketSize()); err != nil {
 		if s.cli.logger != nil {
-			s.cli.logger.Error("Send UDP packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
+			s.cli.logger.Error("Send UDP packet illegal: %v", err)
 		}
-		return errors.New("send UDP packet illegal")
+		return err
 	}
 
-	if s.cli.maxPacketDataSize > 0 && netPacket.DataSize > s.cli.maxPacketDataSize {
-		if s.cli.logger != nil {
-			s.cli.logger.Error("Send UDP packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-				netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
-		}
-		return fmt.Errorf("send UDP packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
+	packetData := s.packetCodec.Marshal(&netPacket)
+	deadline, _ := ctx.Deadline()
+	if err := s.conn.SetWriteDeadline(deadline); err != nil {
+		return err
 	}
-
-	packetData := netPacket.Marshal()
-	_, err := s.conn.Write(packetData)
+	defer s.conn.SetWriteDeadline(time.Time{})
+	_, err = s.conn.Write(packetData)
 	if err != nil {
 		if s.cli.logger != nil {
 			s.cli.logger.Error("Failed to send UDP packet: %v", err)
@@ -197,50 +214,21 @@ func (s *UdpClientSession) receive(ctx context.Context) {
 				continue
 			}
 
-			// 解析数据包
-			if len(data) < NetPacketHeadSize {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Received UDP packet too small: %d bytes", len(data))
+			// UDP 是消息边界传输：非法帧只丢当前 datagram，不拆客户端会话。
+			netPacket, decodeErr := s.packetCodec.DecodeFrame(data, s.cli.wirePacketSize())
+			if decodeErr != nil {
+				if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+					s.cli.logger.Error("Invalid UDP packet: %v", decodeErr)
 				}
 				continue
 			}
 
-			netPacket := NetPacket{}
-			if err := netPacket.UnmarshalHead(data[:NetPacketHeadSize]); err != nil {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Unmarshal UDP packet head error: %v", err)
+			encrypted := len(netPacket.Data) > 0 && s.aesKey != nil
+			if err := decodePacketPayload(&netPacket, s.aesKey, encrypted, s.cli.decodedPacketSize()); err != nil {
+				if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+					s.cli.logger.Error("Decode UDP payload error: %v", err)
 				}
 				continue
-			}
-
-			if netPacket.DataSize > 0 {
-				dataSize := int(netPacket.DataSize)
-				if len(data) < NetPacketHeadSize+dataSize {
-					if s.cli.logger != nil {
-						s.cli.logger.Error("UDP packet data size mismatch: expected %d, got %d", dataSize, len(data)-NetPacketHeadSize)
-					}
-					continue
-				}
-				netPacket.Data = data[NetPacketHeadSize : NetPacketHeadSize+dataSize]
-			}
-
-			if s.cli.maxPacketDataSize > 0 && netPacket.DataSize > s.cli.maxPacketDataSize {
-				if s.cli.logger != nil {
-					s.cli.logger.Warn("UDP packet data size over max size: %d, max: %d", netPacket.DataSize, s.cli.maxPacketDataSize)
-				}
-				continue
-			}
-
-			if netPacket.DataSize > 0 && s.aesKey != nil {
-				// 使用GCM模式解密
-				plaintext, err := zCrypto.AESDecrypt(netPacket.Data, s.aesKey, nil, zCrypto.AESModeGCM)
-				if err != nil {
-					if s.cli.logger != nil {
-						s.cli.logger.Error("AESDecrypt error: %v", err)
-					}
-					continue
-				}
-				netPacket.Data = plaintext
 			}
 
 			if netPacket.ProtoId != HeartbeatProtoId {

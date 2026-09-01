@@ -1,219 +1,314 @@
-// Package zInstance 提供「按需创建、空置自动回收的实例池」这一通用引擎能力——
-// 房间 / 副本 / 战场 / 匹配对局 / 跨服临时实例 / 分线（layer）都是它的实例。
-//
-// 两类实例并存：
-//   - Acquire：为"进入某逻辑组的占用者"选一个未满的实例，选不到则建新——用于分线/房间匹配这类
-//     "填到 softCap 就开新、可空置回收"的场景。附带「在途预留额度」(reserved) 消除并发下的 TOCTOU
-//     与"空置回收 vs 正在加入"竞态。
-//   - Add：直接登记一个新实例（副本/跨服临时实例这类"显式建一个"的场景），可标记 pinned=永不回收。
-//
-// Pool 只管池化/回收；实例的创建与销毁副作用由调用方经 build 闭包与 onEvict 回调提供，因此 Pool
-// 不必知道实例内部（地图/房间等）。
+// Package zInstance provides a shared pool for on-demand instances with idle reaping.
+// Rooms, dungeons, battlegrounds, temporary cross-server maps, and layers all use the
+// same capacity reservation and lifecycle mechanism.
 package zInstance
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"time"
 )
 
-// Instance 是被池管理的实例。Occupancy 报告当前占用数（如实例内玩家数）；Occupancy==0 且无在途
-// 预留、且非 pinned 时成为空置回收候选。Close 释放实例自身资源。
+var (
+	ErrInvalidCapacity    = errors.New("instance capacity must satisfy 0 < soft <= hard")
+	ErrNilInstanceBuilder = errors.New("instance builder is nil")
+	ErrInstanceBuildPanic = errors.New("instance builder panicked")
+	ErrInstanceCreating   = errors.New("instance is still being created")
+	ErrInstanceReserved   = errors.New("instance has in-flight reservations")
+)
+
+// Instance is managed by Pool. Occupancy reports committed occupants; in-flight
+// admission is tracked separately by Pool reservations. Close releases instance resources.
 type Instance interface {
 	Occupancy() int
 	Close()
 }
 
+type entryState uint8
+
+const (
+	entryCreating entryState = iota + 1
+	entryActive
+	entryDestroying
+)
+
 type entry[K comparable, T Instance] struct {
 	id         uint64
+	generation uint64
+	revision   uint64
 	key        K
 	inst       T
-	pinned     bool      // true=永不被 Reap 回收（如副本，由玩法生命周期显式销毁）
-	reserved   int       // 在途分配额度：已选中/新建、占用者尚未加入完成的名额
-	emptySince time.Time // 变空时刻（零值=当前非空/尚未计时）
+	state      entryState
+	ready      chan struct{}
+	pinned     bool
+	reserved   int
+	emptySince time.Time
 }
 
-// Pool 管理一组实例：K = 逻辑分组键（如逻辑地图ID/房间类型），T = 实例类型。并发安全。
-// 空置回收由外部单 goroutine 周期调用 Reap 驱动。
+type instanceSnapshot[K comparable, T Instance] struct {
+	id         uint64
+	generation uint64
+	revision   uint64
+	inst       T
+	reserved   int
+}
+
+type occupancySnapshot[K comparable, T Instance] struct {
+	instanceSnapshot[K, T]
+	occupancy int
+}
+
+// Pool manages instances grouped by K. All internal indexes and state transitions are
+// protected by mu. User callbacks are always invoked without mu held.
 type Pool[K comparable, T Instance] struct {
-	mu      sync.Mutex
-	nextID  uint64
-	byID    map[uint64]*entry[K, T]
-	byKey   map[K]map[uint64]*entry[K, T]
-	onEvict func(id uint64, inst T) // 实例被 Reap/Destroy 摘除时回调（锁外，在 inst.Close 之前）；可为 nil
+	mu             sync.Mutex
+	nextID         uint64
+	nextGeneration uint64
+	nextKeyVersion uint64
+	byID           map[uint64]*entry[K, T]
+	byKey          map[K]map[uint64]*entry[K, T]
+	keyVersion     map[K]uint64
+	onEvict        func(id uint64, inst T)
 }
 
-// NewPool 创建实例池。onEvict 在实例被回收/销毁、从池中摘除后、Close 之前回调（供调用方做联动清理，
-// 如从另一张索引表删除）；不需要则传 nil。
+// NewPool creates a pool. onEvict runs after removal from both indexes and before Close.
 func NewPool[K comparable, T Instance](onEvict func(id uint64, inst T)) *Pool[K, T] {
 	return NewPoolWithBase[K, T](onEvict, 0)
 }
 
-// NewPoolWithBase 同 NewPool，但实例 id 从 idBase 起（首个分配的 id = idBase+1）。
-// 用于让派生 id 落在与"逻辑/静态 id"不冲突的高段（如实例地图 id 从 100000 起，避开逻辑图 id）。
+// NewPoolWithBase is NewPool with the first allocated ID set to idBase+1.
 func NewPoolWithBase[K comparable, T Instance](onEvict func(id uint64, inst T), idBase uint64) *Pool[K, T] {
 	return &Pool[K, T]{
-		byID:    make(map[uint64]*entry[K, T]),
-		byKey:   make(map[K]map[uint64]*entry[K, T]),
-		onEvict: onEvict,
-		nextID:  idBase,
+		byID:       make(map[uint64]*entry[K, T]),
+		byKey:      make(map[K]map[uint64]*entry[K, T]),
+		keyVersion: make(map[K]uint64),
+		onEvict:    onEvict,
+		nextID:     idBase,
 	}
 }
 
-// Acquire 为进入 key 组的占用者选/建一个实例，并占 1 个在途预留额度（reserved++）。
-// 选择顺序：①亲和：affinityID!=0 且该实例 effective<hardCap → 用它；②否则同组 effective 最少且
-// <softCap 的实例；③都不满足 → build(id) 建新实例（reserved 从 1 起，非 pinned）。
-// effective = Occupancy + reserved。选中/新建的实例同时清 emptySince。返回实例 id 与实例本身。
-// ⚠ 调用方在占用者加入完成（成功或失败）后，必须 Release(id) 归还额度。
-func (p *Pool[K, T]) Acquire(key K, affinityID uint64, softCap, hardCap int, build func(id uint64) T) (uint64, T) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// AcquireChecked selects or builds an instance and reserves one admission slot.
+// Affinity may fill an instance up to hardCap; normal selection uses the least occupied
+// instance below softCap. Call Release after the occupant either commits or aborts entry.
+func (p *Pool[K, T]) AcquireChecked(
+	key K,
+	affinityID uint64,
+	softCap, hardCap int,
+	build func(id uint64) (T, error),
+) (uint64, T, error) {
+	var zero T
+	if softCap <= 0 || hardCap <= 0 || softCap > hardCap {
+		return 0, zero, ErrInvalidCapacity
+	}
+	if build == nil {
+		return 0, zero, ErrNilInstanceBuilder
+	}
 
-	group := p.byKey[key]
-	if affinityID != 0 && group != nil {
-		if e, ok := group[affinityID]; ok {
-			if e.inst.Occupancy()+e.reserved < hardCap {
-				e.reserved++
-				e.emptySince = time.Time{}
-				return e.id, e.inst
+	for {
+		snapshots, creating, keyVersion := p.snapshotGroup(key)
+		measured := measureOccupancy(snapshots)
+		candidate, limit := selectCandidate(measured, affinityID, softCap, hardCap)
+		if candidate != nil {
+			p.mu.Lock()
+			current, ok := p.byID[candidate.id]
+			if ok && current.state == entryActive &&
+				current.generation == candidate.generation && current.revision == candidate.revision &&
+				candidate.occupancy+current.reserved < limit {
+				current.reserved++
+				current.emptySince = time.Time{}
+				current.revision++
+				p.bumpKeyVersionLocked(key)
+				id, inst := current.id, current.inst
+				p.mu.Unlock()
+				return id, inst, nil
 			}
+			p.mu.Unlock()
+			continue
 		}
-	}
 
-	var best *entry[K, T]
-	bestEff := math.MaxInt
-	for _, e := range group {
-		eff := e.inst.Occupancy() + e.reserved
-		if eff < softCap && eff < bestEff {
-			best = e
-			bestEff = eff
+		p.mu.Lock()
+		if p.keyVersion[key] != keyVersion {
+			p.mu.Unlock()
+			continue
 		}
-	}
-	if best != nil {
-		best.reserved++
-		best.emptySince = time.Time{}
-		return best.id, best.inst
-	}
+		if creating != nil {
+			p.mu.Unlock()
+			<-creating
+			continue
+		}
+		e := p.newEntryLocked(key, false, 1)
+		p.mu.Unlock()
 
-	// build 需要 id：先占 id 再 build（build 内可用 id 构造实例）。
-	p.nextID++
-	id := p.nextID
-	inst := build(id)
-	e := &entry[K, T]{id: id, key: key, inst: inst, reserved: 1}
-	p.byID[id] = e
-	if p.byKey[key] == nil {
-		p.byKey[key] = make(map[uint64]*entry[K, T])
+		inst, err := invokeBuild(build, e.id)
+		if err != nil {
+			p.failCreation(e)
+			return 0, zero, err
+		}
+		p.finishCreation(e, inst)
+		return e.id, inst, nil
 	}
-	p.byKey[key][id] = e
+}
+
+// Acquire preserves the original API for source compatibility.
+// Deprecated: use AcquireChecked and handle build/admission errors.
+func (p *Pool[K, T]) Acquire(key K, affinityID uint64, softCap, hardCap int, build func(id uint64) T) (uint64, T) {
+	var checkedBuilder func(uint64) (T, error)
+	if build != nil {
+		checkedBuilder = func(id uint64) (T, error) { return build(id), nil }
+	}
+	id, inst, err := p.AcquireChecked(key, affinityID, softCap, hardCap, checkedBuilder)
+	if err != nil {
+		panic(err)
+	}
 	return id, inst
 }
 
-// Add 直接登记一个新实例（不走"选已有"逻辑，不占 reserved）。pinned=true 的永不被 Reap。
-// build(id) 用分配到的 id 构造实例。用于副本/跨服临时实例这类"显式建一个"的场景。
-func (p *Pool[K, T]) Add(key K, pinned bool, build func(id uint64) T) (uint64, T) {
+// AddChecked builds and registers an explicit instance. It does not reserve an admission
+// slot; pinned instances are excluded from Reap and must be explicitly destroyed.
+func (p *Pool[K, T]) AddChecked(key K, pinned bool, build func(id uint64) (T, error)) (uint64, T, error) {
+	var zero T
+	if build == nil {
+		return 0, zero, ErrNilInstanceBuilder
+	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.nextID++
-	id := p.nextID
-	inst := build(id)
-	e := &entry[K, T]{id: id, key: key, inst: inst, pinned: pinned}
-	p.byID[id] = e
-	if p.byKey[key] == nil {
-		p.byKey[key] = make(map[uint64]*entry[K, T])
+	e := p.newEntryLocked(key, pinned, 0)
+	p.mu.Unlock()
+
+	inst, err := invokeBuild(build, e.id)
+	if err != nil {
+		p.failCreation(e)
+		return 0, zero, err
 	}
-	p.byKey[key][id] = e
+	p.finishCreation(e, inst)
+	return e.id, inst, nil
+}
+
+// Add preserves the original API for source compatibility.
+// Deprecated: use AddChecked and handle build errors.
+func (p *Pool[K, T]) Add(key K, pinned bool, build func(id uint64) T) (uint64, T) {
+	var checkedBuilder func(uint64) (T, error)
+	if build != nil {
+		checkedBuilder = func(id uint64) (T, error) { return build(id), nil }
+	}
+	id, inst, err := p.AddChecked(key, pinned, checkedBuilder)
+	if err != nil {
+		panic(err)
+	}
 	return id, inst
 }
 
-// Release 归还 1 个在途预留额度。对未知 id / reserved 已为 0 无副作用。
+// Release returns one in-flight reservation. Unknown IDs and already released entries
+// remain no-ops for compatibility.
 func (p *Pool[K, T]) Release(id uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e, ok := p.byID[id]; ok && e.reserved > 0 {
+	if e, ok := p.byID[id]; ok && e.state == entryActive && e.reserved > 0 {
 		e.reserved--
+		e.revision++
+		p.bumpKeyVersionLocked(e.key)
 	}
 }
 
-// Destroy 显式销毁一个实例（幂等）：摘除 → onEvict → Close。用于副本等由玩法生命周期显式回收的实例。
-func (p *Pool[K, T]) Destroy(id uint64) {
+// DestroyChecked explicitly removes and closes an instance. It is idempotent for unknown
+// IDs, but refuses to overtake creation or an admitted occupant that has not released its
+// reservation yet.
+func (p *Pool[K, T]) DestroyChecked(id uint64) error {
 	p.mu.Lock()
 	e, ok := p.byID[id]
-	if ok {
-		p.remove(e)
+	if !ok {
+		p.mu.Unlock()
+		return nil
 	}
+	if e.state == entryCreating {
+		p.mu.Unlock()
+		return fmt.Errorf("%w: %d", ErrInstanceCreating, id)
+	}
+	if e.reserved > 0 {
+		p.mu.Unlock()
+		return fmt.Errorf("%w: id=%d reserved=%d", ErrInstanceReserved, id, e.reserved)
+	}
+	e.state = entryDestroying
+	p.removeLocked(e)
+	p.bumpKeyVersionLocked(e.key)
 	p.mu.Unlock()
-	if ok {
-		if p.onEvict != nil {
-			p.onEvict(e.id, e.inst)
-		}
-		e.inst.Close()
-	}
+
+	p.evict(e)
+	return nil
 }
 
-// remove 在持锁下把 entry 从两张索引摘除。
-func (p *Pool[K, T]) remove(e *entry[K, T]) {
-	delete(p.byID, e.id)
-	if g := p.byKey[e.key]; g != nil {
-		delete(g, e.id)
-		if len(g) == 0 {
-			delete(p.byKey, e.key)
-		}
-	}
+// Destroy preserves the original no-result API while keeping the new safety boundary.
+// Deprecated: use DestroyChecked to observe a reserved/creating rejection.
+func (p *Pool[K, T]) Destroy(id uint64) {
+	_ = p.DestroyChecked(id)
 }
 
-// Reap 回收「非 pinned、空置持续超过 grace（Occupancy==0 且 reserved==0）」的实例。返回回收数。
-// ⚠ 必须由固定的单个 goroutine 周期调用（onEvict/Close 释放资源，与其它调用串行才安全）。
+// Reap removes non-pinned instances that remain empty beyond grace. Occupancy, onEvict,
+// and Close all run outside the pool lock. Entry revision validation prevents a stale
+// occupancy observation from overtaking a concurrent Acquire/Release.
 func (p *Pool[K, T]) Reap(grace time.Duration) int {
 	now := time.Now()
+	snapshots := p.snapshotReapCandidates()
+	measured := measureOccupancy(snapshots)
+
 	p.mu.Lock()
-	var toReap []*entry[K, T]
-	for _, e := range p.byID {
-		if e.pinned {
+	toReap := make([]*entry[K, T], 0, len(measured))
+	for _, snapshot := range measured {
+		e, ok := p.byID[snapshot.id]
+		if !ok || e.state != entryActive || e.generation != snapshot.generation || e.revision != snapshot.revision {
 			continue
 		}
-		if e.inst.Occupancy() > 0 || e.reserved > 0 {
-			e.emptySince = time.Time{}
+		if snapshot.occupancy > 0 || e.reserved > 0 {
+			if !e.emptySince.IsZero() {
+				e.emptySince = time.Time{}
+				e.revision++
+				p.bumpKeyVersionLocked(e.key)
+			}
 			continue
 		}
 		if e.emptySince.IsZero() {
 			e.emptySince = now
+			e.revision++
+			p.bumpKeyVersionLocked(e.key)
 			continue
 		}
-		if now.Sub(e.emptySince) >= grace {
-			toReap = append(toReap, e)
+		if now.Sub(e.emptySince) < grace {
+			continue
 		}
-	}
-	for _, e := range toReap {
-		p.remove(e)
+		e.state = entryDestroying
+		p.removeLocked(e)
+		p.bumpKeyVersionLocked(e.key)
+		toReap = append(toReap, e)
 	}
 	p.mu.Unlock()
 
 	for _, e := range toReap {
-		if p.onEvict != nil {
-			p.onEvict(e.id, e.inst)
-		}
-		e.inst.Close()
+		p.evict(e)
 	}
 	return len(toReap)
 }
 
-// Get 按 id 取实例。
+// Get returns an active instance by ID. Creating entries are intentionally invisible.
 func (p *Pool[K, T]) Get(id uint64) (T, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e, ok := p.byID[id]; ok {
+	if e, ok := p.byID[id]; ok && e.state == entryActive {
 		return e.inst, true
 	}
 	var zero T
 	return zero, false
 }
 
-// RangeByKey 遍历某逻辑键下的所有存活实例（fn 返回 false 停止）。
+// RangeByKey visits a stable snapshot of active instances without holding the pool lock
+// during fn.
 func (p *Pool[K, T]) RangeByKey(key K, fn func(id uint64, inst T) bool) {
 	p.mu.Lock()
 	entries := make([]*entry[K, T], 0, len(p.byKey[key]))
 	for _, e := range p.byKey[key] {
-		entries = append(entries, e)
+		if e.state == entryActive {
+			entries = append(entries, e)
+		}
 	}
 	p.mu.Unlock()
 	for _, e := range entries {
@@ -223,16 +318,187 @@ func (p *Pool[K, T]) RangeByKey(key K, fn func(id uint64, inst T) bool) {
 	}
 }
 
-// Count 返回当前存活实例总数。
+// Count returns the number of active instances.
 func (p *Pool[K, T]) Count() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.byID)
+	count := 0
+	for _, e := range p.byID {
+		if e.state == entryActive {
+			count++
+		}
+	}
+	return count
 }
 
-// CountByKey 返回某逻辑键下的存活实例数。
+// CountByKey returns the number of active instances for key.
 func (p *Pool[K, T]) CountByKey(key K) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.byKey[key])
+	count := 0
+	for _, e := range p.byKey[key] {
+		if e.state == entryActive {
+			count++
+		}
+	}
+	return count
+}
+
+func (p *Pool[K, T]) snapshotGroup(key K) ([]instanceSnapshot[K, T], <-chan struct{}, uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	group := p.byKey[key]
+	snapshots := make([]instanceSnapshot[K, T], 0, len(group))
+	var creating <-chan struct{}
+	for _, e := range group {
+		switch e.state {
+		case entryCreating:
+			if creating == nil {
+				creating = e.ready
+			}
+		case entryActive:
+			snapshots = append(snapshots, instanceSnapshot[K, T]{
+				id: e.id, generation: e.generation, revision: e.revision, inst: e.inst, reserved: e.reserved,
+			})
+		}
+	}
+	return snapshots, creating, p.keyVersion[key]
+}
+
+func (p *Pool[K, T]) snapshotReapCandidates() []instanceSnapshot[K, T] {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	snapshots := make([]instanceSnapshot[K, T], 0, len(p.byID))
+	for _, e := range p.byID {
+		if e.state != entryActive || e.pinned {
+			continue
+		}
+		snapshots = append(snapshots, instanceSnapshot[K, T]{
+			id: e.id, generation: e.generation, revision: e.revision, inst: e.inst, reserved: e.reserved,
+		})
+	}
+	return snapshots
+}
+
+func measureOccupancy[K comparable, T Instance](snapshots []instanceSnapshot[K, T]) []occupancySnapshot[K, T] {
+	measured := make([]occupancySnapshot[K, T], 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		measured = append(measured, occupancySnapshot[K, T]{
+			instanceSnapshot: snapshot,
+			occupancy:        snapshot.inst.Occupancy(),
+		})
+	}
+	return measured
+}
+
+func selectCandidate[K comparable, T Instance](
+	snapshots []occupancySnapshot[K, T],
+	affinityID uint64,
+	softCap, hardCap int,
+) (*occupancySnapshot[K, T], int) {
+	if affinityID != 0 {
+		for i := range snapshots {
+			if snapshots[i].id == affinityID && snapshots[i].occupancy+snapshots[i].reserved < hardCap {
+				return &snapshots[i], hardCap
+			}
+		}
+	}
+	best := -1
+	bestEffective := math.MaxInt
+	for i := range snapshots {
+		effective := snapshots[i].occupancy + snapshots[i].reserved
+		if effective < softCap && effective < bestEffective {
+			best = i
+			bestEffective = effective
+		}
+	}
+	if best < 0 {
+		return nil, softCap
+	}
+	return &snapshots[best], softCap
+}
+
+func (p *Pool[K, T]) newEntryLocked(key K, pinned bool, reserved int) *entry[K, T] {
+	p.nextID++
+	p.nextGeneration++
+	e := &entry[K, T]{
+		id:         p.nextID,
+		generation: p.nextGeneration,
+		key:        key,
+		state:      entryCreating,
+		ready:      make(chan struct{}),
+		pinned:     pinned,
+		reserved:   reserved,
+	}
+	p.byID[e.id] = e
+	if p.byKey[key] == nil {
+		p.byKey[key] = make(map[uint64]*entry[K, T])
+	}
+	p.byKey[key][e.id] = e
+	p.bumpKeyVersionLocked(key)
+	return e
+}
+
+func (p *Pool[K, T]) finishCreation(e *entry[K, T], inst T) {
+	p.mu.Lock()
+	current, ok := p.byID[e.id]
+	if !ok || current != e || e.state != entryCreating {
+		p.mu.Unlock()
+		panic("zInstance: creation placeholder disappeared")
+	}
+	e.inst = inst
+	e.state = entryActive
+	e.revision++
+	p.bumpKeyVersionLocked(e.key)
+	close(e.ready)
+	p.mu.Unlock()
+}
+
+func (p *Pool[K, T]) failCreation(e *entry[K, T]) {
+	p.mu.Lock()
+	current, ok := p.byID[e.id]
+	if ok && current == e && e.state == entryCreating {
+		e.state = entryDestroying
+		p.removeLocked(e)
+		p.bumpKeyVersionLocked(e.key)
+		close(e.ready)
+	}
+	p.mu.Unlock()
+}
+
+func (p *Pool[K, T]) removeLocked(e *entry[K, T]) {
+	delete(p.byID, e.id)
+	if group := p.byKey[e.key]; group != nil {
+		delete(group, e.id)
+		if len(group) == 0 {
+			delete(p.byKey, e.key)
+		}
+	}
+}
+
+func (p *Pool[K, T]) bumpKeyVersionLocked(key K) {
+	p.nextKeyVersion++
+	if len(p.byKey[key]) == 0 {
+		delete(p.keyVersion, key)
+		return
+	}
+	p.keyVersion[key] = p.nextKeyVersion
+}
+
+func (p *Pool[K, T]) evict(e *entry[K, T]) {
+	defer e.inst.Close()
+	if p.onEvict != nil {
+		p.onEvict(e.id, e.inst)
+	}
+}
+
+func invokeBuild[T Instance](build func(id uint64) (T, error), id uint64) (inst T, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			var zero T
+			inst = zero
+			err = fmt.Errorf("%w: %v", ErrInstanceBuildPanic, recovered)
+		}
+	}()
+	return build(id)
 }

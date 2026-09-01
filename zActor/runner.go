@@ -1,6 +1,9 @@
 package zActor
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -9,63 +12,249 @@ import (
 	"github.com/pzqf/zEngine/zLog"
 )
 
-// Runner 是一个「单写者闭包串行器」：独占一条 goroutine，把投递进来的闭包命令串行执行，
-// 从根上消除对其所保护状态的并发访问（无需在被保护状态上再加锁）。
-//
-// 它与 BaseActor 互补，面向 BaseActor 不擅长的一类场景——「每种操作一个闭包、且常需同步
-// 拿返回值、并伴随固定节拍的帧更新」（典型：游戏地图/房间——攻击要返回伤害、移动要返回成败、
-// tick 要合帧）。BaseActor 是类型化消息 + 监督 + fire-and-forget；Runner 提供 BaseActor
-// 缺的三块能力：
-//
-//   - Do：同步「请求-响应」——投递并等待执行完成，返回值靠闭包捕获（BaseActor 只有异步投递）。
-//   - PostTick：合帧投递——队列满则丢弃本次（latest-wins），避免慢帧堆积拖垮时序/内存。
-//   - 每命令 panic 隔离——一条命令 panic 只被 recover 掉、不影响该 goroutine 继续处理后续命令
-//     （BaseActor 的 recover 在 run() 层，一次 panic 触发整个 actor 重启）。
-//
-// 用法：NewRunner → Start → Do/Post/PostTick → Stop。Do 与 PostTick 投递到同一条命令队列，
-// 因此「帧更新」与「网络命令」在该 Runner 内天然串行，无需额外同步。
-//
-// ⚠ 绝不能在 Runner 的 goroutine 内部再调用自己的 Do（自投递死锁）——内部逻辑直接调用即可。
-type Runner struct {
-	id       int64
-	cmdCh    chan func()
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	started  atomic.Bool
-	logger   *zap.Logger
+var (
+	ErrRunnerNotStarted    = errors.New("runner not started")
+	ErrRunnerStopping      = errors.New("runner stopping")
+	ErrRunnerStopped       = errors.New("runner stopped")
+	ErrRunnerQueueFull     = errors.New("runner queue full")
+	ErrRunnerReentrantCall = errors.New("runner reentrant call")
+	ErrRunnerCommandPanic  = errors.New("runner command panic")
+	ErrRunnerNilCommand    = errors.New("runner command is nil")
+)
+
+type runnerState uint32
+
+const (
+	runnerStateNew runnerState = iota
+	runnerStateRunning
+	runnerStateStopping
+	runnerStateStopped
+)
+
+type runnerCommand struct {
+	ctx               context.Context
+	fn                func(context.Context)
+	done              chan error
+	cancelBeforeStart bool
 }
 
-// NewRunner 创建一个 Runner。queueSize<=0 时用默认 1024。需调用 Start 才开始处理命令。
+func (c runnerCommand) complete(err error) {
+	if c.done != nil {
+		c.done <- err
+	}
+}
+
+type runnerExecutionKey struct{}
+
+type runnerExecution struct {
+	runner *Runner
+	parent *runnerExecution
+}
+
+// Runner 是一个单写者闭包串行器。所有已接纳命令只在它独占的 goroutine 上执行。
+type Runner struct {
+	id int64
+
+	mu      sync.Mutex
+	state   atomic.Uint32
+	cmdCh   chan runnerCommand
+	spaceCh chan struct{}
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+
+	logger *zap.Logger
+}
+
+// NewRunner 创建 Runner。queueSize<=0 时使用默认容量 1024；Start 前不接纳命令。
 func NewRunner(id int64, queueSize int) *Runner {
 	if queueSize <= 0 {
 		queueSize = 1024
 	}
 	return &Runner{
-		id:     id,
-		cmdCh:  make(chan func(), queueSize),
-		stopCh: make(chan struct{}),
-		logger: zLog.GetLogger(),
+		id:      id,
+		cmdCh:   make(chan runnerCommand, queueSize),
+		spaceCh: make(chan struct{}, 1),
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+		logger:  zLog.GetLogger(),
 	}
 }
 
-// Start 启动处理 goroutine（幂等：重复调用无副作用）。
+// Start 启动独占 goroutine。重复调用无副作用；已停止的 Runner 不支持重启。
 func (r *Runner) Start() {
-	if r.started.Swap(true) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if runnerState(r.state.Load()) != runnerStateNew {
 		return
 	}
+	r.state.Store(uint32(runnerStateRunning))
 	go r.run()
 }
 
-// IsRunning 报告是否已 Start 且未 Stop。
+// IsRunning 仅在 Runner 仍接纳新命令时返回 true。
 func (r *Runner) IsRunning() bool {
-	if !r.started.Load() {
+	return runnerState(r.state.Load()) == runnerStateRunning
+}
+
+// DoContext 把 fn 投递到 Runner goroutine，并等待执行完成、显式取消或 panic 结果。
+//
+// execCtx 记录当前 Runner 调用链。同步调用其它 Runner 时必须继续传递它；同 Runner 重入或
+// A->B->A 环形调用会返回 ErrRunnerReentrantCall，而不是自投递死锁。ctx 取消只会撤销尚未
+// 接纳或尚未开始的命令；一旦 fn 开始，DoContext 会等它真正结束后再返回。
+func (r *Runner) DoContext(ctx context.Context, fn func(context.Context)) error {
+	ctx = normalizeRunnerContext(ctx)
+	if fn == nil {
+		return ErrRunnerNilCommand
+	}
+	if runnerInExecutionChain(ctx, r) {
+		return ErrRunnerReentrantCall
+	}
+
+	done := make(chan error, 1)
+	cmd := runnerCommand{
+		ctx:               ctx,
+		fn:                fn,
+		done:              done,
+		cancelBeforeStart: true,
+	}
+	if err := r.admit(ctx, cmd, true); err != nil {
+		return err
+	}
+	return <-done
+}
+
+// PostContext 异步接纳命令；队列满时等待容量、ctx 取消或 Runner 停止。
+// 返回 nil 后命令属于 Runner，停止流程会把它执行完，不会静默丢弃。
+func (r *Runner) PostContext(ctx context.Context, fn func(context.Context)) error {
+	ctx = normalizeRunnerContext(ctx)
+	if fn == nil {
+		return ErrRunnerNilCommand
+	}
+	if runnerInExecutionChain(ctx, r) {
+		return ErrRunnerReentrantCall
+	}
+	return r.admit(ctx, runnerCommand{ctx: ctx, fn: fn}, true)
+}
+
+// TryPost 非阻塞接纳命令。队列满返回 ErrRunnerQueueFull。
+func (r *Runner) TryPost(fn func(context.Context)) error {
+	if fn == nil {
+		return ErrRunnerNilCommand
+	}
+	return r.admit(context.Background(), runnerCommand{
+		ctx: context.Background(),
+		fn:  fn,
+	}, false)
+}
+
+// Do 是旧同步 API 的兼容包装。
+//
+// Deprecated: 使用 DoContext 并传递回调收到的 execCtx。该旧签名无法携带 Runner 执行上下文，
+// 因而只能从所有 Runner 执行域之外调用；在 Runner 回调内调用可能自投递死锁。
+func (r *Runner) Do(fn func()) {
+	if fn == nil {
+		return
+	}
+	_ = r.DoContext(context.Background(), func(context.Context) { fn() })
+}
+
+// Post 是旧异步 API 的兼容包装。
+//
+// Deprecated: 使用 PostContext。该旧签名无法携带 Runner 执行上下文，只能从所有 Runner 执行域
+// 之外调用；在 Runner 回调内且队列已满时可能阻塞执行域。
+func (r *Runner) Post(fn func()) bool {
+	if fn == nil {
 		return false
 	}
+	return r.PostContext(context.Background(), func(context.Context) { fn() }) == nil
+}
+
+// PostTick 是旧 latest-wins API 的兼容包装。Deprecated: 使用 TryPost 并处理 admission 错误。
+func (r *Runner) PostTick(fn func()) {
+	if fn == nil {
+		return
+	}
+	_ = r.TryPost(func(context.Context) { fn() })
+}
+
+// StopContext 原子关闭 admission，并等待所有已接纳命令执行完成和 goroutine 退出。
+// ctx 只限制等待时间；超时后 Runner 仍会继续排空并最终进入 stopped。
+func (r *Runner) StopContext(ctx context.Context) error {
+	ctx = normalizeRunnerContext(ctx)
+	if runnerInExecutionChain(ctx, r) {
+		return ErrRunnerReentrantCall
+	}
+
+	r.mu.Lock()
+	switch runnerState(r.state.Load()) {
+	case runnerStateNew:
+		r.state.Store(uint32(runnerStateStopped))
+		close(r.stopCh)
+		close(r.doneCh)
+		r.mu.Unlock()
+		return nil
+	case runnerStateRunning:
+		r.state.Store(uint32(runnerStateStopping))
+		close(r.stopCh)
+	case runnerStateStopping:
+		// Another caller already owns the transition; wait on the same completion.
+	case runnerStateStopped:
+		r.mu.Unlock()
+		return nil
+	}
+	done := r.doneCh
+	r.mu.Unlock()
+
 	select {
-	case <-r.stopCh:
-		return false
+	case <-done:
+		return nil
 	default:
-		return true
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Stop 是旧停止 API 的兼容包装，等待 Runner 完整排空。
+//
+// Deprecated: 使用 StopContext。该旧签名无法携带 Runner 执行上下文，只能从所有 Runner 执行域
+// 之外调用；在自身回调内调用会等待自己退出并死锁。
+func (r *Runner) Stop() {
+	_ = r.StopContext(context.Background())
+}
+
+func (r *Runner) admit(ctx context.Context, cmd runnerCommand, wait bool) error {
+	for {
+		r.mu.Lock()
+		if err := runnerStateError(runnerState(r.state.Load())); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		select {
+		case r.cmdCh <- cmd:
+			r.mu.Unlock()
+			return nil
+		default:
+			r.mu.Unlock()
+		}
+
+		if !wait {
+			return ErrRunnerQueueFull
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.stopCh:
+			return runnerStateError(runnerState(r.state.Load()))
+		case <-r.spaceCh:
+		}
 	}
 }
 
@@ -73,71 +262,103 @@ func (r *Runner) run() {
 	for {
 		select {
 		case <-r.stopCh:
+			r.drainAndStop()
 			return
-		case fn := <-r.cmdCh:
-			r.safeExec(fn)
+		default:
+		}
+
+		select {
+		case cmd := <-r.cmdCh:
+			r.signalQueueSpace()
+			r.execute(cmd)
+		case <-r.stopCh:
+			r.drainAndStop()
+			return
 		}
 	}
 }
 
-// safeExec 执行单条命令并兜底 panic，使一条坏命令不崩掉整条 goroutine。
-func (r *Runner) safeExec(fn func()) {
+func (r *Runner) drainAndStop() {
+	for {
+		select {
+		case cmd := <-r.cmdCh:
+			r.signalQueueSpace()
+			r.execute(cmd)
+		default:
+			r.mu.Lock()
+			r.state.Store(uint32(runnerStateStopped))
+			close(r.doneCh)
+			r.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (r *Runner) signalQueueSpace() {
+	select {
+	case r.spaceCh <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Runner) execute(cmd runnerCommand) {
+	if cmd.cancelBeforeStart {
+		if err := cmd.ctx.Err(); err != nil {
+			cmd.complete(err)
+			return
+		}
+	}
+	execCtx := withRunnerExecution(cmd.ctx, r)
+	cmd.complete(r.safeExec(execCtx, cmd.fn))
+}
+
+func (r *Runner) safeExec(ctx context.Context, fn func(context.Context)) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			r.logger.Error("runner command panic recovered",
-				zap.Int64("runner_id", r.id), zap.Any("panic", rec))
+			err = fmt.Errorf("%w: %v", ErrRunnerCommandPanic, rec)
+			if r.logger != nil {
+				r.logger.Error("runner command panic recovered",
+					zap.Int64("runner_id", r.id), zap.Any("panic", rec))
+			}
 		}
 	}()
-	fn()
+	fn(ctx)
+	return nil
 }
 
-// Do 把 fn 投递到 Runner 的 goroutine 上「同步执行并等待完成」（请求-响应语义，供调用方拿返回值）。
-// 若尚未 Start 或已 Stop，则就地执行以保证调用方不永久阻塞、语义不变。
-// ⚠ 绝不能在 Runner goroutine 内部调用 Do（自投递死锁）。
-func (r *Runner) Do(fn func()) {
-	if !r.started.Load() {
-		r.safeExec(fn)
-		return
-	}
-	done := make(chan struct{})
-	wrapped := func() {
-		defer close(done)
-		fn()
-	}
-	select {
-	case r.cmdCh <- wrapped:
-		<-done
-	case <-r.stopCh:
-		// 正在停止：尽力就地执行，保证调用方不永久阻塞。
-		r.safeExec(fn)
-	}
-}
-
-// Post 异步投递命令：入队后立即返回，不等待执行。队列满时阻塞直到有空位或已停止。
-// 返回是否成功入队（停止时返回 false）。
-func (r *Runner) Post(fn func()) bool {
-	select {
-	case r.cmdCh <- fn:
-		return true
-	case <-r.stopCh:
-		return false
-	}
-}
-
-// PostTick 合帧投递：队列满则丢弃本次（latest-wins），永不阻塞。用于固定节拍的帧更新——
-// 上一帧尚未处理完时丢弃当前帧，避免慢帧堆积。
-func (r *Runner) PostTick(fn func()) {
-	select {
-	case r.cmdCh <- fn:
+func runnerStateError(state runnerState) error {
+	switch state {
+	case runnerStateNew:
+		return ErrRunnerNotStarted
+	case runnerStateRunning:
+		return nil
+	case runnerStateStopping:
+		return ErrRunnerStopping
+	case runnerStateStopped:
+		return ErrRunnerStopped
 	default:
-		// 队列满：丢弃本帧，下一拍再来。
+		return ErrRunnerStopped
 	}
 }
 
-// Stop 停止 Runner（幂等）。只关闭 stopCh 作为退出信号，不关闭 cmdCh——关闭 cmdCh 会与并发的
-// Post/Do 形成 send-on-closed panic。未消费的命令随停止一并丢弃并由 GC 回收。
-func (r *Runner) Stop() {
-	r.stopOnce.Do(func() {
-		close(r.stopCh)
-	})
+func normalizeRunnerContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func withRunnerExecution(ctx context.Context, r *Runner) context.Context {
+	parent, _ := ctx.Value(runnerExecutionKey{}).(*runnerExecution)
+	return context.WithValue(ctx, runnerExecutionKey{}, &runnerExecution{runner: r, parent: parent})
+}
+
+func runnerInExecutionChain(ctx context.Context, r *Runner) bool {
+	execution, _ := ctx.Value(runnerExecutionKey{}).(*runnerExecution)
+	for current := execution; current != nil; current = current.parent {
+		if current.runner == r {
+			return true
+		}
+	}
+	return false
 }

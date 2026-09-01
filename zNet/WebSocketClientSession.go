@@ -3,7 +3,6 @@ package zNet
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -12,18 +11,23 @@ import (
 )
 
 type WebSocketClientSession struct {
-	conn          *websocket.Conn
-	sid           SessionIdType
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	aesKey        []byte
+	conn              *websocket.Conn
+	sid               SessionIdType
+	wg                sync.WaitGroup
+	lastHeartBeat     time.Time
+	ctxCancel         context.CancelFunc
+	aesKey            []byte
+	packetCodec       PacketCodec
+	invalidPacketLogs packetErrorLogLimiter
+	writeGate         contextWriteGate
+	writeGateOnce     sync.Once
 
 	cli *WebSocketClient
 }
 
 func (s *WebSocketClientSession) Init(cli *WebSocketClient, wsURL string) error {
 	s.cli = cli
+	s.packetCodec = cli.packetCodec
 	s.sid = 1 // 客户端会话ID，简单设置为1
 	s.lastHeartBeat = time.Now()
 
@@ -33,6 +37,7 @@ func (s *WebSocketClientSession) Init(cli *WebSocketClient, wsURL string) error 
 	}
 
 	s.conn = conn
+	s.ensureWriteGate()
 
 	// 执行ECDH密钥交换
 	aesKey, err := PerformKeyExchange(&websocketReaderWriter{conn})
@@ -79,6 +84,9 @@ func (s *WebSocketClientSession) Start() {
 	if s.conn == nil {
 		return
 	}
+	if maxSize := s.cli.wirePacketSize(); maxSize > 0 {
+		s.conn.SetReadLimit(int64(NetPacketHeadSize) + int64(maxSize))
+	}
 	ctx, ctxCancel := context.WithCancel(context.Background())
 	s.ctxCancel = ctxCancel
 
@@ -91,9 +99,27 @@ func (s *WebSocketClientSession) Start() {
 }
 
 func (s *WebSocketClientSession) Send(protoId ProtoIdType, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *WebSocketClientSession) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+func (s *WebSocketClientSession) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	ctx, cancel := normalizeSendContext(ctx, DefaultSendTimeout)
+	defer cancel()
 	if s.conn == nil {
 		return errors.New("websocket connection is nil")
 	}
+	gate := s.ensureWriteGate()
+	acquired, err := gate.acquire(ctx, options.Class)
+	if err != nil || !acquired {
+		return err
+	}
+	defer gate.release()
 
 	netPacket := NetPacket{
 		ProtoId: protoId,
@@ -109,28 +135,24 @@ func (s *WebSocketClientSession) Send(protoId ProtoIdType, data []byte) error {
 		}
 		netPacket.Data = encryptedData
 	} else {
-		netPacket.Data = data
+		netPacket.Data = append([]byte(nil), data...)
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.ProtoId <= 0 || netPacket.DataSize < 0 {
+	if err := ValidatePacketHeader(&netPacket, s.cli.wirePacketSize()); err != nil {
 		if s.cli.logger != nil {
-			s.cli.logger.Error("Send WebSocket packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
+			s.cli.logger.Error("Send WebSocket packet illegal: %v", err)
 		}
-		return errors.New("send WebSocket packet illegal")
+		return err
 	}
 
-	if s.cli.maxPacketDataSize > 0 && netPacket.DataSize > s.cli.maxPacketDataSize {
-		if s.cli.logger != nil {
-			s.cli.logger.Error("Send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-				netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
-		}
-		return fmt.Errorf("send WebSocket packet, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.cli.maxPacketDataSize, protoId)
+	packetData := s.packetCodec.Marshal(&netPacket)
+	deadline, _ := ctx.Deadline()
+	if err := s.conn.SetWriteDeadline(deadline); err != nil {
+		return err
 	}
-
-	packetData := netPacket.Marshal()
-	err := s.conn.WriteMessage(websocket.BinaryMessage, packetData)
+	defer s.conn.SetWriteDeadline(time.Time{})
+	err = s.conn.WriteMessage(websocket.BinaryMessage, packetData)
 	if err != nil {
 		if s.cli.logger != nil {
 			s.cli.logger.Error("Failed to write to WebSocket: %v", err)
@@ -139,6 +161,11 @@ func (s *WebSocketClientSession) Send(protoId ProtoIdType, data []byte) error {
 	}
 
 	return nil
+}
+
+func (s *WebSocketClientSession) ensureWriteGate() contextWriteGate {
+	s.writeGateOnce.Do(func() { s.writeGate = newContextWriteGate() })
+	return s.writeGate
 }
 
 func (s *WebSocketClientSession) receive(ctx context.Context) {
@@ -165,50 +192,21 @@ func (s *WebSocketClientSession) receive(ctx context.Context) {
 
 			data := message
 
-			// 解析数据包
-			if len(data) < NetPacketHeadSize {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Received WebSocket packet too small: %d bytes", len(data))
+			// WebSocket 消息保留帧边界：非法帧只丢当前消息。
+			netPacket, decodeErr := s.packetCodec.DecodeFrame(data, s.cli.wirePacketSize())
+			if decodeErr != nil {
+				if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+					s.cli.logger.Error("Invalid WebSocket packet: %v", decodeErr)
 				}
 				continue
 			}
 
-			netPacket := NetPacket{}
-			if err := netPacket.UnmarshalHead(data[:NetPacketHeadSize]); err != nil {
-				if s.cli.logger != nil {
-					s.cli.logger.Error("Unmarshal WebSocket packet head error: %v", err)
+			encrypted := len(netPacket.Data) > 0 && s.aesKey != nil
+			if err := decodePacketPayload(&netPacket, s.aesKey, encrypted, s.cli.decodedPacketSize()); err != nil {
+				if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+					s.cli.logger.Error("Decode WebSocket payload error: %v", err)
 				}
 				continue
-			}
-
-			if netPacket.DataSize > 0 {
-				dataSize := int(netPacket.DataSize)
-				if len(data) < NetPacketHeadSize+dataSize {
-					if s.cli.logger != nil {
-						s.cli.logger.Error("WebSocket packet data size mismatch: expected %d, got %d", dataSize, len(data)-NetPacketHeadSize)
-					}
-					continue
-				}
-				netPacket.Data = data[NetPacketHeadSize : NetPacketHeadSize+dataSize]
-			}
-
-			if s.cli.maxPacketDataSize > 0 && netPacket.DataSize > s.cli.maxPacketDataSize {
-				if s.cli.logger != nil {
-					s.cli.logger.Warn("WebSocket packet data size over max size: %d, max: %d", netPacket.DataSize, s.cli.maxPacketDataSize)
-				}
-				continue
-			}
-
-			if netPacket.DataSize > 0 && s.aesKey != nil {
-				// 使用GCM模式解密
-				plaintext, err := zCrypto.AESDecrypt(netPacket.Data, s.aesKey, nil, zCrypto.AESModeGCM)
-				if err != nil {
-					if s.cli.logger != nil {
-						s.cli.logger.Error("AESDecrypt error: %v", err)
-					}
-					continue
-				}
-				netPacket.Data = plaintext
 			}
 
 			if netPacket.ProtoId != HeartbeatProtoId {

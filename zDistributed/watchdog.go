@@ -12,14 +12,18 @@ import (
 
 type WatchdogConfig struct {
 	CheckInterval time.Duration
-	AutoRenew     bool
-	MaxFailures   int
+	// AutoRenew is retained for source compatibility and intentionally ignored.
+	// Ownership loss requires an explicit Acquire so the caller receives the
+	// new fencing token.
+	// Deprecated: lease renewal is owned by EtcdLock's session.
+	AutoRenew   bool
+	MaxFailures int
 }
 
 func DefaultWatchdogConfig() WatchdogConfig {
 	return WatchdogConfig{
 		CheckInterval: 5 * time.Second,
-		AutoRenew:     true,
+		AutoRenew:     false,
 		MaxFailures:   3,
 	}
 }
@@ -110,21 +114,9 @@ func (w *LockWatchdog) checkLocks(ctx context.Context) {
 				continue
 			}
 
-			zLog.Warn("Lock watchdog: lock not held, attempting recovery",
+			zLog.Warn("Lock watchdog: lock ownership lost; explicit Acquire required",
 				zap.String("key", key),
 				zap.Int("failures", failCount))
-
-			if w.config.AutoRenew {
-				if err := lock.Lock(ctx); err != nil {
-					zLog.Warn("Lock watchdog: failed to recover lock",
-						zap.String("key", key),
-						zap.Error(err))
-				} else {
-					zLog.Info("Lock watchdog: lock recovered",
-						zap.String("key", key))
-					w.failures[key] = 0
-				}
-			}
 		} else {
 			w.failures[key] = 0
 		}

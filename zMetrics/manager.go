@@ -1,9 +1,23 @@
 package zMetrics
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"reflect"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+)
+
+var (
+	// ErrMetricSchemaConflict indicates that a name is already owned by a
+	// different metric schema in this manager.
+	ErrMetricSchemaConflict = errors.New("metric schema conflict")
+	// ErrMetricRegistration indicates that Prometheus rejected a collector.
+	ErrMetricRegistration = errors.New("metric registration failed")
+	// ErrInvalidMetricSchema indicates that a requested schema is malformed.
+	ErrInvalidMetricSchema = errors.New("invalid metric schema")
 )
 
 // MetricsManager 指标管理器
@@ -54,44 +68,52 @@ func (m *MetricsManager) RegisterCounter(name, help string, labels map[string]st
 
 // RegisterCounterWithCategory 注册带分类的计数器
 func (m *MetricsManager) RegisterCounterWithCategory(name, help string, category MetricCategory, labels map[string]string) prometheus.Counter {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	counter, _ := m.RegisterCounterWithCategoryChecked(name, help, category, labels)
+	return counter
+}
 
-	if counter, exists := m.counters[name]; exists {
-		return counter
-	}
+// RegisterCounterChecked registers a counter or returns a visible schema or
+// registry error. A failed collector is never cached.
+func (m *MetricsManager) RegisterCounterChecked(name, help string, labels map[string]string) (prometheus.Counter, error) {
+	return m.RegisterCounterWithCategoryChecked(name, help, CategoryCustom, labels)
+}
 
-	counter := prometheus.NewCounter(prometheus.CounterOpts{
-		Name:        name,
-		Help:        help,
-		ConstLabels: labels,
-	})
-
-	// OPT-5: 用 Register（返错）而非 MustRegister（panic）。此前只查 m.counters，若同名已被
-	// gauge/histogram 注册则漏检、MustRegister 撞名 panic 崩进程。优雅降级：撞名时缓存并返回
-	// 未注册的本地计数器（可正常 Inc、只是不被 /metrics 抓取），不崩进程。
-	if err := m.registry.Register(counter); err != nil {
-		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			if existing, ok2 := are.ExistingCollector.(prometheus.Counter); ok2 {
-				counter = existing
-			}
-		}
-	}
-	m.counters[name] = counter
-
-	// 记录指标分类
-	m.addMetricToCategory(name, category)
-
-	// 记录指标配置
-	m.metricConfigs[name] = MetricConfig{
+// RegisterCounterWithCategoryChecked is the categorized checked counter API.
+func (m *MetricsManager) RegisterCounterWithCategoryChecked(name, help string, category MetricCategory, labels map[string]string) (prometheus.Counter, error) {
+	config, err := normalizeMetricConfig(MetricConfig{
 		Name:     name,
 		Help:     help,
 		Type:     MetricTypeCounter,
 		Category: category,
 		Labels:   labels,
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return counter
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, found, err := m.existingMetricLocked(config); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		counter, ok := existing.(prometheus.Counter)
+		if !ok {
+			return nil, fmt.Errorf("%w: cached collector %q is not a counter", ErrMetricRegistration, name)
+		}
+		return counter, nil
+	}
+
+	counter := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        config.Name,
+		Help:        config.Help,
+		ConstLabels: config.Labels,
+	})
+	if err := m.registerMetricLocked(config, counter); err != nil {
+		return nil, err
+	}
+	return counter, nil
 }
 
 // RegisterGauge 注册仪表盘
@@ -101,42 +123,52 @@ func (m *MetricsManager) RegisterGauge(name, help string, labels map[string]stri
 
 // RegisterGaugeWithCategory 注册带分类的仪表盘
 func (m *MetricsManager) RegisterGaugeWithCategory(name, help string, category MetricCategory, labels map[string]string) prometheus.Gauge {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	gauge, _ := m.RegisterGaugeWithCategoryChecked(name, help, category, labels)
+	return gauge
+}
 
-	if gauge, exists := m.gauges[name]; exists {
-		return gauge
-	}
+// RegisterGaugeChecked registers a gauge or returns a visible schema or
+// registry error. A failed collector is never cached.
+func (m *MetricsManager) RegisterGaugeChecked(name, help string, labels map[string]string) (prometheus.Gauge, error) {
+	return m.RegisterGaugeWithCategoryChecked(name, help, CategoryCustom, labels)
+}
 
-	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
-		Name:        name,
-		Help:        help,
-		ConstLabels: labels,
-	})
-
-	// OPT-5: 同 counter，用 Register 优雅处理跨类型撞名，避免 MustRegister panic。
-	if err := m.registry.Register(gauge); err != nil {
-		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			if existing, ok2 := are.ExistingCollector.(prometheus.Gauge); ok2 {
-				gauge = existing
-			}
-		}
-	}
-	m.gauges[name] = gauge
-
-	// 记录指标分类
-	m.addMetricToCategory(name, category)
-
-	// 记录指标配置
-	m.metricConfigs[name] = MetricConfig{
+// RegisterGaugeWithCategoryChecked is the categorized checked gauge API.
+func (m *MetricsManager) RegisterGaugeWithCategoryChecked(name, help string, category MetricCategory, labels map[string]string) (prometheus.Gauge, error) {
+	config, err := normalizeMetricConfig(MetricConfig{
 		Name:     name,
 		Help:     help,
 		Type:     MetricTypeGauge,
 		Category: category,
 		Labels:   labels,
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return gauge
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, found, err := m.existingMetricLocked(config); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		gauge, ok := existing.(prometheus.Gauge)
+		if !ok {
+			return nil, fmt.Errorf("%w: cached collector %q is not a gauge", ErrMetricRegistration, name)
+		}
+		return gauge, nil
+	}
+
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        config.Name,
+		Help:        config.Help,
+		ConstLabels: config.Labels,
+	})
+	if err := m.registerMetricLocked(config, gauge); err != nil {
+		return nil, err
+	}
+	return gauge, nil
 }
 
 // RegisterHistogram 注册直方图
@@ -146,48 +178,170 @@ func (m *MetricsManager) RegisterHistogram(name, help string, buckets []float64,
 
 // RegisterHistogramWithCategory 注册带分类的直方图
 func (m *MetricsManager) RegisterHistogramWithCategory(name, help string, category MetricCategory, buckets []float64, labels map[string]string) prometheus.Histogram {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	histogram, _ := m.RegisterHistogramWithCategoryChecked(name, help, category, buckets, labels)
+	return histogram
+}
 
-	if histogram, exists := m.histograms[name]; exists {
-		return histogram
-	}
+// RegisterHistogramChecked registers a histogram or returns a visible schema
+// or registry error. A failed collector is never cached.
+func (m *MetricsManager) RegisterHistogramChecked(name, help string, buckets []float64, labels map[string]string) (prometheus.Histogram, error) {
+	return m.RegisterHistogramWithCategoryChecked(name, help, CategoryCustom, buckets, labels)
+}
 
-	if buckets == nil {
-		buckets = prometheus.DefBuckets
-	}
-
-	histogram := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:        name,
-		Help:        help,
-		Buckets:     buckets,
-		ConstLabels: labels,
-	})
-
-	// OPT-5: 同 counter，用 Register 优雅处理跨类型撞名，避免 MustRegister panic。
-	if err := m.registry.Register(histogram); err != nil {
-		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
-			if existing, ok2 := are.ExistingCollector.(prometheus.Histogram); ok2 {
-				histogram = existing
-			}
-		}
-	}
-	m.histograms[name] = histogram
-
-	// 记录指标分类
-	m.addMetricToCategory(name, category)
-
-	// 记录指标配置
-	m.metricConfigs[name] = MetricConfig{
+// RegisterHistogramWithCategoryChecked is the categorized checked histogram API.
+func (m *MetricsManager) RegisterHistogramWithCategoryChecked(name, help string, category MetricCategory, buckets []float64, labels map[string]string) (prometheus.Histogram, error) {
+	config, err := normalizeMetricConfig(MetricConfig{
 		Name:     name,
 		Help:     help,
 		Type:     MetricTypeHistogram,
 		Category: category,
 		Labels:   labels,
 		Buckets:  buckets,
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return histogram
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, found, err := m.existingMetricLocked(config); found || err != nil {
+		if err != nil {
+			return nil, err
+		}
+		histogram, ok := existing.(prometheus.Histogram)
+		if !ok {
+			return nil, fmt.Errorf("%w: cached collector %q is not a histogram", ErrMetricRegistration, name)
+		}
+		return histogram, nil
+	}
+
+	histogram, err := newHistogram(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.registerMetricLocked(config, histogram); err != nil {
+		return nil, err
+	}
+	return histogram, nil
+}
+
+func newHistogram(config MetricConfig) (histogram prometheus.Histogram, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			histogram = nil
+			err = fmt.Errorf("%w: histogram %q: %v", ErrInvalidMetricSchema, config.Name, recovered)
+		}
+	}()
+	histogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:        config.Name,
+		Help:        config.Help,
+		Buckets:     config.Buckets,
+		ConstLabels: config.Labels,
+	})
+	return histogram, nil
+}
+
+func normalizeMetricConfig(config MetricConfig) (MetricConfig, error) {
+	config.Labels = cloneLabels(config.Labels)
+	if config.Type != MetricTypeHistogram {
+		config.Buckets = nil
+		return config, nil
+	}
+
+	buckets := config.Buckets
+	if len(buckets) == 0 {
+		buckets = prometheus.DefBuckets
+	}
+	config.Buckets = append([]float64(nil), buckets...)
+	for i, bucket := range config.Buckets {
+		if math.IsNaN(bucket) || math.IsInf(bucket, 0) {
+			return MetricConfig{}, fmt.Errorf("%w: histogram %q bucket %d is not finite", ErrInvalidMetricSchema, config.Name, i)
+		}
+		if i > 0 && config.Buckets[i-1] >= bucket {
+			return MetricConfig{}, fmt.Errorf("%w: histogram %q buckets are not strictly increasing", ErrInvalidMetricSchema, config.Name)
+		}
+	}
+	return config, nil
+}
+
+func cloneLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(labels))
+	for name, value := range labels {
+		cloned[name] = value
+	}
+	return cloned
+}
+
+func cloneMetricConfig(config MetricConfig) MetricConfig {
+	config.Labels = cloneLabels(config.Labels)
+	config.Buckets = append([]float64(nil), config.Buckets...)
+	return config
+}
+
+func sameMetricSchema(left, right MetricConfig) bool {
+	return left.Name == right.Name &&
+		left.Help == right.Help &&
+		left.Type == right.Type &&
+		reflect.DeepEqual(left.Labels, right.Labels) &&
+		reflect.DeepEqual(left.Buckets, right.Buckets)
+}
+
+func (m *MetricsManager) existingMetricLocked(config MetricConfig) (prometheus.Collector, bool, error) {
+	existingConfig, exists := m.metricConfigs[config.Name]
+	if !exists {
+		return nil, false, nil
+	}
+	if !sameMetricSchema(existingConfig, config) {
+		return nil, true, fmt.Errorf(
+			"%w: metric %q requested type=%s help=%q labels=%v buckets=%v; existing type=%s help=%q labels=%v buckets=%v",
+			ErrMetricSchemaConflict,
+			config.Name,
+			config.Type,
+			config.Help,
+			config.Labels,
+			config.Buckets,
+			existingConfig.Type,
+			existingConfig.Help,
+			existingConfig.Labels,
+			existingConfig.Buckets,
+		)
+	}
+
+	switch existingConfig.Type {
+	case MetricTypeCounter:
+		return m.counters[config.Name], true, nil
+	case MetricTypeGauge:
+		return m.gauges[config.Name], true, nil
+	case MetricTypeHistogram:
+		return m.histograms[config.Name], true, nil
+	default:
+		return nil, true, fmt.Errorf("%w: metric %q has unknown cached type %q", ErrMetricRegistration, config.Name, existingConfig.Type)
+	}
+}
+
+func (m *MetricsManager) registerMetricLocked(config MetricConfig, collector prometheus.Collector) error {
+	if err := m.registry.Register(collector); err != nil {
+		return fmt.Errorf("%w: metric %q: %v", ErrMetricRegistration, config.Name, err)
+	}
+
+	switch config.Type {
+	case MetricTypeCounter:
+		m.counters[config.Name] = collector.(prometheus.Counter)
+	case MetricTypeGauge:
+		m.gauges[config.Name] = collector.(prometheus.Gauge)
+	case MetricTypeHistogram:
+		m.histograms[config.Name] = collector.(prometheus.Histogram)
+	default:
+		m.registry.Unregister(collector)
+		return fmt.Errorf("%w: metric %q has unknown type %q", ErrInvalidMetricSchema, config.Name, config.Type)
+	}
+	m.addMetricToCategory(config.Name, config.Category)
+	m.metricConfigs[config.Name] = cloneMetricConfig(config)
+	return nil
 }
 
 // GetCounter 获取计数器
@@ -241,7 +395,7 @@ func (m *MetricsManager) GetMetricConfig(name string) (MetricConfig, bool) {
 	defer m.mu.RUnlock()
 
 	config, exists := m.metricConfigs[name]
-	return config, exists
+	return cloneMetricConfig(config), exists
 }
 
 // GetAllMetricConfigs 获取所有指标配置
@@ -252,7 +406,7 @@ func (m *MetricsManager) GetAllMetricConfigs() map[string]MetricConfig {
 	// 返回副本
 	configs := make(map[string]MetricConfig, len(m.metricConfigs))
 	for k, v := range m.metricConfigs {
-		configs[k] = v
+		configs[k] = cloneMetricConfig(v)
 	}
 
 	return configs
@@ -298,9 +452,16 @@ func (m *MetricsManager) UnregisterMetric(name string) bool {
 	return true
 }
 
-// ResetAll 重置所有指标
-func (m *MetricsManager) ResetAll() {
+// ResetNetworkMetrics resets only the in-memory network recorder.
+func (m *MetricsManager) ResetNetworkMetrics() {
 	m.networkMetrics.Reset()
+}
+
+// ResetAll is retained for compatibility. It never reset registered
+// Prometheus collectors; use ResetNetworkMetrics for the actual scope.
+// Deprecated: use ResetNetworkMetrics.
+func (m *MetricsManager) ResetAll() {
+	m.ResetNetworkMetrics()
 }
 
 // addMetricToCategory 添加指标到分类

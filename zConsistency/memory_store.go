@@ -1,6 +1,7 @@
 package zConsistency
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +25,9 @@ type OutboxMessage struct {
 	CreatedAt      time.Time
 	LastAttemptAt  time.Time
 	NextRetryAt    time.Time
+	// State is populated by OutboxStoreV2. Sent/Acked/DeadLetter remain for
+	// source compatibility and are kept in sync by the built-in stores.
+	State OutboxState
 }
 
 type OutboxStore interface {
@@ -52,6 +56,7 @@ type InboxStore interface {
 }
 
 type MemoryOutbox struct {
+	v2Mu          sync.RWMutex
 	messages      *zMap.TypedMap[uint64, OutboxMessage]
 	maxRetries    int
 	retryBackoff  time.Duration
@@ -92,28 +97,36 @@ func NewMemoryOutbox(opts ...OutboxOption) *MemoryOutbox {
 }
 
 func (m *MemoryOutbox) Add(msg OutboxMessage) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
 	}
 	if msg.NextRetryAt.IsZero() {
 		msg.NextRetryAt = msg.CreatedAt
 	}
-	m.messages.Store(msg.RequestID, msg)
+	m.messages.Store(msg.RequestID, cloneOutboxMessage(msg))
 }
 
 // MarkSent 标记已发送。GS-1：直接删除条目而非仅置标志——本系统跨服发送为 fire-and-forget
 // 无 ack 回执（MarkAcked 无任何调用方），"已发送"即终态，保留会导致 outbox map 随每次
 // move/attack 无界增长最终 OOM。发送失败走 MarkAttempt（保留待重试），不受影响。
 func (m *MemoryOutbox) MarkSent(requestID uint64) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	m.messages.Delete(requestID)
 }
 
 // MarkAcked 收到确认（当前无调用方；语义上确认送达即可删除）。
 func (m *MemoryOutbox) MarkAcked(requestID uint64) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	m.messages.Delete(requestID)
 }
 
 func (m *MemoryOutbox) MarkAttempt(requestID uint64, err error) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	if msg, ok := m.messages.Load(requestID); ok {
 		msg.Attempts++
 		msg.LastAttemptAt = time.Now()
@@ -131,6 +144,8 @@ func (m *MemoryOutbox) MarkAttempt(requestID uint64, err error) {
 }
 
 func (m *MemoryOutbox) MarkDeadLetter(requestID uint64, reason string) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	if msg, ok := m.messages.Load(requestID); ok {
 		msg.DeadLetter = true
 		msg.LastError = reason
@@ -144,6 +159,8 @@ func (m *MemoryOutbox) MarkDeadLetter(requestID uint64, reason string) {
 }
 
 func (m *MemoryOutbox) ListPending(limit int) []OutboxMessage {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -152,13 +169,15 @@ func (m *MemoryOutbox) ListPending(limit int) []OutboxMessage {
 		if msg.Sent || msg.DeadLetter {
 			return true
 		}
-		out = append(out, msg)
+		out = append(out, cloneOutboxMessage(msg))
 		return len(out) < limit
 	})
 	return out
 }
 
 func (m *MemoryOutbox) ListRetryable(now time.Time, limit int) []OutboxMessage {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -173,13 +192,15 @@ func (m *MemoryOutbox) ListRetryable(now time.Time, limit int) []OutboxMessage {
 		if !msg.NextRetryAt.IsZero() && now.Before(msg.NextRetryAt) {
 			return true
 		}
-		out = append(out, msg)
+		out = append(out, cloneOutboxMessage(msg))
 		return len(out) < limit
 	})
 	return out
 }
 
 func (m *MemoryOutbox) ListDeadLetters(limit int) []OutboxMessage {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	if limit <= 0 {
 		limit = 100
 	}
@@ -188,13 +209,15 @@ func (m *MemoryOutbox) ListDeadLetters(limit int) []OutboxMessage {
 		if !msg.DeadLetter {
 			return true
 		}
-		out = append(out, msg)
+		out = append(out, cloneOutboxMessage(msg))
 		return len(out) < limit
 	})
 	return out
 }
 
 func (m *MemoryOutbox) CountPending() int {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	count := 0
 	m.messages.Range(func(id uint64, msg OutboxMessage) bool {
 		if !msg.Sent && !msg.DeadLetter {
@@ -206,6 +229,8 @@ func (m *MemoryOutbox) CountPending() int {
 }
 
 func (m *MemoryOutbox) CountRetryable() int {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	now := time.Now()
 	count := 0
 	m.messages.Range(func(id uint64, msg OutboxMessage) bool {
@@ -225,6 +250,8 @@ func (m *MemoryOutbox) CountRetryable() int {
 }
 
 func (m *MemoryOutbox) CountDeadLetters() int {
+	m.v2Mu.RLock()
+	defer m.v2Mu.RUnlock()
 	count := 0
 	m.messages.Range(func(id uint64, msg OutboxMessage) bool {
 		if msg.DeadLetter {
@@ -236,6 +263,8 @@ func (m *MemoryOutbox) CountDeadLetters() int {
 }
 
 func (m *MemoryOutbox) PurgeDeadLetters(olderThan time.Duration) int {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	now := time.Now()
 	removed := 0
 	m.messages.Range(func(requestID uint64, msg OutboxMessage) bool {
@@ -261,6 +290,7 @@ type inboxEntry struct {
 }
 
 type MemoryInbox struct {
+	v2Mu    sync.Mutex
 	entries *zMap.TypedMap[uint64, inboxEntry]
 	count   atomic.Int64
 }
@@ -275,6 +305,8 @@ func (m *MemoryInbox) TryAccept(requestID uint64) bool {
 	if requestID == 0 {
 		return true
 	}
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 
 	// INF-5：用原子 LoadOrStore 做幂等接受。此前 Load-then-Store 非原子——两个并发同
 	// requestID 的调用可同时判"不存在"、同时 Store、同时返回 true → 去重失效、消息被处理两次。
@@ -290,6 +322,8 @@ func (m *MemoryInbox) TryAccept(requestID uint64) bool {
 }
 
 func (m *MemoryInbox) Ack(requestID uint64) bool {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	if entry, ok := m.entries.Load(requestID); ok {
 		entry.acked = true
 		m.entries.Store(requestID, entry)
@@ -299,6 +333,8 @@ func (m *MemoryInbox) Ack(requestID uint64) bool {
 }
 
 func (m *MemoryInbox) IsProcessed(requestID uint64) bool {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	_, exists := m.entries.Load(requestID)
 	return exists
 }
@@ -308,6 +344,8 @@ func (m *MemoryInbox) Release(requestID uint64) {
 	if requestID == 0 {
 		return
 	}
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	if _, ok := m.entries.Load(requestID); ok {
 		m.entries.Delete(requestID)
 		m.count.Add(-1)
@@ -315,6 +353,8 @@ func (m *MemoryInbox) Release(requestID uint64) {
 }
 
 func (m *MemoryInbox) Cleanup(olderThan time.Duration) {
+	m.v2Mu.Lock()
+	defer m.v2Mu.Unlock()
 	now := time.Now()
 	var toDelete []uint64
 	m.entries.Range(func(id uint64, entry inboxEntry) bool {

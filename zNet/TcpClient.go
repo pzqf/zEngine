@@ -32,10 +32,10 @@ type ClientStateCallback func(state ClientState)
 type TcpClient struct {
 	config     *TcpClientConfig                 // 客户端配置
 	session    atomic.Pointer[TcpClientSession] // 会话实例（原子读写：Connect 写，Send/GetSession/monitor 读，消除重连期数据竞争）
-	dispatcher HandlerFun        // 消息分发器
-	logger     Logger            // 日志记录器
-	state      atomic.Value      // 连接状态（原子操作）
-	ctx        context.Context   // 上下文
+	dispatcher HandlerFun                       // 消息分发器
+	logger     Logger                           // 日志记录器
+	state      atomic.Value                     // 连接状态（原子操作）
+	ctx        context.Context                  // 上下文
 
 	ctxCancel context.CancelFunc // 上下文取消函数
 	wg        sync.WaitGroup     // 等待组
@@ -43,6 +43,8 @@ type TcpClient struct {
 	stateCallbacks []ClientStateCallback // 状态回调函数列表
 	reconnectCount int                   // 当前重连次数
 	monitorOnce    sync.Once             // 保证连接监控 goroutine 只启动一次（重连不再重复 spawn）
+	packetCodec    PacketCodec
+	packetCodecErr error
 }
 
 // NewTcpClient 创建新的TCP客户端实例
@@ -59,9 +61,7 @@ func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
 	if cfg.HeartbeatDuration <= 0 {
 		cfg.HeartbeatDuration = 30
 	}
-	if cfg.MaxPacketDataSize <= 0 {
-		cfg.MaxPacketDataSize = 1024 * 1024
-	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
 	if cfg.ReconnectDelay <= 0 {
 		cfg.ReconnectDelay = 5
 	}
@@ -79,6 +79,7 @@ func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
 	for _, opt := range opts {
 		opt(cli)
 	}
+	cli.packetCodec, cli.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
 
 	return cli
 }
@@ -89,6 +90,9 @@ func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
 // 返回:
 //   - error: 连接失败时返回错误
 func (cli *TcpClient) Connect() error {
+	if cli.packetCodecErr != nil {
+		return cli.packetCodecErr
+	}
 	cli.setState(ClientStateConnecting)
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", cli.config.ServerAddr+":"+strconv.Itoa(cli.config.ServerPort))
@@ -228,6 +232,20 @@ func (cli *TcpClient) Send(protoId ProtoIdType, data []byte) error {
 	return s.Send(protoId, data)
 }
 
+// SendContext 使用当前重连 session 执行有 deadline 的可靠 admission/写入。
+func (cli *TcpClient) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return cli.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+// SendWithOptions 每次发送都读取当前 session，避免自动重连后写旧连接。
+func (cli *TcpClient) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	s := cli.session.Load()
+	if s == nil {
+		return ErrClientNotConnected
+	}
+	return s.SendWithOptions(ctx, protoId, data, options)
+}
+
 // Close 关闭客户端
 // 关闭会话并断开连接
 func (cli *TcpClient) Close() {
@@ -291,7 +309,17 @@ func (cli *TcpClient) GetSession() *TcpClientSession {
 // 返回:
 //   - int32: 最大数据包大小
 func (cli *TcpClient) GetMaxPacketDataSize() int32 {
-	return cli.config.MaxPacketDataSize
+	return cli.config.MaxWirePacketSize
+}
+
+// GetMaxWirePacketSize 获取线包 payload 上限。
+func (cli *TcpClient) GetMaxWirePacketSize() int32 {
+	return cli.config.MaxWirePacketSize
+}
+
+// GetMaxDecodedPacketSize 获取解密和解压后的 payload 上限。
+func (cli *TcpClient) GetMaxDecodedPacketSize() int32 {
+	return cli.config.MaxDecodedPacketSize
 }
 
 // ConnectToServer 连接到服务器（兼容旧API）
@@ -309,5 +337,7 @@ func (cli *TcpClient) ConnectToServer(serverAddr string, serverPort int, rsaPubl
 	cli.config.ServerPort = serverPort
 	cli.config.HeartbeatDuration = heartbeatDuration
 	cli.config.MaxPacketDataSize = maxPacketDataSize
+	cli.config.MaxWirePacketSize = maxPacketDataSize
+	normalizePacketSizeLimits(&cli.config.MaxWirePacketSize, &cli.config.MaxPacketDataSize, &cli.config.MaxDecodedPacketSize)
 	return cli.Connect()
 }

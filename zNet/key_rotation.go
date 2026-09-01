@@ -3,6 +3,7 @@ package zNet
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"sync/atomic"
 	"time"
 
@@ -150,7 +151,13 @@ type KeyRotationNotify struct {
 }
 
 func (k *KeyRotationNotify) Marshal() []byte {
-	order := GetByteOrder()
+	return k.MarshalWithByteOrder(GetByteOrder())
+}
+
+func (k *KeyRotationNotify) MarshalWithByteOrder(order binary.ByteOrder) []byte {
+	if order == nil {
+		order = binary.LittleEndian
+	}
 	data := make([]byte, 20)
 	order.PutUint32(data[0:4], k.KeyID)
 	order.PutUint64(data[4:12], uint64(k.Timestamp))
@@ -159,10 +166,16 @@ func (k *KeyRotationNotify) Marshal() []byte {
 }
 
 func (k *KeyRotationNotify) Unmarshal(data []byte) bool {
+	return k.UnmarshalWithByteOrder(data, GetByteOrder())
+}
+
+func (k *KeyRotationNotify) UnmarshalWithByteOrder(data []byte, order binary.ByteOrder) bool {
 	if len(data) < 20 {
 		return false
 	}
-	order := GetByteOrder()
+	if order == nil {
+		order = binary.LittleEndian
+	}
 	k.KeyID = order.Uint32(data[0:4])
 	k.Timestamp = int64(order.Uint64(data[4:12]))
 	k.Nonce = order.Uint64(data[12:20])

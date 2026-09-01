@@ -1,6 +1,7 @@
 package zEvent
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -9,10 +10,29 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	ErrEventBusClosed              = errors.New("event bus is closed")
+	ErrEventBusInvalidEvent        = errors.New("event bus event is nil")
+	ErrEventBusInvalidHandler      = errors.New("event bus handler is nil")
+	ErrEventBusInvalidSubscription = errors.New("event bus subscription is invalid")
+	ErrEventBusNoExecutor          = errors.New("event bus has no async executor")
+	ErrEventBusFull                = errors.New("event bus executor queue is full")
+	ErrEventBusExecutorUnavailable = errors.New("event bus executor is unavailable")
+	ErrEventBusExecutorRejected    = errors.New("event bus executor rejected task")
+)
+
 type EventHandler func(event *Event)
 
-// SubscriptionID 是一次订阅的唯一句柄，由 Subscribe 返回，用于 Unsubscribe。
-// 用 ID 而非直接比较 EventHandler，是因为 Go 函数值不可比较，无法按 handler 退订。
+// AsyncExecutor accepts already-snapshotted event work. The injector owns its lifecycle.
+type AsyncExecutor interface {
+	Submit(task zConcurrency.Task) error
+}
+
+type stoppableExecutor interface {
+	Stop()
+}
+
+// SubscriptionID is a stable handle returned by SubscribeChecked and Subscribe.
 type SubscriptionID uint64
 
 type subscription struct {
@@ -20,168 +40,279 @@ type subscription struct {
 	fn EventHandler
 }
 
+type eventBusState uint8
+
+const (
+	eventBusOpen eventBusState = iota
+	eventBusClosing
+	eventBusClosed
+)
+
 type EventBus struct {
-	handlers   map[EventType][]subscription
-	nextID     atomic.Uint64
-	mu         sync.RWMutex
-	running    atomic.Bool
-	logger     *zap.Logger
-	workerPool *zConcurrency.WorkerPool
+	mu                  sync.Mutex
+	stateChanged        *sync.Cond
+	state               eventBusState
+	handlers            map[EventType][]subscription
+	nextID              uint64
+	inFlightSubmissions int
+	logger              *zap.Logger
+	executor            AsyncExecutor
+	ownedExecutor       stoppableExecutor
+	handlerPanics       atomic.Uint64
 }
 
-var globalEventBus *EventBus
-var once sync.Once
+var (
+	globalEventBusMu sync.Mutex
+	globalEventBus   *EventBus
+)
 
+// GetGlobalEventBus lazily creates a synchronous-only process bus. A process that needs
+// asynchronous handlers must install a root-owned executor with RebuildGlobalEventBus.
 func GetGlobalEventBus() *EventBus {
-	once.Do(func() {
+	globalEventBusMu.Lock()
+	defer globalEventBusMu.Unlock()
+	if globalEventBus == nil {
 		globalEventBus = NewEventBus()
-	})
+	}
 	return globalEventBus
 }
 
-func NewEventBus() *EventBus {
-	bus := &EventBus{
-		handlers: make(map[EventType][]subscription),
-		logger:   zLog.GetLogger(),
+// RebuildGlobalEventBus installs a fresh process bus and closes the previous bus. The caller
+// retains ownership of executor and must stop it after CloseGlobalEventBus during shutdown.
+func RebuildGlobalEventBus(executor AsyncExecutor) *EventBus {
+	replacement := NewEventBusWithExecutor(executor)
+	globalEventBusMu.Lock()
+	previous := globalEventBus
+	globalEventBus = replacement
+	globalEventBusMu.Unlock()
+	if previous != nil {
+		previous.Close()
 	}
-	bus.running.Store(true)
-
-	pool := zConcurrency.NewWorkerPool(4, 1024)
-	pool.Start()
-	bus.workerPool = pool
-
-	bus.logger.Info("EventBus initialized")
-	return bus
+	return replacement
 }
 
-func NewEventBusWithPool(workers int, queueSize int) *EventBus {
-	bus := &EventBus{
-		handlers: make(map[EventType][]subscription),
-		logger:   zLog.GetLogger(),
+// CloseGlobalEventBus detaches and closes the process bus. A later GetGlobalEventBus call
+// creates a fresh usable bus instead of returning a permanently closed singleton.
+func CloseGlobalEventBus() {
+	globalEventBusMu.Lock()
+	bus := globalEventBus
+	globalEventBus = nil
+	globalEventBusMu.Unlock()
+	if bus != nil {
+		bus.Close()
 	}
-	bus.running.Store(true)
+}
 
+// NewEventBus creates only a subscription table and starts no goroutines.
+func NewEventBus() *EventBus {
+	return newEventBus(nil, nil)
+}
+
+// NewEventBusWithExecutor creates a bus that borrows an explicitly managed async executor.
+func NewEventBusWithExecutor(executor AsyncExecutor) *EventBus {
+	return newEventBus(executor, nil)
+}
+
+// NewEventBusWithPool preserves the old convenience API. The returned bus owns this pool and
+// drains/stops it from Close. New production code should inject a process-owned executor.
+// Deprecated: use NewEventBusWithExecutor with a root-owned executor.
+func NewEventBusWithPool(workers int, queueSize int) *EventBus {
 	pool := zConcurrency.NewWorkerPool(workers, queueSize)
 	pool.Start()
-	bus.workerPool = pool
+	return newEventBus(pool, pool)
+}
 
-	bus.logger.Info("EventBus initialized with custom pool",
-		zap.Int("workers", workers),
-		zap.Int("queueSize", queueSize))
+func newEventBus(executor AsyncExecutor, owned stoppableExecutor) *EventBus {
+	bus := &EventBus{
+		state:         eventBusOpen,
+		handlers:      make(map[EventType][]subscription),
+		logger:        zLog.GetLogger(),
+		executor:      executor,
+		ownedExecutor: owned,
+	}
+	bus.stateChanged = sync.NewCond(&bus.mu)
 	return bus
 }
 
-// Subscribe 订阅事件，返回可用于 Unsubscribe 的订阅句柄。
-// 返回值可忽略（若无需退订）。
-func (eb *EventBus) Subscribe(eventType EventType, handler EventHandler) SubscriptionID {
-	if !eb.running.Load() {
-		return 0
+func (eb *EventBus) initializeLocked() {
+	if eb.stateChanged == nil {
+		eb.stateChanged = sync.NewCond(&eb.mu)
 	}
+	if eb.handlers == nil {
+		eb.handlers = make(map[EventType][]subscription)
+	}
+	if eb.logger == nil {
+		eb.logger = zLog.GetLogger()
+	}
+}
 
-	id := SubscriptionID(eb.nextID.Add(1))
+func (eb *EventBus) eventLogger() *zap.Logger {
+	eb.mu.Lock()
+	eb.initializeLocked()
+	logger := eb.logger
+	eb.mu.Unlock()
+	return logger
+}
 
+// SubscribeChecked atomically rejects nil handlers and subscriptions after closing begins.
+func (eb *EventBus) SubscribeChecked(eventType EventType, handler EventHandler) (SubscriptionID, error) {
+	if handler == nil {
+		return 0, ErrEventBusInvalidHandler
+	}
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-
+	eb.initializeLocked()
+	if eb.state != eventBusOpen {
+		return 0, ErrEventBusClosed
+	}
+	eb.nextID++
+	id := SubscriptionID(eb.nextID)
 	eb.handlers[eventType] = append(eb.handlers[eventType], subscription{id: id, fn: handler})
-	eb.logger.Debug("Subscribed to event",
-		zap.Int("eventType", int(eventType)),
-		zap.Uint64("subscriptionID", uint64(id)),
-		zap.Int("handlerCount", len(eb.handlers[eventType])))
+	return id, nil
+}
+
+// Subscribe is the compatibility wrapper for callers that cannot yet handle admission errors.
+// Deprecated: use SubscribeChecked.
+func (eb *EventBus) Subscribe(eventType EventType, handler EventHandler) SubscriptionID {
+	id, err := eb.SubscribeChecked(eventType, handler)
+	if err != nil {
+		eb.eventLogger().Debug("Event subscription rejected", zap.Int("eventType", int(eventType)), zap.Error(err))
+	}
 	return id
 }
 
-// Unsubscribe 按订阅句柄退订，返回是否命中并移除。
-func (eb *EventBus) Unsubscribe(id SubscriptionID) bool {
-	if !eb.running.Load() || id == 0 {
-		return false
+// UnsubscribeChecked removes exactly one subscription while the bus is open.
+func (eb *EventBus) UnsubscribeChecked(id SubscriptionID) (bool, error) {
+	if id == 0 {
+		return false, ErrEventBusInvalidSubscription
 	}
-
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-
+	eb.initializeLocked()
+	if eb.state != eventBusOpen {
+		return false, ErrEventBusClosed
+	}
 	for eventType, subs := range eb.handlers {
-		for i, s := range subs {
-			if s.id == id {
-				eb.handlers[eventType] = append(subs[:i], subs[i+1:]...)
-				if len(eb.handlers[eventType]) == 0 {
-					delete(eb.handlers, eventType)
-				}
-				eb.logger.Debug("Unsubscribed from event",
-					zap.Int("eventType", int(eventType)),
-					zap.Uint64("subscriptionID", uint64(id)))
-				return true
+		for i, current := range subs {
+			if current.id != id {
+				continue
 			}
+			eb.handlers[eventType] = append(subs[:i], subs[i+1:]...)
+			if len(eb.handlers[eventType]) == 0 {
+				delete(eb.handlers, eventType)
+			}
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-// snapshotHandlers 在读锁下拷贝某事件类型的 handler 列表，
-// 避免 Publish 迭代期间被并发 Unsubscribe 修改底层数组。
-func (eb *EventBus) snapshotHandlers(eventType EventType) []EventHandler {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
+// Unsubscribe is the compatibility wrapper for callers that cannot yet handle admission errors.
+// Deprecated: use UnsubscribeChecked.
+func (eb *EventBus) Unsubscribe(id SubscriptionID) bool {
+	removed, _ := eb.UnsubscribeChecked(id)
+	return removed
+}
+
+// PublishChecked submits one task per event. Handlers in its snapshot run sequentially in
+// subscription order; executor capacity and scheduling remain properties of the injected scope.
+func (eb *EventBus) PublishChecked(event *Event) error {
+	if event == nil {
+		return ErrEventBusInvalidEvent
+	}
+	handlers, executor, err := eb.beginAsyncPublish(event.Type)
+	if err != nil || len(handlers) == 0 {
+		return err
+	}
+	defer eb.finishAsyncSubmission()
+	err = executor.Submit(func() error {
+		eb.runHandlers(event, handlers)
+		return nil
+	})
+	return mapExecutorError(err)
+}
+
+// Publish is the compatibility wrapper that preserves the original fire-and-forget signature.
+// Deprecated: use PublishChecked when rejection matters.
+func (eb *EventBus) Publish(event *Event) {
+	if err := eb.PublishChecked(event); err != nil {
+		eb.eventLogger().Debug("Event publish rejected", zap.Error(err))
+	}
+}
+
+// PublishSyncChecked snapshots admission atomically and invokes handlers outside the bus lock.
+func (eb *EventBus) PublishSyncChecked(event *Event) error {
+	if event == nil {
+		return ErrEventBusInvalidEvent
+	}
+	eb.mu.Lock()
+	eb.initializeLocked()
+	if eb.state != eventBusOpen {
+		eb.mu.Unlock()
+		return ErrEventBusClosed
+	}
+	handlers := eb.snapshotHandlersLocked(event.Type)
+	eb.mu.Unlock()
+	eb.runHandlers(event, handlers)
+	return nil
+}
+
+// PublishSync is the compatibility wrapper for the original synchronous API.
+// Deprecated: use PublishSyncChecked when rejection matters.
+func (eb *EventBus) PublishSync(event *Event) {
+	if err := eb.PublishSyncChecked(event); err != nil {
+		eb.eventLogger().Debug("Synchronous event publish rejected", zap.Error(err))
+	}
+}
+
+func (eb *EventBus) beginAsyncPublish(eventType EventType) ([]EventHandler, AsyncExecutor, error) {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.initializeLocked()
+	if eb.state != eventBusOpen {
+		return nil, nil, ErrEventBusClosed
+	}
+	handlers := eb.snapshotHandlersLocked(eventType)
+	if len(handlers) == 0 {
+		return nil, nil, nil
+	}
+	if eb.executor == nil {
+		return nil, nil, ErrEventBusNoExecutor
+	}
+	eb.inFlightSubmissions++
+	return handlers, eb.executor, nil
+}
+
+func (eb *EventBus) finishAsyncSubmission() {
+	eb.mu.Lock()
+	eb.inFlightSubmissions--
+	if eb.inFlightSubmissions == 0 {
+		eb.stateChanged.Broadcast()
+	}
+	eb.mu.Unlock()
+}
+
+func (eb *EventBus) snapshotHandlersLocked(eventType EventType) []EventHandler {
 	subs := eb.handlers[eventType]
 	if len(subs) == 0 {
 		return nil
 	}
-	fns := make([]EventHandler, len(subs))
-	for i, s := range subs {
-		fns[i] = s.fn
+	handlers := make([]EventHandler, len(subs))
+	for i, current := range subs {
+		handlers[i] = current.fn
 	}
-	return fns
+	return handlers
 }
 
-func (eb *EventBus) Publish(event *Event) {
-	if !eb.running.Load() {
-		return
-	}
-
-	fns := eb.snapshotHandlers(event.Type)
-	if len(fns) == 0 {
-		return
-	}
-
-	for _, handler := range fns {
-		h := handler
-		e := event
-		err := eb.workerPool.Submit(func() error {
-			defer func() {
-				if r := recover(); r != nil {
-					eb.logger.Error("Panic in event handler",
-						zap.Int("eventType", int(e.Type)),
-						zap.Any("recover", r))
-				}
-			}()
-			h(e)
-			return nil
-		})
-		if err != nil {
-			eb.logger.Error("Failed to submit event handler to worker pool",
-				zap.Int("eventType", int(event.Type)),
-				zap.Error(err))
-		}
-	}
-}
-
-func (eb *EventBus) PublishSync(event *Event) {
-	if !eb.running.Load() {
-		return
-	}
-
-	fns := eb.snapshotHandlers(event.Type)
-	if len(fns) == 0 {
-		return
-	}
-
-	for _, handler := range fns {
+func (eb *EventBus) runHandlers(event *Event, handlers []EventHandler) {
+	for _, handler := range handlers {
 		func() {
 			defer func() {
-				if r := recover(); r != nil {
-					eb.logger.Error("Panic in event handler",
+				if recovered := recover(); recovered != nil {
+					eb.handlerPanics.Add(1)
+					eb.eventLogger().Error("Panic in event handler",
 						zap.Int("eventType", int(event.Type)),
-						zap.Any("recover", r))
+						zap.Any("recover", recovered))
 				}
 			}()
 			handler(event)
@@ -189,35 +320,66 @@ func (eb *EventBus) PublishSync(event *Event) {
 	}
 }
 
+func mapExecutorError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, zConcurrency.ErrWorkerPoolFull):
+		return errors.Join(ErrEventBusFull, err)
+	case errors.Is(err, zConcurrency.ErrWorkerPoolClosed), errors.Is(err, zConcurrency.ErrWorkerPoolNotRunning):
+		return errors.Join(ErrEventBusExecutorUnavailable, err)
+	default:
+		return errors.Join(ErrEventBusExecutorRejected, err)
+	}
+}
+
+// Close atomically rejects new operations, waits only for in-flight executor submissions, then
+// clears subscriptions. Borrowed executors remain running; the compatibility pool is drained.
 func (eb *EventBus) Close() {
-	if !eb.running.CompareAndSwap(true, false) {
+	eb.mu.Lock()
+	eb.initializeLocked()
+	switch eb.state {
+	case eventBusClosing:
+		for eb.state != eventBusClosed {
+			eb.stateChanged.Wait()
+		}
+		eb.mu.Unlock()
+		return
+	case eventBusClosed:
+		eb.mu.Unlock()
 		return
 	}
+	eb.state = eventBusClosing
+	for eb.inFlightSubmissions > 0 {
+		eb.stateChanged.Wait()
+	}
+	clear(eb.handlers)
+	owned := eb.ownedExecutor
+	eb.mu.Unlock()
 
-	if eb.workerPool != nil {
-		eb.workerPool.Stop()
+	if owned != nil {
+		owned.Stop()
 	}
 
 	eb.mu.Lock()
-	defer eb.mu.Unlock()
-
-	for eventType := range eb.handlers {
-		delete(eb.handlers, eventType)
-	}
-
-	eb.logger.Info("EventBus closed")
+	eb.state = eventBusClosed
+	eb.stateChanged.Broadcast()
+	eb.mu.Unlock()
 }
 
 func (eb *EventBus) GetHandlerCount(eventType EventType) int {
-	eb.mu.RLock()
-	defer eb.mu.RUnlock()
-
-	if handlers, exists := eb.handlers[eventType]; exists {
-		return len(handlers)
-	}
-	return 0
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	eb.initializeLocked()
+	return len(eb.handlers[eventType])
 }
 
 func (eb *EventBus) HasSubscribers(eventType EventType) bool {
 	return eb.GetHandlerCount(eventType) > 0
+}
+
+// HandlerPanicCount returns the number of isolated handler panics observed by this bus.
+func (eb *EventBus) HandlerPanicCount() uint64 {
+	return eb.handlerPanics.Load()
 }

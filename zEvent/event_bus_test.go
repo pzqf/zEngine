@@ -78,7 +78,7 @@ func TestEventBus_UnsubscribeOneOfMany(t *testing.T) {
 
 // TestEventBus_AsyncPublish 验证异步 Publish 能投递到 handler。
 func TestEventBus_AsyncPublish(t *testing.T) {
-	bus := NewEventBus()
+	bus := NewEventBusWithPool(1, 8)
 	defer bus.Close()
 
 	done := make(chan struct{}, 1)
@@ -109,7 +109,7 @@ func TestEventBus_SyncPanicIsolation(t *testing.T) {
 
 // TestEventBus_ConcurrentSubUnsubPublish 并发订阅/退订/发布，验证无 panic/竞态崩溃。
 func TestEventBus_ConcurrentSubUnsubPublish(t *testing.T) {
-	bus := NewEventBus()
+	bus := NewEventBusWithPool(4, 1024)
 	defer bus.Close()
 
 	var wg sync.WaitGroup

@@ -17,21 +17,23 @@ import (
 // TcpServerSession TCP服务器会话
 // 管理与单个客户端的TCP连接，负责数据收发、心跳检测、加密解密
 type TcpServerSession struct {
-	conn          *net.TCPConn
-	sid           SessionIdType
-	sendChan      chan *NetPacket
-	receiveChan   chan *NetPacket
-	wg            sync.WaitGroup
-	lastHeartBeat time.Time
-	ctxCancel     context.CancelFunc
-	onClose       TcpCloseCallBackFunc
-	closeOnce     sync.Once
-	aesKey        []byte
-	currentKey    atomic.Value
-	currentKeyID  atomic.Uint32
-	svr           *TcpServer    // 所属服务器
-	obj           interface{}   // 附加对象
-	sendSequence  atomic.Uint64 // 发送序列号
+	conn              *net.TCPConn
+	sid               SessionIdType
+	sendQueue         *outboundQueue
+	receiveChan       chan *NetPacket
+	wg                sync.WaitGroup
+	lastHeartBeat     time.Time
+	ctxCancel         context.CancelFunc
+	onClose           TcpCloseCallBackFunc
+	closeOnce         sync.Once
+	aesKey            []byte
+	currentKey        atomic.Value
+	currentKeyID      atomic.Uint32
+	svr               *TcpServer    // 所属服务器
+	obj               interface{}   // 附加对象
+	sendSequence      atomic.Uint64 // 发送序列号
+	packetCodec       PacketCodec
+	invalidPacketLogs packetErrorLogLimiter
 }
 
 // TcpCloseCallBackFunc TCP连接关闭回调函数类型
@@ -61,12 +63,13 @@ func NewTcpServerSession(svr *TcpServer, conn *net.TCPConn, sid SessionIdType, c
 	newSession := TcpServerSession{
 		conn:          conn,
 		sid:           sid,
-		sendChan:      make(chan *NetPacket, svr.config.ChanSize),
+		sendQueue:     newOutboundQueue(svr.config.ChanSize, backpressureMetrics(svr.metrics)),
 		receiveChan:   make(chan *NetPacket, svr.config.ChanSize),
 		lastHeartBeat: time.Now(),
 		onClose:       closeCallBack,
 		aesKey:        aesKey,
 		svr:           svr,
+		packetCodec:   svr.packetCodec,
 	}
 	// 初始化当前密钥
 	newSession.currentKey.Store(aesKey)
@@ -88,7 +91,7 @@ func (s *TcpServerSession) UpdateKey(newKey []byte, newKeyID uint32) {
 		Timestamp: time.Now().Unix(),
 		Nonce:     0,
 	}
-	data := notify.Marshal()
+	data := notify.MarshalWithByteOrder(s.packetCodec.ByteOrder())
 	_ = s.Send(KeyRotationNotifyProtoId, data)
 }
 
@@ -131,9 +134,7 @@ func (s *TcpServerSession) Start() {
 	s.wg.Add(1)
 	go s.receive(ctx) // 启动接收协程
 
-	// process() 是 sendChan 的**唯一消费者**，必须无条件启动（NET-2）——否则 worker-pool 模式下
-	// 收包走工作池、但没人消费 sendChan，session.Send 填满 sendChan 后永久阻塞（Gateway 默认开池，
-	// 一旦某客户端积压 ChanSize 条推送即死锁）。worker-pool 模式下 receiveChan 不被喂（收包走池），
+	// process() 是 sendQueue 的唯一消费者，必须无条件启动。worker-pool 模式下 receiveChan 不被喂，
 	// process() 的 receiveChan 分支不触发、仅服务发送侧。
 	s.wg.Add(1)
 	go s.process(ctx)
@@ -147,6 +148,7 @@ func (s *TcpServerSession) Start() {
 // Close 关闭会话
 // 取消上下文并等待所有goroutine退出
 func (s *TcpServerSession) Close() {
+	s.sendQueue.Close(ErrSessionClosed)
 	if s.ctxCancel != nil {
 		s.ctxCancel()
 	}
@@ -212,14 +214,12 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			break
 		}
 
-		// 解析数据包头
-		netPacket := NetPacket{}
-		if err = netPacket.UnmarshalHead(headBuf); err != nil {
-			if s.svr.metrics != nil {
-				s.svr.metrics.IncDecodingErrors()
-			}
-			if s.svr.logger != nil {
-				s.svr.logger.Error("Receive NetPacket,Unmarshal head error: %v, len: %d", err, len(headBuf))
+		// 解析并校验数据包头。失败即关闭 TCP：流式连接无法可靠跳过一个不可信长度的 body。
+		netPacket, decodeErr := s.packetCodec.DecodeHeader(headBuf, s.svr.config.MaxWirePacketSize)
+		if decodeErr != nil {
+			recordPacketDecodeError(s.svr.metrics, decodeErr)
+			if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.svr.logger.Error("Receive NetPacket, invalid head: %v, len: %d", decodeErr, len(headBuf))
 			}
 			break
 		}
@@ -260,15 +260,6 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			break
 		}
 
-		// 检查数据包大小是否超过限制
-		if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-			if s.svr.logger != nil {
-				s.svr.logger.Warn("Receive NetPacket, Data size over max size, protoid:%d, data size:%d, max size: %d",
-					netPacket.ProtoId, netPacket.DataSize, s.svr.config.MaxPacketDataSize)
-			}
-			continue
-		}
-
 		// 指标上报：整包（头+体）成功读入，计入接收字节与包数（Phase 3.5）。
 		if s.svr.metrics != nil {
 			s.svr.metrics.RecordBytesReceived(NetPacketHeadSize + int(netPacket.DataSize))
@@ -278,12 +269,25 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 		// 非心跳包处理
 		if netPacket.ProtoId != HeartbeatProtoId {
 			if s.svr.config.UseWorkerPool {
-				// 工作池模式：提交任务到工作池
+				// 工作池模式：队列饱和时停止读本连接形成 TCP 背压；关闭可经 ctx 取消等待。
 				packet := netPacket // 复制数据包
-				s.svr.workerPool.Submit(func() error {
+				started := time.Now()
+				err := s.svr.workerPool.SubmitWithContext(ctx, func() error {
 					s.processPacket(&packet)
 					return nil
 				})
+				if metrics := backpressureMetrics(s.svr.metrics); metrics != nil {
+					metrics.RecordWorkerQueueWait(time.Since(started))
+					if err != nil {
+						metrics.IncWorkerQueueRejected()
+					}
+				}
+				if err != nil {
+					if ctx.Err() == nil && s.svr.logger != nil {
+						s.svr.logger.Warn("Worker queue rejected packet: %v, sid:%d", err, s.sid)
+					}
+					break
+				}
 			} else {
 				// 传统模式：放入接收通道
 				s.receiveChan <- &netPacket
@@ -320,32 +324,17 @@ func (s *TcpServerSession) processPacket(packet *NetPacket) {
 		return
 	}
 
-	// 解密数据
-	if packet.DataSize > 0 && !s.svr.config.DisableEncryption {
-		key := s.GetDecryptKey(packet.KeyID)
-		if key != nil {
-			if decrypted, err := zCrypto.AESDecrypt(packet.Data, key, nil, zCrypto.AESModeGCM); err == nil {
-				packet.Data = decrypted
-			} else {
-				if s.svr.logger != nil {
-					s.svr.logger.Error("AES-GCM decrypt error: %v, sid:%d, keyID:%d", err, s.sid, packet.KeyID)
-				}
-				return
-			}
-		}
+	encrypted := len(packet.Data) > 0 && !s.svr.config.DisableEncryption
+	var decryptKey []byte
+	if encrypted {
+		decryptKey = s.GetDecryptKey(packet.KeyID)
 	}
-
-	// 解压缩数据
-	if packet.IsCompressed == CompressionSnappy && packet.DataSize > 0 {
-		if decompressed, err := snappy.Decode(nil, packet.Data); err == nil {
-			packet.Data = decompressed
-			packet.DataSize = int32(len(decompressed))
-		} else {
-			if s.svr.logger != nil {
-				s.svr.logger.Error("Decompress error: %v, sid:%d", err, s.sid)
-			}
-			return
+	if err := decodePacketPayload(packet, decryptKey, encrypted, s.svr.config.MaxDecodedPacketSize); err != nil {
+		recordPacketDecodeError(s.svr.metrics, err)
+		if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+			s.svr.logger.Error("Decode packet payload error: %v, sid:%d, keyID:%d", err, s.sid, packet.KeyID)
 		}
+		return
 	}
 
 	// 分发到消息处理器。就地 recover 隔离单条消息的 panic——避免一条坏包连累整个会话
@@ -388,12 +377,16 @@ func (s *TcpServerSession) process(ctx context.Context) {
 			// 使用processPacket处理数据包
 			s.processPacket(receivePacket)
 
-		case sendPacket := <-s.sendChan:
+		case <-s.sendQueue.Ready():
 			// 发送数据包
-			_, err := s.send(sendPacket)
+			sendPacket, ok := s.sendQueue.TryDequeue()
+			if !ok {
+				continue
+			}
+			_, err := s.sendOutbound(sendPacket)
 			if err != nil {
 				if s.svr.logger != nil {
-					s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+					s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.packet.ProtoId)
 				}
 			}
 		case <-ctx.Done():
@@ -407,14 +400,14 @@ func (s *TcpServerSession) process(ctx context.Context) {
 				}
 				break
 			}
-			// 处理发送通道中剩余的消息
+			s.sendQueue.Close(ErrSessionClosed)
+			// 处理发送队列中剩余的消息
 			for {
-				if len(s.sendChan) > 0 {
-					sendPacket := <-s.sendChan
-					_, err := s.send(sendPacket)
+				if sendPacket, ok := s.sendQueue.TryDequeue(); ok {
+					_, err := s.sendOutbound(sendPacket)
 					if err != nil {
 						if s.svr.logger != nil {
-							s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.ProtoId)
+							s.svr.logger.Error("Send NetPacket error:%v, ProtoId:%d", err, sendPacket.packet.ProtoId)
 						}
 						break
 					}
@@ -449,6 +442,31 @@ func (s *TcpServerSession) process(ctx context.Context) {
 // 返回:
 //   - error: 发送失败时返回错误
 func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultSendTimeout)
+	defer cancel()
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+// SendContext 以 ReliableCommand admission 发送；成功只表示已进入发送队列。
+func (s *TcpServerSession) SendContext(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	return s.SendWithOptions(ctx, protoId, data, SendOptions{Class: ReliableCommand})
+}
+
+// SendWithOptions 按投递等级执行有界 admission。
+func (s *TcpServerSession) SendWithOptions(ctx context.Context, protoId ProtoIdType, data []byte, options SendOptions) error {
+	ctx, cancel := normalizeSendContext(ctx, DefaultSendTimeout)
+	defer cancel()
+	if options.Class == LatestFrame && options.CoalesceKey == 0 {
+		options.CoalesceKey = uint64(uint32(protoId))
+	}
+	netPacket, err := s.buildOutboundPacket(protoId, data)
+	if err != nil {
+		return err
+	}
+	return s.sendQueue.Enqueue(ctx, &outboundPacket{packet: netPacket, deadline: outboundDeadline(ctx)}, options)
+}
+
+func (s *TcpServerSession) buildOutboundPacket(protoId ProtoIdType, data []byte) (*NetPacket, error) {
 	netPacket := NetPacket{
 		ProtoId:   protoId,
 		Sequence:  s.sendSequence.Add(1),
@@ -490,41 +508,33 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 			if s.svr.logger != nil {
 				s.svr.logger.Error("AES-GCM encrypt error: %v, ProtoId:%d", err, protoId)
 			}
-			return err
+			return nil, err
 		}
 	} else {
-		netPacket.Data = payload
+		netPacket.Data = append([]byte(nil), payload...)
 	}
 
 	netPacket.DataSize = int32(len(netPacket.Data))
-	if netPacket.DataSize < 0 {
+	if err := ValidatePacketHeader(&netPacket, s.svr.config.MaxWirePacketSize); err != nil {
 		if s.svr.logger != nil {
-			s.svr.logger.Error("Send packet illegal: data size negative, dataSize=%d", netPacket.DataSize)
+			s.svr.logger.Error("Send packet illegal: %v", err)
 		}
-		return errors.New("send packet illegal, data size negative")
+		return nil, err
 	}
-	// 允许负的保留协议 ID：HeartbeatProtoId(-1) 与 KeyRotationNotifyProtoId(-2)。
-	// 此前漏了 KeyRotationNotifyProtoId，导致服务端密钥轮换通知(-2)被 Send 拒绝、
-	// 客户端拿不到新密钥 → 后续密文用新密钥、客户端用旧密钥解 → 乱码。此为真实缺陷，
-	// 仅在会话存活超过 KeyRotationInterval（默认30s）时才暴露。
-	if netPacket.ProtoId <= 0 && netPacket.ProtoId != HeartbeatProtoId && netPacket.ProtoId != KeyRotationNotifyProtoId {
-		if s.svr.logger != nil {
-			s.svr.logger.Error("Send packet illegal: protoId=%d, dataSize=%d", protoId, netPacket.DataSize)
-		}
-		return errors.New("send packet illegal, protoId invalid")
-	}
-	// 检查数据包大小是否超过限制
-	if s.svr.config.MaxPacketDataSize > 0 && netPacket.DataSize > s.svr.config.MaxPacketDataSize {
-		if s.svr.logger != nil {
-			s.svr.logger.Error("Send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-				netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
-		}
-		return fmt.Errorf("send NetPacket, Data size over max size, data size :%d, max size: %d, protoId:%d",
-			netPacket.DataSize, s.svr.config.MaxPacketDataSize, protoId)
-	}
+	return &netPacket, nil
+}
 
-	s.sendChan <- &netPacket
-	return nil
+func (s *TcpServerSession) sendOutbound(outbound *outboundPacket) (int, error) {
+	if outbound == nil || outbound.packet == nil {
+		return 0, errors.New("nil outbound packet")
+	}
+	if !outbound.deadline.IsZero() {
+		if err := s.conn.SetWriteDeadline(outbound.deadline); err != nil {
+			return 0, err
+		}
+		defer s.conn.SetWriteDeadline(time.Time{})
+	}
+	return s.send(outbound.packet)
 }
 
 // send 发送数据包到TCP连接
@@ -535,7 +545,7 @@ func (s *TcpServerSession) Send(protoId ProtoIdType, data []byte) error {
 //   - int: 发送的字节数
 //   - error: 发送失败时返回错误
 func (s *TcpServerSession) send(netPacket *NetPacket) (int, error) {
-	n, err := s.conn.Write(netPacket.Marshal())
+	n, err := s.conn.Write(s.packetCodec.Marshal(netPacket))
 	if err != nil {
 		if s.svr.logger != nil {
 			s.svr.logger.Error("Failed to write to connection: %v, ProtoId: %d", err, netPacket.ProtoId)

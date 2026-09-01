@@ -31,6 +31,8 @@ type TcpServer struct {
 	keyRotationMgr    *KeyRotationManager                              // 密钥轮换管理器
 	sequenceManager   *SequenceManager                                 // 序列号管理器
 	metrics           NetworkMetricsRecorder                           // 可选网络指标上报器（nil 则不上报）
+	packetCodec       PacketCodec
+	packetCodecErr    error
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -44,6 +46,7 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	if cfg.ChanSize <= 0 {
 		cfg.ChanSize = DefaultChanSize
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
 
 	// 设置默认工作池参数
 	if cfg.WorkerPoolSize <= 0 {
@@ -89,6 +92,8 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	for _, opt := range opts {
 		opt(svr)
 	}
+	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
+	svr.packetCodec, svr.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
 
 	return svr
 }
@@ -99,6 +104,9 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 // 返回:
 //   - error: 启动失败时返回错误
 func (svr *TcpServer) Start() error {
+	if svr.packetCodecErr != nil {
+		return svr.packetCodecErr
+	}
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", svr.config.ListenAddress)
 	if err != nil {
 		if svr.logger != nil {
