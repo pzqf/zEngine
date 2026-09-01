@@ -9,147 +9,116 @@ import (
 	"go.uber.org/zap"
 )
 
-type CheckResult struct {
-	Status  HealthStatus           `json:"status"`
-	Message string                 `json:"message,omitempty"`
-	Details map[string]interface{} `json:"details,omitempty"`
-}
-
+// CheckFunc is the legacy context-free check callback.
 type CheckFunc func() CheckResult
 
+// Checker preserves the old public facade while sharing HealthManager's probe
+// execution and snapshot semantics.
 type Checker struct {
-	components    map[string]CheckFunc
-	componentStat map[string]ComponentStatus
+	manager       *HealthManager
 	mu            sync.RWMutex
 	checkInterval time.Duration
 }
 
 type ComponentStatus struct {
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Message   string    `json:"message,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Message     string    `json:"message,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	LastSuccess time.Time `json:"lastSuccess,omitempty"`
 }
 
 func NewChecker() *Checker {
 	return &Checker{
-		components:    make(map[string]CheckFunc),
-		componentStat: make(map[string]ComponentStatus),
+		manager:       NewHealthManager("", ""),
 		checkInterval: 30 * time.Second,
 	}
 }
 
 func (c *Checker) SetCheckInterval(interval time.Duration) {
+	c.mu.Lock()
 	c.checkInterval = interval
+	c.mu.Unlock()
 }
 
 func (c *Checker) RegisterCheck(name string, checkFn CheckFunc) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.components[name] = checkFn
+	if checkFn == nil {
+		return
+	}
+	_ = c.manager.RegisterProbe(ProbeConfig{
+		Name:    name,
+		Scope:   ProbeScopeReadiness,
+		Timeout: defaultProbeTimeout,
+		Check: func(context.Context) (CheckResult, error) {
+			return checkFn(), nil
+		},
+	})
+}
+
+func (c *Checker) RegisterProbe(config ProbeConfig) error {
+	return c.manager.RegisterProbe(config)
 }
 
 func (c *Checker) UpdateComponentStatus(name, status, message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.componentStat[name] = ComponentStatus{
-		Name:      name,
-		Status:    status,
-		Message:   message,
-		Timestamp: time.Now(),
-	}
+	_ = c.manager.UpdateStatus(name, ProbeScopeReadiness, HealthStatus(status), message, nil)
+}
+
+func (c *Checker) UpdateStatus(name string, scope ProbeScope, status HealthStatus, message string, details map[string]interface{}) error {
+	return c.manager.UpdateStatus(name, scope, status, message, details)
 }
 
 func (c *Checker) GetComponentStatus(name string) (ComponentStatus, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	status, ok := c.componentStat[name]
-	return status, ok
+	check, ok := c.manager.GetHealthDetails()[name]
+	if !ok {
+		return ComponentStatus{}, false
+	}
+	return componentStatus(check), true
 }
 
 func (c *Checker) GetAllComponentStatus() map[string]ComponentStatus {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	statuses := make(map[string]ComponentStatus, len(c.componentStat))
-	for k, v := range c.componentStat {
-		statuses[k] = v
+	details := c.manager.GetHealthDetails()
+	statuses := make(map[string]ComponentStatus, len(details))
+	for name, check := range details {
+		statuses[name] = componentStatus(check)
 	}
 	return statuses
 }
 
 func (c *Checker) Start(ctx context.Context) {
 	zLog.Info("Starting health checker")
-
-	ticker := time.NewTicker(c.checkInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			zLog.Info("Health checker stopped")
-			return
-		case <-ticker.C:
-			c.runChecks()
-		}
-	}
+	c.mu.RLock()
+	interval := c.checkInterval
+	c.mu.RUnlock()
+	c.manager.Run(ctx, interval)
+	zLog.Info("Health checker stopped")
 }
 
-func (c *Checker) runChecks() {
-	c.mu.RLock()
-	components := make(map[string]CheckFunc, len(c.components))
-	for k, v := range c.components {
-		components[k] = v
-	}
-	c.mu.RUnlock()
-
-	for name, checkFn := range components {
-		result := checkFn()
-		c.UpdateComponentStatus(name, string(result.Status), result.Message)
-		zLog.Debug("Health check",
-			zap.String("component", name),
-			zap.String("status", string(result.Status)))
-	}
+func (c *Checker) Refresh(ctx context.Context) HealthReport {
+	return c.manager.Refresh(ctx)
 }
 
 func (c *Checker) CheckHealth() HealthReport {
-	c.mu.RLock()
-	components := make(map[string]CheckFunc, len(c.components))
-	for k, v := range c.components {
-		components[k] = v
-	}
-	c.mu.RUnlock()
+	return c.manager.GetHealthReport()
+}
 
-	checks := make([]HealthCheck, 0, len(components))
-	overallHealthy := true
+func (c *Checker) GetHealthReport() HealthReport {
+	return c.manager.GetHealthReport()
+}
 
-	for name, checkFn := range components {
-		result := checkFn()
-		checks = append(checks, HealthCheck{
-			Name:      name,
-			Status:    result.Status,
-			Message:   result.Message,
-			LastCheck: time.Now(),
-		})
-		if !result.Status.IsHealthy() {
-			overallHealthy = false
-		}
-	}
+func (c *Checker) IsLive() bool {
+	return c.manager.IsLive()
+}
 
-	return HealthReport{
-		Healthy: overallHealthy,
-		Checks:  checks,
-	}
+func (c *Checker) IsReady() bool {
+	return c.manager.IsReady()
 }
 
 func (c *Checker) IsHealthy() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for _, status := range c.componentStat {
-		if status.Status != string(HealthStatusHealthy) {
-			return false
-		}
-	}
-	return len(c.componentStat) > 0
+	return c.manager.IsHealthy()
+}
+
+func (c *Checker) HealthStatus() (live, ready, healthy bool) {
+	return c.manager.HealthStatus()
 }
 
 func (c *Checker) LogStatus() {
@@ -159,6 +128,16 @@ func (c *Checker) LogStatus() {
 			zap.String("component", name),
 			zap.String("status", status.Status),
 			zap.String("message", status.Message))
+	}
+}
+
+func componentStatus(check HealthCheck) ComponentStatus {
+	return ComponentStatus{
+		Name:        check.Name,
+		Status:      string(check.Status),
+		Message:     check.Message,
+		Timestamp:   check.LastCheck,
+		LastSuccess: check.LastSuccess,
 	}
 }
 

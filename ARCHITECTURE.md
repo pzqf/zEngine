@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.16
+**文档版本**：0.0.17
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -66,7 +66,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 |------|------|
 | **zLog** | 基于 zap + lumberjack 的结构化日志；异步写入、采样、文件轮转、多日志器、`{ServerID}` 占位符。 |
 | **zMetrics** | Prometheus Counter/Gauge/Histogram checked schema registry（name/type/help/const labels/buckets）与运行时/网络采集；失败注册不缓存，MemoryMonitor handler 同步且 Stop 可立即唤醒。HTTP listener/mux 的进程适配在 zCommon，由四角色显式持有。 |
-| **zHealth** | 可插拔健康检查和报告模型；Memory/Goroutine 有检查逻辑，Disk/Time 仍固定返回 Healthy，不能直接作为生产 readiness。 |
+| **zHealth** | liveness/readiness/diagnostics 通用 probe 与不可变快照；支持 timeout、CacheTTL、LastSuccess、panic 隔离和单 in-flight，空集合/未执行/占位检查保持 Unknown。旧 checker API 复用同一模型；具体“可接流量”策略由应用注入。 |
 | **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 进程信号处理，驱动优雅退出。 |
 | **zDistributed** | 基于官方 etcd Session/Mutex 的 fenced 排他锁：Acquire 返回只读 LockHandle，lease/owner key 丢失会失效；Release compare-delete，create revision 提供单调 fence，Validate/GuardedTxn 可原子校验受保护 etcd 写入。retry 可取消，shared 明确 unsupported；旧 Lock/Unlock 仅作 advisory 兼容。当前无 zMmoServer 生产调用。 |
@@ -188,7 +188,9 @@ Client                                             Server
 - **可观测**：zMetrics 提供 checked Prometheus collector registry；通过 `WithServerMetrics` 显式注入后，zNet 自动记录连接、
   流量、总解码错误、解码错误分类、发送队列容量/深度、三类拒绝或丢弃以及 send/worker admission
   等待。zMmoServer 的 zCommon 适配使用每实例私有 mux/listener 和可取消 Stop 暴露 `/metrics`；不在该端口
-  冒充 readiness。四角色已显式启动/停止该资源，完整启动事务和真实健康仍由 LIF-01/HLT-01 验收。
+  冒充 readiness。zHealth 只在 `Refresh/Run` 执行 probe，报告和 HTTP 读取缓存；zServer 通过应用注入的
+  provider 合并真实进程状态。zMmoServer 四角色的 MySQL/etcd 降级恢复与 `/live`、`/ready` 已通过 E4/E5；
+  完整启动事务和统一停止仍由 LIF-01 验收。
 
 ## 8. 扩展点一览
 
@@ -199,6 +201,7 @@ Client                                             Server
 | 加一个后台服务 | 实现服务并用 zService 声明依赖，拓扑初始化 |
 | 加一个进程级组件 | `BaseServer.RegisterComponent` |
 | 加指标 | zMetrics `Register*Checked` 注册 Counter/Gauge/Histogram，并处理 schema 错误 |
+| 加健康检查 | zHealth `RegisterProbe` 声明 scope/timeout/cache；应用层决定哪些依赖阻断 readiness |
 | 加分布式协调 | zDistributed `FencedLock.Acquire` + `LockHandle`；etcd 写入用 `GuardedTxn`，业务 ownership 状态和存储 fence 留上层 |
 
 ---
@@ -210,6 +213,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.17 | 完成 HLT-01：记录统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight、Unknown/只读 GC 和 zServer provider 边界；四角色策略与真实故障恢复留在并已由 zMmoServer 验证。 |
 | 2026-09-01 | 0.0.16 | 完成 CON-03：记录进程内 experimental 事务协调器的准确命名、并发状态机、旧 API 兼容及无 durable/生产接线边界。 |
 | 2026-09-01 | 0.0.15 | 完成 CON-02：记录 SQL store 的 DB/Tx executor 事务参与边界及 zMmoServer grant 生产验证；引擎不拥有业务事务、ACK 或恢复策略。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：记录 V2 context/error、Outbox 严格三阶段/显式终结、Inbox 三态/fail-closed 和真实 MySQL 并发/重启 E3；事务原子性、上层 ACK 和 experimental 2PC 边界不变。 |

@@ -1,7 +1,10 @@
 // health 包提供服务器健康检查功能
 package zHealth
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // HealthStatus 健康检查状态
 type HealthStatus string
@@ -15,6 +18,9 @@ const (
 
 	// HealthStatusUnhealthy 不健康 - 健康检查未通过，服务不可用
 	HealthStatusUnhealthy HealthStatus = "unhealthy"
+
+	// HealthStatusUnknown 未知 - 尚未检查或检查能力未实现
+	HealthStatusUnknown HealthStatus = "unknown"
 )
 
 const (
@@ -23,7 +29,7 @@ const (
 	StatusDegraded  = string(HealthStatusDegraded)
 	StatusStarting  = "starting"
 	StatusStopping  = "stopping"
-	StatusUnknown   = "unknown"
+	StatusUnknown   = string(HealthStatusUnknown)
 )
 
 const (
@@ -48,22 +54,64 @@ func (h HealthStatus) IsHealthy() bool {
 	return h == HealthStatusHealthy
 }
 
+// IsAvailable 判断当前状态是否仍允许提供服务。
+func (h HealthStatus) IsAvailable() bool {
+	return h == HealthStatusHealthy || h == HealthStatusDegraded
+}
+
+// ProbeScope 区分存活、就绪和仅供诊断的检查。
+type ProbeScope string
+
+const (
+	ProbeScopeLiveness    ProbeScope = "liveness"
+	ProbeScopeReadiness   ProbeScope = "readiness"
+	ProbeScopeDiagnostics ProbeScope = "diagnostics"
+)
+
+// CheckResult 是 probe 返回的通用结果，不包含执行时间等管理器元数据。
+type CheckResult struct {
+	Status  HealthStatus           `json:"status"`
+	Message string                 `json:"message,omitempty"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// ProbeFunc 必须尊重 context 取消；管理器用它实施单次检查超时。
+type ProbeFunc func(context.Context) (CheckResult, error)
+
+// ProbeConfig 描述一个可缓存、有界执行的健康探针。
+type ProbeConfig struct {
+	Name     string
+	Scope    ProbeScope
+	Timeout  time.Duration
+	CacheTTL time.Duration
+	Check    ProbeFunc
+}
+
 // HealthCheck 健康检查项
 type HealthCheck struct {
-	Name      string        `json:"name"`
-	Status    HealthStatus  `json:"status"`
-	Latency   time.Duration `json:"latency"`
-	LastCheck time.Time     `json:"lastCheck"`
-	Message   string        `json:"message"`
+	Name        string                 `json:"name"`
+	Scope       ProbeScope             `json:"scope"`
+	Status      HealthStatus           `json:"status"`
+	Latency     time.Duration          `json:"latency"`
+	LastCheck   time.Time              `json:"lastCheck"`
+	LastSuccess time.Time              `json:"lastSuccess,omitempty"`
+	Message     string                 `json:"message"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	TimedOut    bool                   `json:"timedOut,omitempty"`
 }
 
 // HealthReport 健康报告
 type HealthReport struct {
-	ServerID   string        `json:"serverId"`
-	ServerType string        `json:"serverType"`
-	Healthy    bool          `json:"healthy"`
-	StartTime  time.Time     `json:"startTime"`
-	Checks     []HealthCheck `json:"checks"`
+	ServerID    string        `json:"serverId"`
+	ServerType  string        `json:"serverType"`
+	Live        bool          `json:"live"`
+	Ready       bool          `json:"ready"`
+	Healthy     bool          `json:"healthy"`
+	Liveness    HealthStatus  `json:"liveness"`
+	Readiness   HealthStatus  `json:"readiness"`
+	StartTime   time.Time     `json:"startTime"`
+	GeneratedAt time.Time     `json:"generatedAt"`
+	Checks      []HealthCheck `json:"checks"`
 }
 
 // HealthChecker 健康检查接口

@@ -60,3 +60,19 @@ func TestStateChangeListener_HandleAddRemove(t *testing.T) {
 		t.Fatalf("removed listener still fired: total=%d (want 3)", got)
 	}
 }
+
+func TestHealthyCanDegradeToReady(t *testing.T) {
+	srv := NewBaseServer("test", "1", "test", "0.0.1", noopHooks{})
+	if err := srv.SetState(StateInitializing, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetState(StateReady, "dependencies pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetState(StateHealthy, "dependencies ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetState(StateReady, "dependency lost"); err != nil {
+		t.Fatalf("healthy server could not degrade to ready: %v", err)
+	}
+}

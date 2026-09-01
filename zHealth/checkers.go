@@ -2,7 +2,6 @@ package zHealth
 
 import (
 	"runtime"
-	"runtime/debug"
 )
 
 // MemoryChecker 内存检查器
@@ -97,8 +96,7 @@ func (c *DiskChecker) Name() string {
 
 // Check 执行磁盘检查
 func (c *DiskChecker) Check() (HealthStatus, string, error) {
-	// 预留实现
-	return HealthStatusHealthy, "Disk check not implemented", nil
+	return HealthStatusUnknown, "Disk check not implemented", nil
 }
 
 // TimeChecker 时间检查器（预留）
@@ -116,8 +114,7 @@ func (c *TimeChecker) Name() string {
 
 // Check 执行时间检查
 func (c *TimeChecker) Check() (HealthStatus, string, error) {
-	// 预留实现
-	return HealthStatusHealthy, "Time check not implemented", nil
+	return HealthStatusUnknown, "Time check not implemented", nil
 }
 
 // GCChecker 垃圾回收检查器
@@ -135,9 +132,6 @@ func (c *GCChecker) Name() string {
 
 // Check 执行垃圾回收检查
 func (c *GCChecker) Check() (HealthStatus, string, error) {
-	// 强制垃圾回收
-	debug.FreeOSMemory()
-
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 

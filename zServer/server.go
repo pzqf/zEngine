@@ -2,6 +2,7 @@ package zServer
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,25 @@ type BaseServer struct {
 	cancel         context.CancelFunc
 	hooks          LifecycleHooks
 	logger         Logger
+	healthMu       sync.RWMutex
+	healthProvider HealthProvider
+}
+
+// HealthProvider 由应用装配，zServer 不决定具体依赖是否阻断流量。
+type HealthProvider interface {
+	HealthStatus() (live, ready, healthy bool)
+}
+
+func (s *BaseServer) SetHealthProvider(provider HealthProvider) {
+	s.healthMu.Lock()
+	s.healthProvider = provider
+	s.healthMu.Unlock()
+}
+
+func (s *BaseServer) getHealthProvider() HealthProvider {
+	s.healthMu.RLock()
+	defer s.healthMu.RUnlock()
+	return s.healthProvider
 }
 
 func NewBaseServer(serverType ServerType, serverId, serverName, version string, hooks LifecycleHooks) *BaseServer {

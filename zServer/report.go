@@ -9,6 +9,8 @@ type StateReport struct {
 	ServerID   string        `json:"serverId"`
 	ServerType string        `json:"serverType"`
 	State      ServerState   `json:"state"`
+	Live       bool          `json:"live"`
+	Ready      bool          `json:"ready"`
 	Healthy    bool          `json:"healthy"`
 	StartTime  time.Time     `json:"startTime"`
 	Uptime     time.Duration `json:"uptime"`
@@ -22,11 +24,21 @@ func (s *BaseServer) GetStateReport() StateReport {
 			serverID = idStr
 		}
 	}
+	state := s.GetState()
+	live, ready, healthy := false, false, false
+	if provider := s.getHealthProvider(); provider != nil {
+		live, ready, healthy = provider.HealthStatus()
+		live = live && !state.IsTerminal()
+		ready = ready && state.IsActive()
+		healthy = healthy && live && ready
+	}
 	return StateReport{
 		ServerID:   serverID,
 		ServerType: string(s.ServerType),
-		State:      s.GetState(),
-		Healthy:    s.IsStateActive(),
+		State:      state,
+		Live:       live,
+		Ready:      ready,
+		Healthy:    healthy,
 		StartTime:  s.startTime,
 		Uptime:     time.Since(s.startTime),
 	}

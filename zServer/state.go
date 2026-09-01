@@ -48,7 +48,7 @@ func (s ServerState) CanTransitionTo(targetState ServerState) bool {
 	case StateReady:
 		return targetState == StateHealthy || targetState == StateMaintenance || targetState == StateDraining || targetState == StateStopped
 	case StateHealthy:
-		return targetState == StateMaintenance || targetState == StateDraining || targetState == StateStopped
+		return targetState == StateReady || targetState == StateMaintenance || targetState == StateDraining || targetState == StateStopped
 	case StateDraining:
 		return targetState == StateStopped
 	case StateMaintenance:

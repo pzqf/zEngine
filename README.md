@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.16
+**文档版本**：0.0.17
 
 ## 项目概述
 
@@ -337,9 +337,15 @@ participant callback 和并发安全 snapshot；旧 `TransactionManager` 名称�
 
 ### zHealth - 健康检查原语
 
-当前 MemoryChecker、GoroutineChecker 有实际检查逻辑；DiskChecker 和 TimeChecker 只是占位实现并固定
-返回 Healthy，GCChecker 还会主动触发 `debug.FreeOSMemory`。两套 checker 模型、空检查集合和生命周期
-语义尚未统一，且当前没有包级测试，不能把这些类型直接当作生产 readiness。
+`HealthManager` 以 `ProbeConfig` 统一 liveness/readiness/diagnostics，支持 context timeout、CacheTTL、
+LastSuccess、panic 隔离和确定性快照；同一 probe 最多一个在途调用，不响应 context 的旧检查器超时后也
+不会累积 goroutine。只有 `Refresh/Run` 执行检查，HTTP、状态上报和 `GetHealthReport` 只读缓存。空集合、
+未执行和未实现检查保持 Unknown，不伪装 Healthy；Disk/Time 返回 Unknown，GC 只读 runtime 指标。
+
+旧 `HealthManager`、`Checker`、`HealthChecker` 和 `CheckFunc` API 保留并复用同一底层模型。zServer 通过
+应用注入的 `HealthProvider` 生成 Live/Ready/Healthy，具体 Game/Map/数据库/服务发现策略仍由上层决定。
+zMmoServer 四角色已用真实 MySQL/etcd 和四进程 E4/E5 验证降级与恢复；启动失败回滚和统一 Stop 仍归
+LIF-01，不由 zHealth 承担。
 
 ### zEvent - 事件总线
 
@@ -433,6 +439,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.17 | 完成 HLT-01：统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight 与兼容 API；空集合/占位检查不再假 Healthy，GC 改为只读，并由四进程真实依赖故障恢复验证。 |
 | 2026-09-01 | 0.0.16 | 完成 CON-03：通用 2PC 裁决为 experimental `InMemoryTransactionCoordinator`，修复并发状态转换并保留旧名兼容；无 durable/recovery 或生产接线承诺。 |
 | 2026-09-01 | 0.0.15 | 完成 CON-02：SQL Outbox/Inbox 可绑定 DB/Tx executor 参与调用者本地事务，zMmoServer grant 生产链和真实 MySQL E3 已验证；业务 ACK/提交点仍留上层。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：增加 context/error V2 API、严格 Outbox 三阶段与显式终结、Inbox 三态/fail-closed、旧 API 兼容；Memory/SQL 并发与真实 MySQL 重启 E3 通过，事务原子性仍归 CON-02。 |
