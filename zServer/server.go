@@ -32,6 +32,21 @@ type BaseServer struct {
 	logger         Logger
 	healthMu       sync.RWMutex
 	healthProvider HealthProvider
+	lifecycleMu    sync.Mutex
+	startClaimed   bool
+	startComplete  bool
+	startSucceeded bool
+	stopping       atomic.Bool
+	startDone      chan struct{}
+	stopDone       chan struct{}
+	stopOnce       sync.Once
+	stopErr        error
+	cleanupMu      sync.Mutex
+	cleanups       []cleanupEntry
+	cleanupNames   map[string]struct{}
+	cleanupClosed  bool
+	stateMu        sync.Mutex
+	signalContext  func() (context.Context, context.CancelFunc)
 }
 
 // HealthProvider 由应用装配，zServer 不决定具体依赖是否阻断流量。
@@ -68,6 +83,10 @@ func NewBaseServer(serverType ServerType, serverId, serverName, version string, 
 		ctx:            ctx,
 		cancel:         cancel,
 		hooks:          hooks,
+		startDone:      make(chan struct{}),
+		stopDone:       make(chan struct{}),
+		cleanupNames:   make(map[string]struct{}),
+		signalContext:  defaultSignalContext,
 	}
 	bs.state.Store(StateStarting)
 	return bs

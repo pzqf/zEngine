@@ -1,176 +1,226 @@
 package zServer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"syscall"
+
+	"github.com/pzqf/zEngine/zSignal"
 )
 
-// LifecycleHooks 生命周期钩子接口
-// 子类必须实现这三个方法
+var (
+	ErrStartAlreadyCalled = errors.New("server start already called")
+	ErrRestartUnsupported = errors.New("server restart is unsupported; create a new server")
+	ErrServerStopping     = errors.New("server stopped while starting")
+)
+
+// LifecycleHooks keeps the original application hook contract. Final cleanup
+// belongs in RegisterCleanup; OnAfterStop is discovered through AfterStopHook
+// so existing implementations remain source compatible.
 type LifecycleHooks interface {
 	OnBeforeStart() error
 	OnAfterStart() error
 	OnBeforeStop()
 }
 
-// Start 启动服务器：要求当前状态为 Starting，依次执行 OnBeforeStart、OnAfterStart 钩子。
-//
-// 状态机契约（成熟化改造 Phase 1.3.1 明确）：
-//   - Start 只负责失败兜底——任一钩子返回错误即置 Stopped 并返回该错误。
-//   - **成功路径的状态推进（Initializing→Ready→Healthy）由业务在钩子内自行驱动**，
-//     框架不自动推进，以保留灵活性（如在 OnBeforeStart 内 Initialize() 后校验依赖，
-//     在 OnAfterStart 内 Ready() 再 Healthy()）。便捷方法见 Initialize()/Ready()/Healthy()。
-//   - 因此若业务未在钩子内驱动状态，Start() 成功返回后服务器仍停留在 Starting。
-//     此为有意设计（业务驱动），而非缺陷；Stop() 则由框架驱动 Draining→Stopped。
-//
-// 返回:
-//   - error: 启动失败时返回错误（此时状态已被置为 Stopped）
+// AfterStopHook is an optional notification invoked after resource cleanup and
+// before the terminal state is published.
+type AfterStopHook interface {
+	OnAfterStop()
+}
+
+func defaultSignalContext() (context.Context, context.CancelFunc) {
+	return zSignal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// Start executes the application startup hooks once. A failure cancels the
+// server context, rolls back all registered resources, and returns only after
+// the server reaches Stopped.
 func (s *BaseServer) Start() error {
-	// 检查服务器状态，如果不是 Starting 状态，则返回错误
-	if state := s.GetState(); state != StateStarting {
-		return fmt.Errorf("server already running or stopped")
+	s.lifecycleMu.Lock()
+	if s.startClaimed {
+		s.lifecycleMu.Unlock()
+		if s.GetState().IsTerminal() {
+			return ErrRestartUnsupported
+		}
+		return ErrStartAlreadyCalled
 	}
+	if s.stopping.Load() || s.GetState().IsTerminal() {
+		s.lifecycleMu.Unlock()
+		return ErrRestartUnsupported
+	}
+	s.startClaimed = true
+	s.lifecycleMu.Unlock()
 
 	logger := s.logger
-	serverType := s.ServerType
+	if logger != nil {
+		logger.Info("Starting %s Server...", s.ServerType)
+	}
+
+	startErr := callErrorHook("OnBeforeStart", s.hooks.OnBeforeStart)
+	if startErr == nil {
+		startErr = callErrorHook("OnAfterStart", s.hooks.OnAfterStart)
+	}
+
+	s.lifecycleMu.Lock()
+	s.startSucceeded = startErr == nil
+	stoppedDuringStart := s.stopping.Load()
+	if startErr == nil && !stoppedDuringStart {
+		s.isRunning.Store(true)
+	}
+	s.startComplete = true
+	close(s.startDone)
+	s.lifecycleMu.Unlock()
+
+	if startErr != nil {
+		if logger != nil {
+			logger.Error("Server startup failed: %v", startErr)
+		}
+		return errors.Join(startErr, s.StopWithError())
+	}
+	if stoppedDuringStart {
+		return errors.Join(ErrServerStopping, s.StopWithError())
+	}
 
 	if logger != nil {
-		logger.Info("Starting %s Server...", serverType)
-	}
-
-	// 启动前的准备工作 - 调用子类实现（可能会注册组件）
-	if err := s.hooks.OnBeforeStart(); err != nil {
-		// 设置状态为已停止
-		s.SetState(StateStopped, "start failed")
-		if logger != nil {
-			logger.Error("Failed to execute OnBeforeStart: %v", err)
-		}
-		return err
-	}
-
-	// 启动后的工作 - 调用子类实现
-	if err := s.hooks.OnAfterStart(); err != nil {
-		// 设置状态为已停止
-		s.SetState(StateStopped, "start failed")
-		if logger != nil {
-			logger.Error("Failed to execute OnAfterStart: %v", err)
-		}
-		return err
-	}
-
-	// OPT-11: 启动成功后置 isRunning=true。此前从无处 Store(true)→IsRunning() 恒 false，是个
-	// 永远返回假的死 API。现在与生命周期同步（Stop 里置 false）。
-	s.isRunning.Store(true)
-
-	if logger != nil {
-		logger.Info("%s Server started successfully!", serverType)
+		logger.Info("%s Server started successfully!", s.ServerType)
 	}
 	return nil
 }
 
-// Stop 停止服务器
+// Stop preserves the original compatibility API. It waits for the complete
+// stop transaction; callers that need the aggregate result use StopWithError.
 func (s *BaseServer) Stop() {
-	// 检查服务器状态，如果已经是停止状态，则直接返回
-	if state := s.GetState(); state.IsTerminal() {
-		return
-	}
-
-	logger := s.logger
-	serverType := s.ServerType
-
-	if logger != nil {
-		logger.Info("Stopping %s Server...", serverType)
-	}
-
-	// 设置状态为流量排空
-	if err := s.SetState(StateDraining, "server stopping"); err != nil && logger != nil {
-		logger.Warn("Failed to set draining state", "error", err)
-	}
-
-	// OPT-11: 置 isRunning=false（与 Start 的 true 对称）。
-	s.isRunning.Store(false)
-
-	// 停止前的工作 - 调用子类实现
-	s.hooks.OnBeforeStop()
-
-	// 取消上下文
-	s.cancel()
-
-	// 设置状态为已停止
-	if err := s.SetState(StateStopped, "server stopped"); err != nil && logger != nil {
-		logger.Warn("Failed to set stopped state", "error", err)
-	}
-
-	if logger != nil {
-		logger.Info("%s Server stopped gracefully", serverType)
-	}
+	_ = s.StopWithError()
 }
 
-// Shutdown 优雅关闭服务器（可被外部调用）
-// 可以通过 GM 命令、HTTP 接口等方式触发
+// StopWithError performs one complete shutdown transaction. Concurrent and
+// repeated callers wait for, and receive, the same aggregate result.
+func (s *BaseServer) StopWithError() error {
+	s.stopOnce.Do(func() {
+		s.stopping.Store(true)
+
+		s.lifecycleMu.Lock()
+		if !s.startClaimed && !s.startComplete {
+			s.startComplete = true
+			close(s.startDone)
+		}
+		startDone := s.startDone
+		s.lifecycleMu.Unlock()
+
+		<-startDone
+		s.stopErr = s.stopSequence()
+		close(s.stopDone)
+	})
+	<-s.stopDone
+	return s.stopErr
+}
+
+func (s *BaseServer) stopSequence() error {
+	logger := s.logger
+	if logger != nil {
+		logger.Info("Stopping %s Server...", s.ServerType)
+	}
+
+	s.lifecycleMu.Lock()
+	started := s.startSucceeded
+	s.lifecycleMu.Unlock()
+
+	var errs []error
+	if started {
+		if err := s.SetState(StateDraining, "server stopping"); err != nil {
+			errs = append(errs, fmt.Errorf("set draining state: %w", err))
+		}
+		s.isRunning.Store(false)
+		if err := callVoidHook("OnBeforeStop", s.hooks.OnBeforeStop); err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		s.isRunning.Store(false)
+	}
+
+	// Background owners observe cancellation before individual resources close.
+	s.cancel()
+	if err := s.runCleanups(); err != nil {
+		errs = append(errs, err)
+	}
+	if hook, ok := s.hooks.(AfterStopHook); ok {
+		if err := callVoidHook("OnAfterStop", hook.OnAfterStop); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := s.SetState(StateStopped, "server stopped"); err != nil {
+		errs = append(errs, fmt.Errorf("set stopped state: %w", err))
+	}
+
+	if logger != nil {
+		logger.Info("%s Server stopped", s.ServerType)
+	}
+	return errors.Join(errs...)
+}
+
+func callErrorHook(name string, hook func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%s panicked: %v", name, recovered)
+		}
+	}()
+	if err := hook(); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func callVoidHook(name string, hook func()) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%s panicked: %v", name, recovered)
+		}
+	}()
+	hook()
+	return nil
+}
+
+// Shutdown preserves the original compatibility API.
 func (s *BaseServer) Shutdown() {
+	_ = s.ShutdownWithError()
+}
+
+// ShutdownWithError is the externally callable checked form of Stop.
+func (s *BaseServer) ShutdownWithError() error {
 	if s.logger != nil {
 		s.logger.Info("Shutdown requested")
 	}
-	s.Stop()
+	return s.StopWithError()
 }
 
-// Run 运行服务器（阻塞方法）
-// 启动顺序：
-// 1. 检查日志是否初始化
-// 2. 启动服务器（内部调用 OnBeforeStart 和 OnAfterStart）
-// 3. 等待退出信号
-// 4. 停止服务器（内部调用 OnBeforeStop）
-//
-// 支持的退出方式：
-// - Ctrl+C (SIGINT)
-// - kill 命令 (SIGTERM)
-// - 调用 Shutdown() 方法
-// - Context 取消
-//
-// 返回:
-//   - error: 如果日志未初始化或启动失败返回错误
+// Run starts the server, waits for an OS signal or an external shutdown, then
+// waits for the complete stop transaction. Its signal subscription is always
+// released before returning.
 func (s *BaseServer) Run() error {
 	logger := s.GetLogger()
-
-	// ========== 第一步：检查日志是否初始化 ==========
 	if logger == nil {
 		return fmt.Errorf("logger not initialized: must call SetLogger() before Run()")
 	}
-
-	// ========== 第二步：启动服务器 ==========
-	logger.Info("Starting server...")
 	if err := s.Start(); err != nil {
-		logger.Error("Failed to start server: %v", err)
 		return err
 	}
-	logger.Info("=====Server started successfully=====")
 
-	// ========== 第三步：等待退出信号 ==========
-	logger.Info("Server is running. Press Ctrl+C to stop.")
-
-	// 创建信号通道
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// 等待退出信号或上下文取消
+	signalCtx, releaseSignals := s.signalContext()
+	defer releaseSignals()
 	select {
-	case sig := <-sigChan:
-		logger.Info("Shutdown signal received (%v), stopping server...", sig)
+	case <-signalCtx.Done():
+		logger.Info("Shutdown signal received, stopping server...")
 	case <-s.ctx.Done():
-		logger.Info("Context canceled, stopping server...")
+		logger.Info("Server context canceled, waiting for shutdown...")
 	}
-
-	// ========== 第四步：停止服务器 ==========
-	s.Stop()
-
-	logger.Info("Server shutdown complete")
-	return nil
+	return s.StopWithError()
 }
 
-// Wait 等待服务器停止
+// Wait returns only after cleanup, the optional after-stop hook, and the final
+// Stopped state have completed.
 func (s *BaseServer) Wait() {
-	<-s.ctx.Done()
+	<-s.stopDone
 }

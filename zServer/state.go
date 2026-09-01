@@ -42,9 +42,9 @@ func (s ServerState) IsTerminal() bool {
 func (s ServerState) CanTransitionTo(targetState ServerState) bool {
 	switch s {
 	case StateStarting:
-		return targetState == StateInitializing || targetState == StateStopped
+		return targetState == StateInitializing || targetState == StateDraining || targetState == StateStopped
 	case StateInitializing:
-		return targetState == StateReady || targetState == StateMaintenance || targetState == StateStopped
+		return targetState == StateReady || targetState == StateMaintenance || targetState == StateDraining || targetState == StateStopped
 	case StateReady:
 		return targetState == StateHealthy || targetState == StateMaintenance || targetState == StateDraining || targetState == StateStopped
 	case StateHealthy:
@@ -52,9 +52,9 @@ func (s ServerState) CanTransitionTo(targetState ServerState) bool {
 	case StateDraining:
 		return targetState == StateStopped
 	case StateMaintenance:
-		return targetState == StateReady || targetState == StateHealthy || targetState == StateStopped
+		return targetState == StateReady || targetState == StateHealthy || targetState == StateDraining || targetState == StateStopped
 	case StateStopped:
-		return targetState == StateStarting // 允许从停止状态重新启动
+		return false
 	default:
 		return false
 	}
@@ -81,6 +81,9 @@ func (s *BaseServer) GetState() ServerState {
 
 // SetState 设置状态
 func (s *BaseServer) SetState(state ServerState, reason string) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
 	oldState := s.GetState()
 	if oldState == state {
 		// 状态未改变，直接返回

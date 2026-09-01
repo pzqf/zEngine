@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.17
+**文档版本**：0.0.18
 
 ## 项目概述
 
@@ -268,8 +268,12 @@ kill/restart 恢复或滚动兼容闭环。
 
 ### zServer - 服务器框架
 
-提供服务器状态机、生命周期钩子和组件注册骨架。当前启动失败逆序回滚、并发/重复 Stop、进程资源统一
-关闭和四进程排空尚未闭环，不能把状态到达 `Healthy/Stopped` 等同于资源已经可接流量或已经全部释放。
+提供服务器状态机、生命周期钩子、组件注册和进程资源 owner。`RegisterCleanup` 在资源真实取得后登记
+命名清理动作，`StartBackground` 把后台任务纳入同一取消/等待路径；任一启动钩子失败会取消 context、
+逆序 best-effort 清理并聚合错误。`StopWithError/ShutdownWithError` 让并发和重复停止共享同一结果，`Wait`
+只在清理、可选 `OnAfterStop` 和最终 `Stopped` 完成后返回；原对象不支持进程内 restart。旧 `Stop/Shutdown`
+继续保留兼容。zMmoServer 四角色已迁真实 DB/listener/discovery/metrics/background owner 并通过 E4/E5；
+玩家、实例和会话疏散仍是上层 DRN-01，不能仅从 `Stopped` 推断业务排空完成。
 
 **7种服务器状态**：
 `Starting` → `Initializing` → `Ready` → `Healthy` → `Draining` → `Maintenance` → `Stopped`
@@ -290,9 +294,14 @@ kill/restart 恢复或滚动兼容闭环。
 ### zService - 服务管理
 
 **主要特性**：
-- 拓扑排序初始化/关闭（自动处理循环依赖检测）
+- 确定性拓扑排序；缺失依赖和循环依赖显式报错
+- 第 N 个 Init 失败时逆序回滚前 N-1 个；Close 遇错继续并聚合结果
+- `ServeServicesChecked` 报告启动检查错误，Serve 正常返回或 panic 后都离开 Running；旧入口保留兼容
 - 依赖注入（RegisterDependency/RegisterSingleton/ResolveDependency）
 - 服务注册器（ServiceRegistry + ServiceFactory）
+
+zService 仍是可选组件 DAG，不嵌入 zServer。zMmoServer 只用 Gateway report 这一条真实服务验证装配，
+其余四角色资源继续由 zServer 进程资源栈持有。
 
 ### zDistributed - 分布式锁与协调原语
 
@@ -344,8 +353,8 @@ LastSuccess、panic 隔离和确定性快照；同一 probe 最多一个在途�
 
 旧 `HealthManager`、`Checker`、`HealthChecker` 和 `CheckFunc` API 保留并复用同一底层模型。zServer 通过
 应用注入的 `HealthProvider` 生成 Live/Ready/Healthy，具体 Game/Map/数据库/服务发现策略仍由上层决定。
-zMmoServer 四角色已用真实 MySQL/etcd 和四进程 E4/E5 验证降级与恢复；启动失败回滚和统一 Stop 仍归
-LIF-01，不由 zHealth 承担。
+zMmoServer 四角色已用真实 MySQL/etcd 和四进程 E4/E5 验证降级与恢复；启动失败回滚和统一 Stop 也已由
+LIF-01 单独验证，但这些生命周期语义不由 zHealth 承担。
 
 ### zEvent - 事件总线
 
@@ -356,7 +365,7 @@ PublishSyncChecked/UnsubscribeChecked` 返回稳定的输入、关闭、无 exec
 handler 按订阅顺序、在总线锁外执行，panic 逐个隔离。
 
 zMmoServer 已删除零订阅的 GameObject/Player 对象级 emitter；当前只有 Map/Chat 全局发布，生产订阅为零，
-因此默认全局 bus 不需要 executor。将来出现真实异步订阅时，由进程根注入并在 `LIF-01` 统一关闭；zEvent
+因此默认全局 bus 不需要 executor。将来出现真实异步订阅时，由进程根注入并登记统一关闭；zEvent
 不承诺跨进程可靠投递。
 
 ### zScript - 脚本系统
@@ -439,6 +448,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.18 | 完成 LIF-01：zServer 增加命名资源栈、启动失败回滚、并发幂等停止、完整 Wait/after-stop 和 signal 释放；zService 固化 DAG 回滚/聚合错误，zSignal 提供可取消桥接，并由四角色真实生命周期 E4/E5 验证。 |
 | 2026-09-01 | 0.0.17 | 完成 HLT-01：统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight 与兼容 API；空集合/占位检查不再假 Healthy，GC 改为只读，并由四进程真实依赖故障恢复验证。 |
 | 2026-09-01 | 0.0.16 | 完成 CON-03：通用 2PC 裁决为 experimental `InMemoryTransactionCoordinator`，修复并发状态转换并保留旧名兼容；无 durable/recovery 或生产接线承诺。 |
 | 2026-09-01 | 0.0.15 | 完成 CON-02：SQL Outbox/Inbox 可绑定 DB/Tx executor 参与调用者本地事务，zMmoServer grant 生产链和真实 MySQL E3 已验证；业务 ACK/提交点仍留上层。 |

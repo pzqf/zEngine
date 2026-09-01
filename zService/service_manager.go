@@ -2,6 +2,9 @@ package zService
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
+	"sort"
 	"sync"
 
 	"github.com/pzqf/zEngine/zInject"
@@ -10,21 +13,26 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	ErrServiceDependencyMissing = errors.New("service dependency missing")
+	ErrServiceDependencyCycle   = errors.New("service dependency cycle")
+)
+
 // ServiceInfo 服务信息结构
 // 存储服务实例及其依赖关系
 type ServiceInfo struct {
-	Service Service        // 服务实例
-	Deps    []interface{}  // 依赖的服务ID列表
+	Service Service       // 服务实例
+	Deps    []interface{} // 依赖的服务ID列表
 }
 
 // ServiceManager 服务管理器
 // 管理服务的生命周期、依赖关系和依赖注入
 type ServiceManager struct {
-	zObject.ObjectManager              // 继承对象管理器
-	serviceInfos        map[interface{}]*ServiceInfo // 服务信息映射
-	container           zInject.Container            // 依赖注入容器
-	registry            ServiceRegistry              // 服务注册器
-	mu                  sync.RWMutex                 // 读写锁
+	zObject.ObjectManager                              // 继承对象管理器
+	serviceInfos          map[interface{}]*ServiceInfo // 服务信息映射
+	container             zInject.Container            // 依赖注入容器
+	registry              ServiceRegistry              // 服务注册器
+	mu                    sync.RWMutex                 // 读写锁
 }
 
 // NewServiceManager 创建一个新的服务管理器
@@ -47,8 +55,14 @@ func NewServiceManager() *ServiceManager {
 // 返回:
 //   - error: 添加失败时返回错误
 func (sm *ServiceManager) AddService(s Service, deps ...interface{}) error {
+	if s == nil || (reflect.ValueOf(s).Kind() == reflect.Ptr && reflect.ValueOf(s).IsNil()) {
+		return errors.New("service is required")
+	}
 	if s.GetId() == nil {
-		return errors.New("service must had id")
+		return errors.New("service must have id")
+	}
+	if !reflect.TypeOf(s.GetId()).Comparable() {
+		return fmt.Errorf("service id must be comparable: %T", s.GetId())
 	}
 
 	sm.mu.Lock()
@@ -62,7 +76,7 @@ func (sm *ServiceManager) AddService(s Service, deps ...interface{}) error {
 	// 记录服务信息和依赖关系
 	sm.serviceInfos[s.GetId()] = &ServiceInfo{
 		Service: s,
-		Deps:    deps,
+		Deps:    append([]interface{}(nil), deps...),
 	}
 
 	return nil
@@ -97,14 +111,19 @@ func (sm *ServiceManager) InitServices() error {
 	}
 
 	// 按顺序初始化服务
+	initialized := make([]Service, 0, len(services))
 	for _, s := range services {
 		if s.GetState() == ServiceStateCreated {
 			s.SetState(ServiceStateInit)
-			if err := s.Init(); err != nil {
+			if err := callServiceInit(s); err != nil {
 				s.SetState(ServiceStateCreated)
 				zLog.Error("Failed to init service", zap.Any("serviceId", s.GetId()), zap.Error(err))
-				return err
+				return errors.Join(
+					fmt.Errorf("init service %v: %w", s.GetId(), err),
+					closeServices(initialized),
+				)
 			}
+			initialized = append(initialized, s)
 			zLog.Info("Service initialized", zap.Any("serviceId", s.GetId()))
 		}
 	}
@@ -112,14 +131,20 @@ func (sm *ServiceManager) InitServices() error {
 	return nil
 }
 
-// ServeServices 启动所有服务
-// 按照拓扑排序顺序启动服务，每个服务在独立的goroutine中运行
+// ServeServices preserves the original compatibility API. New code should use
+// ServeServicesChecked when startup errors must be observed.
 func (sm *ServiceManager) ServeServices() {
+	_ = sm.ServeServicesChecked()
+}
+
+// ServeServicesChecked starts services in topological order and reports DAG
+// validation failures.
+func (sm *ServiceManager) ServeServicesChecked() error {
 	// 拓扑排序，确保依赖服务先启动
 	services, err := sm.topologicalSort()
 	if err != nil {
 		zLog.Error("Failed to sort services", zap.Error(err))
-		return
+		return err
 	}
 
 	// 启动服务
@@ -130,6 +155,8 @@ func (sm *ServiceManager) ServeServices() {
 				defer func() {
 					if r := recover(); r != nil {
 						zLog.Error("Service panicked", zap.Any("serviceId", service.GetId()), zap.Any("panic", r))
+					}
+					if service.GetState() == ServiceStateRunning {
 						service.SetState(ServiceStateStopped)
 					}
 				}()
@@ -138,6 +165,7 @@ func (sm *ServiceManager) ServeServices() {
 			}(s)
 		}
 	}
+	return nil
 }
 
 // CloseServices 关闭所有服务
@@ -152,21 +180,7 @@ func (sm *ServiceManager) CloseServices() error {
 		return err
 	}
 
-	// 逆序关闭服务
-	for i := len(services) - 1; i >= 0; i-- {
-		s := services[i]
-		if s.GetState() == ServiceStateRunning {
-			s.SetState(ServiceStateStopping)
-			if err := s.Close(); err != nil {
-				zLog.Error("Failed to close service", zap.Any("serviceId", s.GetId()), zap.Error(err))
-				return err
-			}
-			s.SetState(ServiceStateStopped)
-			zLog.Info("Service closed", zap.Any("serviceId", s.GetId()))
-		}
-	}
-
-	return nil
+	return closeServices(services)
 }
 
 // topologicalSort 拓扑排序服务
@@ -177,7 +191,14 @@ func (sm *ServiceManager) CloseServices() error {
 //   - error: 存在循环依赖时返回错误
 func (sm *ServiceManager) topologicalSort() ([]Service, error) {
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	infos := make(map[interface{}]*ServiceInfo, len(sm.serviceInfos))
+	for serviceID, info := range sm.serviceInfos {
+		infos[serviceID] = &ServiceInfo{
+			Service: info.Service,
+			Deps:    append([]interface{}(nil), info.Deps...),
+		}
+	}
+	sm.mu.RUnlock()
 
 	visited := make(map[interface{}]bool) // 已访问标记
 	temp := make(map[interface{}]bool)    // 临时访问标记（用于检测循环）
@@ -186,8 +207,11 @@ func (sm *ServiceManager) topologicalSort() ([]Service, error) {
 	// 深度优先搜索
 	var dfs func(interface{}) error
 	dfs = func(id interface{}) error {
+		if id == nil || !reflect.TypeOf(id).Comparable() {
+			return fmt.Errorf("%w: %v", ErrServiceDependencyMissing, id)
+		}
 		if temp[id] {
-			return errors.New("circular dependency detected")
+			return fmt.Errorf("%w at %v", ErrServiceDependencyCycle, id)
 		}
 
 		if visited[id] {
@@ -196,29 +220,36 @@ func (sm *ServiceManager) topologicalSort() ([]Service, error) {
 
 		temp[id] = true
 
-		// 先处理依赖
-		if info, ok := sm.serviceInfos[id]; ok {
-			for _, depId := range info.Deps {
-				if err := dfs(depId); err != nil {
-					return err
-				}
+		info, ok := infos[id]
+		if !ok {
+			return fmt.Errorf("%w: %v", ErrServiceDependencyMissing, id)
+		}
+		deps := append([]interface{}(nil), info.Deps...)
+		sort.Slice(deps, func(i, j int) bool { return serviceIDKey(deps[i]) < serviceIDKey(deps[j]) })
+		for _, dependencyID := range deps {
+			if dependencyID == nil || !reflect.TypeOf(dependencyID).Comparable() {
+				return fmt.Errorf("%w: service %v depends on %v", ErrServiceDependencyMissing, id, dependencyID)
 			}
-
-			// 添加服务到结果列表
-			service, err := sm.GetService(id)
-			if err != nil {
+			if _, exists := infos[dependencyID]; !exists {
+				return fmt.Errorf("%w: service %v depends on %v", ErrServiceDependencyMissing, id, dependencyID)
+			}
+			if err := dfs(dependencyID); err != nil {
 				return err
 			}
-			result = append(result, service)
 		}
+		result = append(result, info.Service)
 
 		temp[id] = false
 		visited[id] = true
 		return nil
 	}
 
-	// 遍历所有服务进行排序
-	for id := range sm.serviceInfos {
+	ids := make([]interface{}, 0, len(infos))
+	for id := range infos {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return serviceIDKey(ids[i]) < serviceIDKey(ids[j]) })
+	for _, id := range ids {
 		if !visited[id] {
 			if err := dfs(id); err != nil {
 				return nil, err
@@ -227,6 +258,49 @@ func (sm *ServiceManager) topologicalSort() ([]Service, error) {
 	}
 
 	return result, nil
+}
+
+func serviceIDKey(id interface{}) string {
+	return fmt.Sprintf("%T:%#v", id, id)
+}
+
+func callServiceInit(service Service) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return service.Init()
+}
+
+func callServiceClose(service Service) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return service.Close()
+}
+
+func closeServices(services []Service) error {
+	var errs []error
+	for i := len(services) - 1; i >= 0; i-- {
+		service := services[i]
+		switch service.GetState() {
+		case ServiceStateInit, ServiceStateRunning, ServiceStateStopping:
+		default:
+			continue
+		}
+		service.SetState(ServiceStateStopping)
+		if err := callServiceClose(service); err != nil {
+			wrapped := fmt.Errorf("close service %v: %w", service.GetId(), err)
+			errs = append(errs, wrapped)
+			zLog.Error("Failed to close service", zap.Any("serviceId", service.GetId()), zap.Error(err))
+		}
+		service.SetState(ServiceStateStopped)
+		zLog.Info("Service closed", zap.Any("serviceId", service.GetId()))
+	}
+	return errors.Join(errs...)
 }
 
 // GetServiceState 获取服务状态
