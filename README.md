@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.14
+**文档版本**：0.0.15
 
 ## 项目概述
 
@@ -324,10 +324,13 @@ owner 状态机和业务存储 fence 接线属于 `OWN-01`，不能从包级 E3 
 仍保留兼容，但第三方旧 Outbox 实现无法持久表达中间状态，严格可靠路径应直接实现 V2。Memory/SQL 的
 状态、重启保持和并发转换已通过重复 `-race`，SQL 路径还通过真实 MySQL 的无 `SKIP` E3。
 
-这些机制只承诺“至少一次投递 + 幂等效果”，不承诺跨进程 exactly-once。Inbox 与上层业务变更尚未
-共享本地事务，zMmoServer 仍有默认 Memory 路径，Map 侧已处理完成但响应发送失败时也没有响应缓存；
-业务 ACK、路由、资产事务、恢复状态机和 commit point 继续留在上层 `CON-02`。单进程 2PC 没有持久
-日志或跨进程 fencing，仍是 experimental，归 `CON-03` 决策。
+SQL store 可通过 `SQLExecutor` 绑定 `*sql.DB` 或调用者持有的 `*sql.Tx`，让 Outbox/Inbox 状态参与本地
+事务；schema、commit/rollback 和业务提交点不进入引擎。zMmoServer 的 Player grant 是首个生产调用者，
+已把 Inbox 去重、资产写入和 `MarkProcessed` 同事务提交，并让 Game/Map 可靠角色启动时强制 SQL store。
+
+这些机制只承诺“至少一次投递 + 幂等效果”，不承诺跨进程 exactly-once。业务 ACK、路由、资产事务和
+恢复状态机继续留在上层；其它业务路径仍须分别证明事务与恢复，Map 普通请求也仍没有响应缓存。单进程
+2PC 没有持久日志或跨进程 fencing，仍是 experimental，归 `CON-03` 决策。
 
 ### zHealth - 健康检查原语
 
@@ -427,6 +430,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.15 | 完成 CON-02：SQL Outbox/Inbox 可绑定 DB/Tx executor 参与调用者本地事务，zMmoServer grant 生产链和真实 MySQL E3 已验证；业务 ACK/提交点仍留上层。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：增加 context/error V2 API、严格 Outbox 三阶段与显式终结、Inbox 三态/fail-closed、旧 API 兼容；Memory/SQL 并发与真实 MySQL 重启 E3 通过，事务原子性仍归 CON-02。 |
 | 2026-09-01 | 0.0.13 | 完成 LOCK-01 引擎机制：官方 etcd session/mutex、只读 LockHandle、compare-delete、单调 fencing、guarded transaction、确定性 retry 和 lease/reconnect E3；zMmoServer 业务 ownership 仍待 OWN-01。 |
 | 2026-09-01 | 0.0.12 | 完成 MET-01 引擎机制：checked collector schema/registry 冲突返回错误且不缓存幽灵 collector，MemoryMonitor handler 同步并可立即停止；业务指标和 readiness 仍留上层。 |

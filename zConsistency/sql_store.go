@@ -35,10 +35,19 @@ var (
 	_ InboxStoreV2  = (*SQLInbox)(nil)
 )
 
+// SQLExecutor is the database/sql subset used by SQL-backed consistency stores.
+// Both *sql.DB and *sql.Tx satisfy it, allowing a store operation to join a
+// caller-owned local transaction without teaching the engine business policy.
+type SQLExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // ---------------- SQLOutbox ----------------
 
 type SQLOutbox struct {
-	db            *sql.DB
+	db            SQLExecutor
 	table         string
 	maxRetries    int
 	retryBackoff  time.Duration
@@ -69,8 +78,15 @@ func WithSQLMaxRetryDelay(d time.Duration) SQLOutboxOption {
 
 // NewSQLOutbox 创建 SQL 持久化 Outbox。db 需已连接；建表用 EnsureOutboxSchema。
 func NewSQLOutbox(db *sql.DB, opts ...SQLOutboxOption) *SQLOutbox {
+	return NewSQLOutboxWithExecutor(db, opts...)
+}
+
+// NewSQLOutboxWithExecutor creates an Outbox bound to a caller-provided
+// database or transaction executor. Schema setup remains a database-level
+// bootstrap responsibility and should not normally run inside a business tx.
+func NewSQLOutboxWithExecutor(executor SQLExecutor, opts ...SQLOutboxOption) *SQLOutbox {
 	o := &SQLOutbox{
-		db:            db,
+		db:            executor,
 		table:         defaultOutboxTable,
 		maxRetries:    5,
 		retryBackoff:  500 * time.Millisecond,
@@ -283,15 +299,21 @@ func (o *SQLOutbox) PurgeDeadLetters(olderThan time.Duration) int {
 // ---------------- SQLInbox ----------------
 
 type SQLInbox struct {
-	db    *sql.DB
+	db    SQLExecutor
 	table string
 }
 
 func NewSQLInbox(db *sql.DB, table string) *SQLInbox {
+	return NewSQLInboxWithExecutor(db, table)
+}
+
+// NewSQLInboxWithExecutor creates an Inbox whose state changes participate in
+// the supplied database/sql transaction when executor is a *sql.Tx.
+func NewSQLInboxWithExecutor(executor SQLExecutor, table string) *SQLInbox {
 	if table == "" {
 		table = defaultInboxTable
 	}
-	return &SQLInbox{db: db, table: table}
+	return &SQLInbox{db: executor, table: table}
 }
 
 func (i *SQLInbox) EnsureInboxSchema() error {

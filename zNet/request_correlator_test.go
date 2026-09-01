@@ -86,11 +86,15 @@ func TestRequestRouter_Concurrent(t *testing.T) {
 			defer wg.Done()
 			reqID := rr.NextRequestID()
 			want := fmt.Sprintf("r%d", reqID)
+			requestSent := make(chan struct{})
 			go func() {
-				time.Sleep(time.Millisecond)
+				<-requestSent
 				rr.CompleteRequest(reqID, []byte(want), nil)
 			}()
-			data, err := rr.SendRequest(context.Background(), reqID, func() error { return nil })
+			data, err := rr.SendRequest(context.Background(), reqID, func() error {
+				close(requestSent)
+				return nil
+			})
 			if err != nil {
 				errs <- fmt.Errorf("req %d: %w", reqID, err)
 				return

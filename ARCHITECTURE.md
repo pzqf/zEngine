@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.14
+**文档版本**：0.0.15
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -70,7 +70,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 | **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 进程信号处理，驱动优雅退出。 |
 | **zDistributed** | 基于官方 etcd Session/Mutex 的 fenced 排他锁：Acquire 返回只读 LockHandle，lease/owner key 丢失会失效；Release compare-delete，create revision 提供单调 fence，Validate/GuardedTxn 可原子校验受保护 etcd 写入。retry 可取消，shared 明确 unsupported；旧 Lock/Unlock 仅作 advisory 兼容。当前无 zMmoServer 生产调用。 |
-| **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格 `Enqueued -> Transported -> Applied`、显式终结、重试/dead-letter，以及 `Accepted/InProgress/Processed` Inbox 三态和 fail-closed；旧 API 兼容保留。真实 MySQL 重启/并发 E3 已通过，但 Inbox 与业务变更仍不原子，不承诺 exactly-once；内存 2PC 仍为 experimental。 |
+| **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格三阶段/三态、显式终结、重试/dead-letter 和 fail-closed；`SQLExecutor` 允许 store 绑定 DB/Tx，业务提交点和事务 ownership 仍在上层。真实 MySQL 重启/并发/commit/rollback E3 与 zMmoServer grant 生产调用已通过；不承诺传输 exactly-once，内存 2PC 仍为 experimental。 |
 
 ### 可复用游戏领域原语（可选）
 | 模块 | 职责 |
@@ -182,8 +182,9 @@ Client                                             Server
   epoch 持久化及非 etcd 存储如何拒绝旧 fence 仍由上层 `OWN-01` 定义。当前 zMmoServer 无生产接线。
 - **一致性存储**：V2 Outbox 把持久入队、传输完成和业务应用分开，调用者按自身 ACK 契约显式终结；
   V2 Inbox 把首次接受、处理中和已处理分开，存储失败不默认接受。内置 Memory/SQL 共享相同状态契约并已
-  通过并发/重启测试；旧 API 与 `OutboxMessage.TargetMapID` 尚未删除。zEngine 不定义 destination、ProtoId、
-  业务 ACK 或资产事务，业务变更与 Inbox/Outbox 的本地事务原子性仍由上层装配。
+  通过并发/重启测试；SQL store 可绑定调用者的 DB/Tx executor 参与本地事务。旧 API 与
+  `OutboxMessage.TargetMapID` 尚未删除。zEngine 不定义 destination、ProtoId、业务 ACK 或资产事务，
+  commit/rollback、schema、事务边界和恢复策略仍由上层装配并逐调用链验证。
 - **可观测**：zMetrics 提供 checked Prometheus collector registry；通过 `WithServerMetrics` 显式注入后，zNet 自动记录连接、
   流量、总解码错误、解码错误分类、发送队列容量/深度、三类拒绝或丢弃以及 send/worker admission
   等待。zMmoServer 的 zCommon 适配使用每实例私有 mux/listener 和可取消 Stop 暴露 `/metrics`；不在该端口
@@ -209,6 +210,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-01 | 0.0.15 | 完成 CON-02：记录 SQL store 的 DB/Tx executor 事务参与边界及 zMmoServer grant 生产验证；引擎不拥有业务事务、ACK 或恢复策略。 |
 | 2026-09-01 | 0.0.14 | 完成 CON-01：记录 V2 context/error、Outbox 严格三阶段/显式终结、Inbox 三态/fail-closed 和真实 MySQL 并发/重启 E3；事务原子性、上层 ACK 和 experimental 2PC 边界不变。 |
 | 2026-09-01 | 0.0.13 | 完成 LOCK-01：记录 fenced handle、compare-delete、释放竞态、lease/owner 失效、guarded etcd 写入和真实重连 E3；业务 owner 状态机仍留 zMmoServer。 |
 | 2026-09-01 | 0.0.12 | 完成 MET-01：记录 checked collector schema、无幽灵缓存、MemoryMonitor 立即停止，以及上层四角色私有 metrics listener/mux ownership；readiness 与完整启动事务边界不变。 |
