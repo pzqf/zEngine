@@ -144,10 +144,12 @@ func (cli *TcpClient) connect(ctx context.Context) error {
 			close(contextCloseDone)
 		})
 		handshakeTimeout := DefaultKeyExchangeTimeout
+		contextBoundHandshake := false
 		if deadline, ok := ctx.Deadline(); ok {
 			remaining := time.Until(deadline)
 			if remaining < handshakeTimeout {
 				handshakeTimeout = remaining
+				contextBoundHandshake = true
 			}
 		}
 		aesKey, err = PerformKeyExchangeWithDeadline(conn, handshakeTimeout)
@@ -159,6 +161,10 @@ func (cli *TcpClient) connect(ctx context.Context) error {
 			cli.setState(ClientStateDisconnected)
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
+			}
+			var netErr net.Error
+			if contextBoundHandshake && errors.As(err, &netErr) && netErr.Timeout() {
+				return context.DeadlineExceeded
 			}
 			return err
 		}
