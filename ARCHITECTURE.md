@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.19
+**文档版本**：0.0.20
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -44,7 +44,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 ### 传输层
 | 模块 | 职责 |
 |------|------|
-| **zNet** | 引擎核心。TCP/UDP/WebSocket/HTTP 的服务器与客户端；`NetPacket` 定长包头；TCP/UDP/WS 共用分配前 header/wire-size 校验、端点级 byte order、解密/解压后大小限制、有界发送、context/deadline 和三种 admission；DDoS 防护、ECDH + AES-GCM、序列号、Snappy、工作池。业务 ACK 与协议版本仍由上层/VER-01 定义。 |
+| **zNet** | 引擎核心。TCP/UDP/WebSocket/HTTP 的服务器与客户端；`NetPacket` 定长包头；TCP/UDP/WS 共用分配前 header/wire-size 校验、端点级 byte order、解密/解压后大小限制、有界发送、context/deadline 和三种 admission；`TcpServer.CloseAdmission` 可只停新连接/在飞握手登记并保留已有 session，完整 Close 并发幂等；DDoS 防护、ECDH + AES-GCM、序列号、Snappy、工作池。业务 drain、ACK 与协议版本仍由上层/VER-01 定义。 |
 
 ### 运行时（承载业务逻辑的并发原语）
 | 模块 | 职责 |
@@ -98,7 +98,8 @@ main()
 **状态机契约**：成功路径的 `Initializing/Ready/Healthy` 仍由业务钩子推进；框架负责启动失败回滚和
 `Draining/Stopped` 停止事务。`OnAfterStop` 通过可选 `AfterStopHook` 发现，避免破坏原 `LifecycleHooks`
 实现；旧无 error 的 Stop/Shutdown 保留，需观察聚合错误的新代码使用 checked 入口。进程资源关闭已由
-LIF-01 验证，真实 Draining 中的玩家/实例/会话疏散仍归 DRN-01。
+LIF-01 验证。DRN-01 已让 Gateway 先发布 Draining、停止新 TCP admission 并有界等待/关闭已有 session，
+但 Game/Map/Global 的玩家、实例、可靠工作和 owner 疏散仍未完成，不能外推整个排空闭环。
 
 完整状态流：`Starting → Initializing → Ready → Healthy → Draining → Maintenance → Stopped`，
 非法转换会被状态机拒绝。
@@ -211,6 +212,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-02 | 0.0.20 | 记录 `TcpServer.CloseAdmission` 只停新接入、保留已有 session，完整 Close 并发幂等；Gateway 是首个真实调用，四角色业务排空仍由 DRN-01 上层策略逐块完成。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：记录 OwnershipStore 的 owner/lease/ModRevision epoch、显式 CAS handoff、Get/Watch 恢复与 guarded write，并由 zMmoServer 服务实例注册验证；业务状态机和滚动兼容仍留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：记录 zServer 启动事务/资源栈/幂等停止/after-stop/Wait/signal，zService DAG 回滚与错误聚合、zSignal 可取消桥接，以及四角色真实资源 E4/E5；业务疏散仍归 DRN-01。 |
 | 2026-09-01 | 0.0.17 | 完成 HLT-01：记录统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight、Unknown/只读 GC 和 zServer provider 边界；四角色策略与真实故障恢复留在并已由 zMmoServer 验证。 |

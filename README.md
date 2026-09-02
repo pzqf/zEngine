@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.19
+**文档版本**：0.0.20
 
 ## 项目概述
 
@@ -188,6 +188,8 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
   不替上层定义业务 ACK、持久化或提交成功
 - WorkerPool 非阻塞 `Submit`、可取消 `SubmitWithContext` 和并发安全的 drain-on-Stop；
   `RequestRouter` 支持重复 ID 拒绝和 `Close(cause)`，`MessageRouter` 支持严格注册与 seal
+- `TcpServer.CloseAdmission` 只停止 accept 和在飞握手登记，保留已有 session；完整 `Close` 并发幂等并
+  保持每个 session 的 remove callback 只执行一次。何时摘流、等待多久和如何收尾由上层决定
 
 **关键类型**：
 - `NetPacket` - 网络数据包（36字节头：ProtoId + Version + DataSize + IsCompressed + Sequence + Timestamp + KeyID）
@@ -195,7 +197,7 @@ zNet 是核心网络模块，支持 TCP/UDP/WebSocket/HTTP 四种协议，专为
 - `MaxWirePacketSize` / `MaxDecodedPacketSize` - 线包与解码后 payload 的独立上限，默认均为 1 MiB
 - `ContextSession` / `SendOptions` / `DeliveryClass` - 有 deadline 的发送与三种队列 admission 机制
 - `RequestRouter` / `MessageRouter` - 有关闭语义的请求关联器和可冻结消息路由表
-- `TcpServer` / `TcpClient` - TCP 服务器/客户端
+- `TcpServer` / `TcpClient` - TCP 服务器/客户端；服务端支持独立关闭新连接 admission
 - `DDoSProtection` - DDoS 防护（无锁设计，基于 zMap.TypedMap + atomic）
 
 `SetByteOrder/GetByteOrder` 为兼容入口：只决定旧 `NetPacket.Marshal/UnmarshalHead` 和后续新建端点的默认值，
@@ -273,7 +275,9 @@ kill/restart 恢复或滚动兼容闭环。
 逆序 best-effort 清理并聚合错误。`StopWithError/ShutdownWithError` 让并发和重复停止共享同一结果，`Wait`
 只在清理、可选 `OnAfterStop` 和最终 `Stopped` 完成后返回；原对象不支持进程内 restart。旧 `Stop/Shutdown`
 继续保留兼容。zMmoServer 四角色已迁真实 DB/listener/discovery/metrics/background owner 并通过 E4/E5；
-玩家、实例和会话疏散仍是上层 DRN-01，不能仅从 `Stopped` 推断业务排空完成。
+Gateway 已用 `TcpServer.CloseAdmission` 完成“先摘流、停新接入、等待/强关已有会话、再断后端”的首个
+DRN-01 子块；Game/Map/Global 的玩家、实例、可靠工作和 owner 疏散仍未完成，不能仅从 `Stopped` 推断
+整个业务排空完成。
 
 **7种服务器状态**：
 `Starting` → `Initializing` → `Ready` → `Healthy` → `Draining` → `Maintenance` → `Stopped`
@@ -451,6 +455,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-02 | 0.0.20 | 增加 `TcpServer.CloseAdmission`：只停新连接/在飞握手登记并保留已有 session；完整 Close 并发幂等，Gateway 真实 drain 首块通过，业务策略仍留上层。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：新增不透明 resource 的 OwnershipStore、ModRevision epoch/revision、owner+lease+revision CAS、watch 恢复，并由 zMmoServer 四角色服务实例注册真实接线验证；业务状态机继续留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：zServer 增加命名资源栈、启动失败回滚、并发幂等停止、完整 Wait/after-stop 和 signal 释放；zService 固化 DAG 回滚/聚合错误，zSignal 提供可取消桥接，并由四角色真实生命周期 E4/E5 验证。 |
 | 2026-09-01 | 0.0.17 | 完成 HLT-01：统一 probe 快照、scope、timeout/cache/LastSuccess、单 in-flight 与兼容 API；空集合/占位检查不再假 Healthy，GC 改为只读，并由四进程真实依赖故障恢复验证。 |

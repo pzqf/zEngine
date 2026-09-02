@@ -2,6 +2,7 @@ package zNet
 
 import (
 	"crypto/rsa"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,12 +12,20 @@ import (
 	"github.com/pzqf/zUtil/zMap"
 )
 
+// ErrTCPServerClosed is returned when a closed server is started again.
+var ErrTCPServerClosed = errors.New("tcp server is closed")
+
 // TcpServer TCP服务器实现
 // 支持多客户端连接、会话管理、DDoS防护、密钥交换等功能
 type TcpServer struct {
-	clientSIDAtomic   SessionIdType                                    // 会话ID原子计数器，用于生成唯一会话ID
-	listener          atomic.Pointer[net.TCPListener]                  // TCP监听器（原子读写：Start 写，Accept/Close/GetListenAddress 读，消除数据竞争）
-	closing           atomic.Bool                                      // 关服信号：置位后 accept 循环与 AddSession 停止注册新会话
+	clientSIDAtomic   SessionIdType                   // 会话ID原子计数器，用于生成唯一会话ID
+	listener          atomic.Pointer[net.TCPListener] // TCP监听器（原子读写：Start 写，Accept/Close/GetListenAddress 读，消除数据竞争）
+	closing           atomic.Bool                     // 关服信号：置位后 accept 循环与 AddSession 停止注册新会话
+	admissionOnce     sync.Once                       // 关闭新连接接入；不影响已注册会话
+	admissionDone     chan struct{}                   // 所有 accept/握手登记动作均已退出
+	admissionErr      error
+	closeOnce         sync.Once // 完整关闭 listener、会话和工作池
+	closeDone         chan struct{}
 	clientSessionMap  *zMap.TypedMap[SessionIdType, *TcpServerSession] // 客户端会话映射表
 	wg                sync.WaitGroup                                   // 等待组，用于优雅关闭
 	onAddSession      SessionCallBackFunc                              // 会话添加回调
@@ -58,6 +67,8 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 
 	svr := &TcpServer{
 		clientSIDAtomic:   10000,
+		admissionDone:     make(chan struct{}),
+		closeDone:         make(chan struct{}),
 		clientSessionMap:  zMap.NewTypedMap[SessionIdType, *TcpServerSession](),
 		config:            cfg,
 		ddosProtection:    NewDDoSProtection(),
@@ -104,6 +115,9 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 // 返回:
 //   - error: 启动失败时返回错误
 func (svr *TcpServer) Start() error {
+	if svr.closing.Load() {
+		return ErrTCPServerClosed
+	}
 	if svr.packetCodecErr != nil {
 		return svr.packetCodecErr
 	}
@@ -122,7 +136,10 @@ func (svr *TcpServer) Start() error {
 		return err
 	}
 	svr.listener.Store(listener)
-	svr.closing.Store(false)
+	if svr.closing.Load() {
+		_ = listener.Close()
+		return ErrTCPServerClosed
+	}
 
 	if svr.logger != nil {
 		svr.logger.Info("Tcp server listing on %s", svr.config.ListenAddress)
@@ -156,7 +173,7 @@ func (svr *TcpServer) Start() error {
 			}
 			conn, err := svr.listener.Load().AcceptTCP()
 			if err != nil {
-				if svr.logger != nil {
+				if svr.logger != nil && !svr.closing.Load() {
 					svr.logger.Error("Failed to accept TCP connection: %v", err)
 				}
 				break
@@ -187,44 +204,56 @@ func (svr *TcpServer) Start() error {
 	return nil
 }
 
+// CloseAdmission stops accepting and registering new connections while
+// preserving all sessions that were already admitted. It waits for the accept
+// loop and any in-flight handshakes to leave the registration path.
+func (svr *TcpServer) CloseAdmission() error {
+	svr.admissionOnce.Do(func() {
+		defer close(svr.admissionDone)
+		svr.closing.Store(true)
+		if l := svr.listener.Load(); l != nil {
+			if err := l.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				svr.admissionErr = err
+				if svr.logger != nil {
+					svr.logger.Error("Failed to close listener admission: %v", err)
+				}
+			}
+		}
+		svr.wg.Wait()
+	})
+	<-svr.admissionDone
+	return svr.admissionErr
+}
+
 // Close 关闭TCP服务器
 // 关闭监听器、断开所有客户端连接并等待所有goroutine退出
 func (svr *TcpServer) Close() {
-	if svr.logger != nil {
-		svr.logger.Info("Close tcp server, session count: %d", svr.clientSessionMap.Len())
-	}
-
-	// 1) 置关服信号：accept 循环与 AddSession 不再注册新会话。
-	svr.closing.Store(true)
-
-	// 2) 关闭监听器，令 accept 循环的 AcceptTCP 立即返回错误而退出。
-	if l := svr.listener.Load(); l != nil {
-		if err := l.Close(); err != nil {
-			if svr.logger != nil {
-				svr.logger.Error("Failed to close listener: %v", err)
-			}
+	svr.closeOnce.Do(func() {
+		defer close(svr.closeDone)
+		if svr.logger != nil {
+			svr.logger.Info("Close tcp server, session count: %d", svr.clientSessionMap.Len())
 		}
-	}
 
-	// 3) 等待 accept 循环 + 所有在飞 AddSession goroutine 退出。此后 clientSessionMap
-	//    不再有新会话写入，可安全遍历关闭——消除"关闭后又被 Store"的时序竞争。
-	svr.wg.Wait()
+		// Stop admission and wait until no handshake can publish another session.
+		_ = svr.CloseAdmission()
 
-	// 4) 关闭所有客户端会话（session.Close 内部同步等待该会话的收发 goroutine 退出）。
-	svr.clientSessionMap.Range(func(sid SessionIdType, value *TcpServerSession) bool {
-		value.Close()
-		svr.clientSessionMap.Delete(sid)
-		return true
+		// TcpServerSession guarantees its remove callback runs once even when
+		// receive/process/Close race.
+		svr.clientSessionMap.Range(func(sid SessionIdType, value *TcpServerSession) bool {
+			value.Close()
+			svr.clientSessionMap.Delete(sid)
+			return true
+		})
+
+		if svr.workerPool != nil {
+			svr.workerPool.Stop()
+		}
+
+		if svr.logger != nil {
+			svr.logger.Info("Tcp server closed")
+		}
 	})
-
-	// 5) 会话已全部停止、不再向工作池投递，最后停工作池。
-	if svr.workerPool != nil {
-		svr.workerPool.Stop()
-	}
-
-	if svr.logger != nil {
-		svr.logger.Info("Tcp server closed")
-	}
+	<-svr.closeDone
 }
 
 // AddSession 添加新的客户端会话
