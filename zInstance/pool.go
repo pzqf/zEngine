@@ -168,12 +168,23 @@ func (p *Pool[K, T]) Acquire(key K, affinityID uint64, softCap, hardCap int, bui
 // AddChecked builds and registers an explicit instance. It does not reserve an admission
 // slot; pinned instances are excluded from Reap and must be explicitly destroyed.
 func (p *Pool[K, T]) AddChecked(key K, pinned bool, build func(id uint64) (T, error)) (uint64, T, error) {
+	return p.addChecked(key, pinned, 0, build)
+}
+
+// AddReservedChecked builds and registers an explicit instance while reserving one
+// admission slot. It is the pinned-instance counterpart to AcquireChecked: callers
+// must Release after the occupant either commits or aborts entry.
+func (p *Pool[K, T]) AddReservedChecked(key K, pinned bool, build func(id uint64) (T, error)) (uint64, T, error) {
+	return p.addChecked(key, pinned, 1, build)
+}
+
+func (p *Pool[K, T]) addChecked(key K, pinned bool, reserved int, build func(id uint64) (T, error)) (uint64, T, error) {
 	var zero T
 	if build == nil {
 		return 0, zero, ErrNilInstanceBuilder
 	}
 	p.mu.Lock()
-	e := p.newEntryLocked(key, pinned, 0)
+	e := p.newEntryLocked(key, pinned, reserved)
 	p.mu.Unlock()
 
 	inst, err := invokeBuild(build, e.id)

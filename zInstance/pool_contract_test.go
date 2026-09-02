@@ -118,6 +118,53 @@ func TestPoolAddCheckedBuildFailureRollsBack(t *testing.T) {
 	}
 }
 
+func TestPoolAddReservedCheckedBlocksDestroyUntilRelease(t *testing.T) {
+	p := NewPool[int, *contractInst](nil)
+	id, inst, err := p.AddReservedChecked(1, true, func(uint64) (*contractInst, error) {
+		return &contractInst{}, nil
+	})
+	if err != nil {
+		t.Fatalf("AddReservedChecked: %v", err)
+	}
+
+	if err := p.DestroyChecked(id); !errors.Is(err, ErrInstanceReserved) {
+		t.Fatalf("DestroyChecked error = %v, want %v", err, ErrInstanceReserved)
+	}
+	if inst.closeCalls.Load() != 0 {
+		t.Fatalf("reserved instance closed %d times", inst.closeCalls.Load())
+	}
+
+	p.Release(id)
+	p.Reap(0)
+	p.Reap(0)
+	if _, ok := p.Get(id); !ok {
+		t.Fatal("released pinned instance was reaped")
+	}
+	if err := p.DestroyChecked(id); err != nil {
+		t.Fatalf("DestroyChecked after Release: %v", err)
+	}
+	if inst.closeCalls.Load() != 1 {
+		t.Fatalf("close calls = %d, want 1", inst.closeCalls.Load())
+	}
+}
+
+func TestPoolAddReservedCheckedBuildFailureRollsBack(t *testing.T) {
+	p := NewPool[int, *contractInst](nil)
+	wantErr := errors.New("reserved build failed")
+	id, inst, err := p.AddReservedChecked(1, true, func(uint64) (*contractInst, error) {
+		return nil, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("build error = %v, want %v", err, wantErr)
+	}
+	if id != 0 || inst != nil {
+		t.Fatalf("failed build returned id=%d inst=%v", id, inst)
+	}
+	if p.Count() != 0 || p.CountByKey(1) != 0 {
+		t.Fatalf("failed reserved build leaked pool entry: count=%d byKey=%d", p.Count(), p.CountByKey(1))
+	}
+}
+
 func TestPoolAcquireCheckedBuildPanicRollsBack(t *testing.T) {
 	p := NewPool[int, *contractInst](nil)
 	_, _, err := p.AcquireChecked(1, 0, 1, 1, func(uint64) (*contractInst, error) {
