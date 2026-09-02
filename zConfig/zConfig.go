@@ -460,8 +460,24 @@ func GetFloatWithDefault(cfg *Config, key string, defaultValue float64) float64 
 
 // GetIntSliceWithDefault 获取整数切片配置值，不存在则返回默认值
 func GetIntSliceWithDefault(cfg *Config, key string, defaultValue []int) []int {
-	if value, err := cfg.GetString(key); err == nil {
-		strs := strings.Split(value, ",")
+	if cfg == nil {
+		return defaultValue
+	}
+	value, err := cfg.Get(key)
+	if err != nil {
+		return defaultValue
+	}
+	if scalar, ok := value.(int); ok {
+		return []int{scalar}
+	}
+	if scalar, ok := value.(int64); ok {
+		return []int{int(scalar)}
+	}
+	if scalar, ok := value.(float64); ok && scalar == float64(int(scalar)) {
+		return []int{int(scalar)}
+	}
+	if text, ok := value.(string); ok {
+		strs := strings.Split(text, ",")
 		ints := make([]int, 0, len(strs))
 		for _, str := range strs {
 			str = strings.TrimSpace(str)

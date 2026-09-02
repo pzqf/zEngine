@@ -207,3 +207,20 @@ func TestConfigYAML(t *testing.T) {
 
 	os.Remove(filePath)
 }
+
+func TestGetIntSliceWithDefaultAcceptsScalarINIValue(t *testing.T) {
+	filePath := "test_config_slice.ini"
+	if err := os.WriteFile(filePath, []byte("[Maps]\nMapIDs = 1002\n"), 0644); err != nil {
+		t.Fatalf("write INI: %v", err)
+	}
+	defer os.Remove(filePath)
+
+	cfg := NewConfig()
+	if err := cfg.LoadINI(filePath); err != nil {
+		t.Fatalf("LoadINI: %v", err)
+	}
+	got := GetIntSliceWithDefault(cfg, "Maps.MapIDs", []int{1001})
+	if len(got) != 1 || got[0] != 1002 {
+		t.Fatalf("scalar int slice=%v, want [1002]", got)
+	}
+}
