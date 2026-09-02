@@ -34,6 +34,43 @@ const (
 	entryDestroying
 )
 
+// LifecycleState is the read-only lifecycle state exposed by Pool snapshots.
+// Pool remains the sole owner of transitions; callers can observe state for
+// diagnostics without acquiring a second lifecycle authority.
+type LifecycleState uint8
+
+const (
+	LifecycleCreating LifecycleState = iota + 1
+	LifecycleActive
+	LifecycleDestroying
+)
+
+func (s LifecycleState) String() string {
+	switch s {
+	case LifecycleCreating:
+		return "creating"
+	case LifecycleActive:
+		return "active"
+	case LifecycleDestroying:
+		return "destroying"
+	default:
+		return "unknown"
+	}
+}
+
+// EntrySnapshot is an immutable observation of one pool entry. Key identifies
+// the caller-defined instance group; Instance values and lifecycle callbacks
+// deliberately remain outside the snapshot contract.
+type EntrySnapshot[K comparable] struct {
+	ID         uint64
+	Generation uint64
+	Revision   uint64
+	Key        K
+	State      LifecycleState
+	Reserved   int
+	Pinned     bool
+}
+
 type entry[K comparable, T Instance] struct {
 	id         uint64
 	generation uint64
@@ -353,6 +390,41 @@ func (p *Pool[K, T]) CountByKey(key K) int {
 		}
 	}
 	return count
+}
+
+// Snapshot returns a point-in-time copy of every pool entry, including entries
+// whose builders are still running. The result has no ordering guarantee.
+// Observing it never calls Instance methods or any upper-layer callback.
+func (p *Pool[K, T]) Snapshot() []EntrySnapshot[K] {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	result := make([]EntrySnapshot[K], 0, len(p.byID))
+	for _, e := range p.byID {
+		result = append(result, EntrySnapshot[K]{
+			ID:         e.id,
+			Generation: e.generation,
+			Revision:   e.revision,
+			Key:        e.key,
+			State:      publicLifecycleState(e.state),
+			Reserved:   e.reserved,
+			Pinned:     e.pinned,
+		})
+	}
+	return result
+}
+
+func publicLifecycleState(state entryState) LifecycleState {
+	switch state {
+	case entryCreating:
+		return LifecycleCreating
+	case entryActive:
+		return LifecycleActive
+	case entryDestroying:
+		return LifecycleDestroying
+	default:
+		return 0
+	}
 }
 
 func (p *Pool[K, T]) snapshotGroup(key K) ([]instanceSnapshot[K, T], <-chan struct{}, uint64) {
