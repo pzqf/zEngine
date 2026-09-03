@@ -16,6 +16,13 @@ type Session interface {
 	GetClientIP() string            // 获取客户端IP地址
 }
 
+// ProtocolCompatibleSession is the optional capability exposed by TCP sessions
+// when callers need the frozen version/capability result.
+type ProtocolCompatibleSession interface {
+	Session
+	ProtocolCompatibility() (ProtocolCompatibility, bool)
+}
+
 // Server 服务器接口
 // 定义网络服务器的基本操作方法
 type Server interface {

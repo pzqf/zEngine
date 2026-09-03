@@ -34,6 +34,7 @@ type TcpServerSession struct {
 	sendSequence      atomic.Uint64 // 发送序列号
 	packetCodec       PacketCodec
 	invalidPacketLogs packetErrorLogLimiter
+	protocol          *ProtocolVersionNegotiator
 }
 
 // TcpCloseCallBackFunc TCP连接关闭回调函数类型
@@ -60,6 +61,7 @@ func (s *TcpServerSession) triggerOnClose() {
 // 返回:
 //   - *TcpServerSession: 会话实例
 func NewTcpServerSession(svr *TcpServer, conn *net.TCPConn, sid SessionIdType, closeCallBack TcpCloseCallBackFunc, aesKey []byte) *TcpServerSession {
+	protocol, _ := NewProtocolVersionNegotiator(svr.protocolPolicy)
 	newSession := TcpServerSession{
 		conn:          conn,
 		sid:           sid,
@@ -70,6 +72,7 @@ func NewTcpServerSession(svr *TcpServer, conn *net.TCPConn, sid SessionIdType, c
 		aesKey:        aesKey,
 		svr:           svr,
 		packetCodec:   svr.packetCodec,
+		protocol:      protocol,
 	}
 	// 初始化当前密钥
 	newSession.currentKey.Store(aesKey)
@@ -223,6 +226,12 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 			}
 			break
 		}
+		if err := s.protocol.ValidateInboundPacketVersion(netPacket.ProtoId, netPacket.Version); err != nil {
+			if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.svr.logger.Error("Receive NetPacket, incompatible version: %v, sid:%d", err, s.sid)
+			}
+			break
+		}
 
 		// 读取数据包体
 		if netPacket.DataSize > 0 {
@@ -264,6 +273,20 @@ func (s *TcpServerSession) receive(ctx context.Context) {
 		if s.svr.metrics != nil {
 			s.svr.metrics.RecordBytesReceived(NetPacketHeadSize + int(netPacket.DataSize))
 			s.svr.metrics.RecordPacketsReceived(1)
+		}
+
+		// Negotiation stays in the ordered read path even when application packets
+		// use a worker pool. This guarantees the following packet observes the
+		// compatibility established by the preceding control frame.
+		if s.svr.protocolPolicy.Enabled && netPacket.ProtoId == ProtocolNegotiationProtoId {
+			if err := s.handleProtocolNegotiationPacket(&netPacket); err != nil {
+				if s.svr.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+					s.svr.logger.Error("Protocol negotiation failed: %v, sid:%d", err, s.sid)
+				}
+				break
+			}
+			s.heartbeatUpdate()
+			continue
 		}
 
 		// 非心跳包处理
@@ -352,6 +375,20 @@ func (s *TcpServerSession) processPacket(packet *NetPacket) {
 			}
 		}()
 	}
+}
+
+func (s *TcpServerSession) handleProtocolNegotiationPacket(packet *NetPacket) error {
+	encrypted := len(packet.Data) > 0 && !s.svr.config.DisableEncryption
+	var decryptKey []byte
+	if encrypted {
+		decryptKey = s.GetDecryptKey(packet.KeyID)
+	}
+	if err := decodePacketPayload(packet, decryptKey, encrypted, s.svr.config.MaxDecodedPacketSize); err != nil {
+		recordPacketDecodeError(s.svr.metrics, err)
+		return err
+	}
+	_, err := s.protocol.AcceptProtocolNegotiation(packet.Version, packet.Data)
+	return err
 }
 
 // process 处理数据
@@ -467,8 +504,13 @@ func (s *TcpServerSession) SendWithOptions(ctx context.Context, protoId ProtoIdT
 }
 
 func (s *TcpServerSession) buildOutboundPacket(protoId ProtoIdType, data []byte) (*NetPacket, error) {
+	version, err := s.protocol.OutboundPacketVersion(protoId)
+	if err != nil {
+		return nil, err
+	}
 	netPacket := NetPacket{
 		ProtoId:   protoId,
+		Version:   version,
 		Sequence:  s.sendSequence.Add(1),
 		Timestamp: time.Now().Unix(),
 	}
@@ -522,6 +564,25 @@ func (s *TcpServerSession) buildOutboundPacket(protoId ProtoIdType, data []byte)
 		return nil, err
 	}
 	return &netPacket, nil
+}
+
+func (s *TcpServerSession) enqueueProtocolNegotiation() error {
+	if !s.svr.protocolPolicy.Enabled {
+		return nil
+	}
+	frame, err := MarshalProtocolNegotiation(s.svr.protocolPolicy)
+	if err != nil {
+		return err
+	}
+	packet, err := s.buildOutboundPacket(ProtocolNegotiationProtoId, frame)
+	if err != nil {
+		return err
+	}
+	return s.sendQueue.Enqueue(
+		context.Background(),
+		&outboundPacket{packet: packet},
+		SendOptions{Class: BestEffortEvent},
+	)
 }
 
 func (s *TcpServerSession) sendOutbound(outbound *outboundPacket) (int, error) {
@@ -592,6 +653,14 @@ func (s *TcpServerSession) heartbeatCheck(ctx context.Context) {
 //   - SessionIdType: 会话ID
 func (s *TcpServerSession) GetSid() SessionIdType {
 	return s.sid
+}
+
+// ProtocolCompatibility returns the immutable negotiated version/capability snapshot.
+func (s *TcpServerSession) ProtocolCompatibility() (ProtocolCompatibility, bool) {
+	if s == nil || s.protocol == nil {
+		return ProtocolCompatibility{}, false
+	}
+	return s.protocol.Snapshot()
 }
 
 // GetObj 获取附加对象

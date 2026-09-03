@@ -27,6 +27,8 @@ type TcpConfig struct {
 	SequenceWindowSize   uint64        `toml:"sequence_window_size" json:"sequence_window_size"`
 	TimestampTolerance   int64         `toml:"timestamp_tolerance" json:"timestamp_tolerance"`
 	ByteOrder            WireByteOrder `toml:"byte_order" json:"byte_order"`
+
+	ProtocolVersion ProtocolVersionPolicy `toml:"protocol_version" json:"protocol_version"`
 }
 
 // UdpConfig UDP服务器配置
@@ -79,6 +81,9 @@ type TcpClientConfig struct {
 	DisableEncryption    bool              `toml:"disable_encryption" json:"disable_encryption"`   // 是否禁用加密，默认 false
 	Compression          CompressionConfig `toml:"compression" json:"compression"`                 // 压缩配置
 	ByteOrder            WireByteOrder     `toml:"byte_order" json:"byte_order"`                   // 包头字节序，默认快照全局兼容值
+
+	ProtocolVersion            ProtocolVersionPolicy `toml:"protocol_version" json:"protocol_version"`                         // 显式启用；零值保持 Version=0
+	ProtocolNegotiationTimeout time.Duration         `toml:"protocol_negotiation_timeout" json:"protocol_negotiation_timeout"` // 仅启用版本协商时生效
 }
 
 // DDoSConfig DDoS保护配置

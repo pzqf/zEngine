@@ -29,6 +29,10 @@ type TcpClientSession struct {
 	packetCodec       PacketCodec
 	invalidPacketLogs packetErrorLogLimiter
 
+	protocol           *ProtocolVersionNegotiator
+	protocolResult     chan error
+	protocolResultOnce sync.Once
+
 	cli *TcpClient // 所属客户端
 }
 
@@ -44,6 +48,8 @@ func (s *TcpClientSession) Init(cli *TcpClient, conn *net.TCPConn, aesKey []byte
 	s.cli = cli
 	s.packetCodec = cli.packetCodec
 	s.writeGate = newContextWriteGate()
+	s.protocol, _ = NewProtocolVersionNegotiator(cli.protocolPolicy)
+	s.protocolResult = make(chan error, 1)
 	// 初始化当前密钥
 	s.currentKey.Store(aesKey)
 	s.currentKeyID.Store(0) // 0表示使用初始密钥
@@ -131,6 +137,7 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 	defer s.closed.Store(true)
 	defer s.ctxCancel()
 	defer s.wg.Done()
+	defer s.notifyProtocolNegotiation(ErrSessionClosed)
 	defer func() {
 		if err := recover(); err != nil {
 			if s.cli.logger != nil {
@@ -177,6 +184,13 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			}
 			break
 		}
+		if err := s.protocol.ValidateInboundPacketVersion(netPacket.ProtoId, netPacket.Version); err != nil {
+			if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
+				s.cli.logger.Error("Receive NetPacket, incompatible version: %v", err)
+			}
+			s.notifyProtocolNegotiation(err)
+			break
+		}
 
 		// 读取数据包体
 		if netPacket.DataSize > 0 {
@@ -207,7 +221,23 @@ func (s *TcpClientSession) receive(ctx context.Context) {
 			if s.cli.logger != nil && s.invalidPacketLogs.Allow(time.Now()) {
 				s.cli.logger.Error("Decode packet payload error: %v, keyID:%d", err, netPacket.KeyID)
 			}
+			if s.cli.protocolPolicy.Enabled && netPacket.ProtoId == ProtocolNegotiationProtoId {
+				s.notifyProtocolNegotiation(err)
+				break
+			}
 			continue
+		}
+
+		if s.cli.protocolPolicy.Enabled && netPacket.ProtoId == ProtocolNegotiationProtoId {
+			_, err := s.protocol.AcceptProtocolNegotiation(netPacket.Version, netPacket.Data)
+			s.notifyProtocolNegotiation(err)
+			if err != nil {
+				break
+			}
+			continue
+		}
+		if _, ok := s.protocol.Snapshot(); ok {
+			s.notifyProtocolNegotiation(nil)
 		}
 
 		// 密钥轮换载荷已经通过与业务包相同的解密和资源限制。
@@ -272,8 +302,13 @@ func (s *TcpClientSession) SendWithOptions(ctx context.Context, protoId ProtoIdT
 }
 
 func (s *TcpClientSession) writePacket(ctx context.Context, protoId ProtoIdType, data []byte) error {
+	version, err := s.protocol.OutboundPacketVersion(protoId)
+	if err != nil {
+		return err
+	}
 	netPacket := NetPacket{
 		ProtoId:   protoId,
+		Version:   version,
 		Sequence:  s.sendSequence.Add(1),
 		Timestamp: time.Now().Unix(),
 	}
@@ -330,12 +365,71 @@ func (s *TcpClientSession) writePacket(ctx context.Context, protoId ProtoIdType,
 	}
 	defer s.conn.SetWriteDeadline(time.Time{})
 	// 发送数据包
-	_, err := s.conn.Write(s.packetCodec.Marshal(&netPacket))
+	_, err = s.conn.Write(s.packetCodec.Marshal(&netPacket))
 	if err != nil {
 		return err
 	}
 	s.heartbeatUpdate() // 更新心跳时间
 	return nil
+}
+
+func (s *TcpClientSession) negotiateProtocol(ctx context.Context) error {
+	if !s.cli.protocolPolicy.Enabled {
+		return nil
+	}
+	timeout := s.cli.protocolNegotiationTimeout
+	if timeout <= 0 {
+		timeout = DefaultProtocolNegotiationTimeout
+	}
+	handshakeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	frame, err := MarshalProtocolNegotiation(s.cli.protocolPolicy)
+	if err != nil {
+		return err
+	}
+	if err := s.SendWithOptions(handshakeCtx, ProtocolNegotiationProtoId, frame, SendOptions{Class: ReliableCommand}); err != nil {
+		return err
+	}
+
+	select {
+	case err := <-s.protocolResult:
+		return err
+	case <-handshakeCtx.Done():
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := s.protocol.Snapshot(); ok {
+			return nil
+		}
+		if !s.cli.protocolPolicy.AcceptLegacy {
+			return ErrProtocolNegotiationTimeout
+		}
+		_, err := s.protocol.Negotiate(ProtocolVersionPolicy{})
+		if errors.Is(err, ErrProtocolCompatibilityConflict) {
+			if _, ok := s.protocol.Snapshot(); ok {
+				return nil
+			}
+		}
+		return err
+	}
+}
+
+func (s *TcpClientSession) notifyProtocolNegotiation(err error) {
+	if s == nil || s.protocolResult == nil {
+		return
+	}
+	s.protocolResultOnce.Do(func() {
+		s.protocolResult <- err
+	})
+}
+
+// ProtocolCompatibility returns the immutable negotiated version/capability snapshot.
+func (s *TcpClientSession) ProtocolCompatibility() (ProtocolCompatibility, bool) {
+	if s == nil || s.protocol == nil {
+		return ProtocolCompatibility{}, false
+	}
+	return s.protocol.Snapshot()
 }
 
 // handleKeyRotationNotify 处理密钥轮换通知

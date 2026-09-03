@@ -46,6 +46,10 @@ type TcpClient struct {
 	monitorOnce    sync.Once             // 保证连接监控 goroutine 只启动一次（重连不再重复 spawn）
 	packetCodec    PacketCodec
 	packetCodecErr error
+
+	protocolPolicy             ProtocolVersionPolicy
+	protocolPolicyErr          error
+	protocolNegotiationTimeout time.Duration
 }
 
 // NewTcpClient 创建新的TCP客户端实例
@@ -81,6 +85,9 @@ func NewTcpClient(cfg *TcpClientConfig, opts ...ClientOption) *TcpClient {
 		opt(cli)
 	}
 	cli.packetCodec, cli.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
+	cli.protocolPolicy = cfg.ProtocolVersion
+	cli.protocolPolicyErr = cli.protocolPolicy.Validate()
+	cli.protocolNegotiationTimeout = cfg.ProtocolNegotiationTimeout
 
 	return cli
 }
@@ -107,6 +114,9 @@ func (cli *TcpClient) ConnectContext(ctx context.Context) error {
 func (cli *TcpClient) connect(ctx context.Context) error {
 	if cli.packetCodecErr != nil {
 		return cli.packetCodecErr
+	}
+	if cli.protocolPolicyErr != nil {
+		return cli.protocolPolicyErr
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -185,6 +195,11 @@ func (cli *TcpClient) connect(ctx context.Context) error {
 
 	s.Init(cli, conn, aesKey)
 	s.Start()
+	if err := s.negotiateProtocol(ctx); err != nil {
+		s.Close()
+		cli.setState(ClientStateDisconnected)
+		return err
+	}
 	// NET-8: 原子换入新会话并关闭旧会话——重复调用 Connect（如手动重连）若只 Store 不 Close
 	// 旧会话，旧会话的 goroutine 与底层 conn 会泄漏。
 	if old := cli.session.Swap(s); old != nil {

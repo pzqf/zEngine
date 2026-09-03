@@ -42,6 +42,8 @@ type TcpServer struct {
 	metrics           NetworkMetricsRecorder                           // 可选网络指标上报器（nil 则不上报）
 	packetCodec       PacketCodec
 	packetCodecErr    error
+	protocolPolicy    ProtocolVersionPolicy
+	protocolPolicyErr error
 }
 
 // NewTcpServer 创建新的TCP服务器实例
@@ -105,6 +107,8 @@ func NewTcpServer(cfg *TcpConfig, opts ...Options) *TcpServer {
 	}
 	normalizePacketSizeLimits(&cfg.MaxWirePacketSize, &cfg.MaxPacketDataSize, &cfg.MaxDecodedPacketSize)
 	svr.packetCodec, svr.packetCodecErr = newEndpointPacketCodec(cfg.ByteOrder)
+	svr.protocolPolicy = cfg.ProtocolVersion
+	svr.protocolPolicyErr = svr.protocolPolicy.Validate()
 
 	return svr
 }
@@ -120,6 +124,9 @@ func (svr *TcpServer) Start() error {
 	}
 	if svr.packetCodecErr != nil {
 		return svr.packetCodecErr
+	}
+	if svr.protocolPolicyErr != nil {
+		return svr.protocolPolicyErr
 	}
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", svr.config.ListenAddress)
 	if err != nil {
@@ -321,6 +328,17 @@ func (svr *TcpServer) AddSession(conn *net.TCPConn) {
 
 	if svr.metrics != nil {
 		svr.metrics.IncActiveConnections()
+	}
+	if err := newSession.enqueueProtocolNegotiation(); err != nil {
+		if svr.logger != nil {
+			svr.logger.Error("Queue protocol negotiation failed: %v, sid:%d", err, sid)
+		}
+		if svr.metrics != nil {
+			svr.metrics.DecActiveConnections()
+		}
+		svr.clientSessionMap.Delete(sid)
+		_ = conn.Close()
+		return
 	}
 
 	if svr.onAddSession != nil {

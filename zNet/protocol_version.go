@@ -19,11 +19,11 @@ var (
 // bits without assigning application semantics to either. The zero value is a
 // disabled policy and preserves the legacy Version=0 behavior.
 type ProtocolVersionPolicy struct {
-	Enabled      bool
-	MinVersion   int32
-	MaxVersion   int32
-	Capabilities uint64
-	AcceptLegacy bool
+	Enabled      bool   `toml:"enabled" json:"enabled"`
+	MinVersion   int32  `toml:"min_version" json:"min_version"`
+	MaxVersion   int32  `toml:"max_version" json:"max_version"`
+	Capabilities uint64 `toml:"capabilities" json:"capabilities"`
+	AcceptLegacy bool   `toml:"accept_legacy" json:"accept_legacy"`
 }
 
 // Validate rejects ambiguous policies. Enabled policies use strictly positive

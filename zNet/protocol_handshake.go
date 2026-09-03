@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 )
 
 const (
@@ -17,12 +18,14 @@ const (
 	protocolNegotiationFrameSize               = 24
 	protocolNegotiationFlagAcceptLegacy        = uint16(1 << 0)
 	protocolNegotiationKnownFlags              = protocolNegotiationFlagAcceptLegacy
+	DefaultProtocolNegotiationTimeout          = time.Second
 )
 
 var (
 	ErrInvalidProtocolNegotiationFrame     = errors.New("invalid protocol negotiation frame")
 	ErrProtocolCompatibilityNotEstablished = errors.New("protocol compatibility not established")
 	ErrProtocolPacketVersionMismatch       = errors.New("protocol packet version mismatch")
+	ErrProtocolNegotiationTimeout          = errors.New("protocol negotiation timed out")
 )
 
 // MarshalProtocolNegotiation encodes an enabled policy in one fixed-size,
