@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.20
+**文档版本**：0.0.21
 
 ## 项目概述
 
@@ -65,6 +65,7 @@ zEngine/
 ├── zConsistency/  # Outbox/Inbox 存储与实验性事务协调原语
 ├── zHealth/       # liveness/readiness/diagnostics 检查原语
 ├── zMetrics/      # 监控指标 - checked schema registry + 运行时/网络采集
+├── zProfiling/    # 受控 Go pprof HTTP server - 默认关闭、私有 mux、显式生命周期
 ├── zSignal/       # 信号处理 - 优雅退出
 └── zConfig/       # 配置管理 - ini/yaml 加载 + 热更新 watcher
 ```
@@ -403,6 +404,15 @@ handler 注册/快照已同步，Stop 通过独立停止通道立即唤醒并等
 **集成**：zNet 已提供上报接口 `NetworkMetricsRecorder`，用 `zNet.WithServerMetrics(recorder)`
 注入即可（`zMetrics.NetworkMetrics` 满足该接口）——连接数/延迟/流量/错误率交由 zNet 自动采集。
 
+### zProfiling - 受控运行时剖析
+
+`Server` 提供显式 owner 的 Go `pprof` HTTP listener。零值配置默认关闭，关闭时不获取端口；启用时使用
+独立 `http.ServeMux`，拒绝空 host 和 `0.0.0.0`/`[::]` wildcard，只有真实 `net.Listen` 成功后 `Start`
+才返回成功。`Close` 并发幂等、受 shutdown timeout 约束，超时后强制关闭，并暴露实际监听地址和运行状态。
+
+该包不决定服务角色、默认端口、管理网拓扑、realm 或采样策略。zMmoServer 四角色是首批生产调用者，
+均在进程根按默认关闭的应用配置显式启动，并在取得 listener 后立即登记到 zServer 资源栈。
+
 ### zInject - 依赖注入
 
 轻量级依赖注入容器，支持 Factory 和 Singleton 两种依赖类型。
@@ -455,6 +465,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-04 | 0.0.21 | 增加受控 `zProfiling`：默认关闭、私有 mux、拒绝 wildcard、同步监听失败和有界幂等关闭；四角色真实调用及端口释放由 zMmoServer 验证，角色/端口策略留上层。 |
 | 2026-09-02 | 0.0.20 | 增加 `TcpServer.CloseAdmission`：只停新连接/在飞握手登记并保留已有 session；完整 Close 并发幂等，Gateway 真实 drain 首块通过，业务策略仍留上层。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：新增不透明 resource 的 OwnershipStore、ModRevision epoch/revision、owner+lease+revision CAS、watch 恢复，并由 zMmoServer 四角色服务实例注册真实接线验证；业务状态机继续留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：zServer 增加命名资源栈、启动失败回滚、并发幂等停止、完整 Wait/after-stop 和 signal 释放；zService 固化 DAG 回滚/聚合错误，zSignal 提供可取消桥接，并由四角色真实生命周期 E4/E5 验证。 |
@@ -476,4 +487,4 @@ MIT License
 | 2026-08-31 | 0.0.2 | 完成 NET-01 文档：记录 TCP/UDP/WebSocket 前置帧校验、默认 wire-size 上限、端点级 byte order、错误策略和 NET-02/03 边界。 |
 | 2026-08-31 | 0.0.1 | 区分 API 存在与生产成熟度，校正 zServer、zDistributed、zConsistency、zHealth、zEvent、zNavMap、zScript 和 zConfig 的当前限制。 |
 
-*最后更新: 2026-09-01*
+*最后更新: 2026-09-04*

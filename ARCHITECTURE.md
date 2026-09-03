@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.20
+**文档版本**：0.0.21
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -24,7 +24,7 @@ zEngine 是一套**分布式游戏服务器引擎的基础设施层**——它�
    │  传输 zNet · 运行时 zActor/zObject/zEvent      │
    │  原语 zAoi/zInstance/zNavMap/zScript           │
    │  框架 zServer/zService/zInject                 │
-   │  设施 zLog/zMetrics/zHealth/zConfig/zSignal     │
+   │  设施 zLog/zMetrics/zProfiling/zHealth/zConfig/zSignal │
    │  协调 zDistributed/zConsistency                 │
    └──────────┬───────────────────────────────────┘
               │  依赖
@@ -35,7 +35,7 @@ zEngine 是一套**分布式游戏服务器引擎的基础设施层**——它�
 
 ## 2. 分层与模块职责
 
-zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间尽量解耦（如 zService 与 zServer
+zEngine 的 19 个模块按角色分五层。上层可自由挑选，模块间尽量解耦（如 zService 与 zServer
 已解耦为独立可选模块）。
 
 以下表格描述模块责任和当前 API 存在性，不表示每个模块都已接入 zMmoServer 生产路径，也不表示其在
@@ -66,6 +66,7 @@ zEngine 的 18 个模块按角色分五层。上层可自由挑选，模块间�
 |------|------|
 | **zLog** | 基于 zap + lumberjack 的结构化日志；异步写入、采样、文件轮转、多日志器、`{ServerID}` 占位符。 |
 | **zMetrics** | Prometheus Counter/Gauge/Histogram checked schema registry（name/type/help/const labels/buckets）与运行时/网络采集；失败注册不缓存，MemoryMonitor handler 同步且 Stop 可立即唤醒。HTTP listener/mux 的进程适配在 zCommon，由四角色显式持有。 |
+| **zProfiling** | 受控 Go pprof HTTP server；默认关闭且不监听，启用时使用私有 mux、拒绝空 host/wildcard、同步取得 listener，并提供有界并发幂等 Close。服务角色、端口、管理网和采样策略留上层。 |
 | **zHealth** | liveness/readiness/diagnostics 通用 probe 与不可变快照；支持 timeout、CacheTTL、LastSuccess、panic 隔离和单 in-flight，空集合/未执行/占位检查保持 Unknown。旧 checker API 复用同一模型；具体“可接流量”策略由应用注入。 |
 | **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 可取消、可释放的 OS signal-to-context 桥接；不定义业务排空，不注册不可捕获的 SIGKILL。 |
@@ -190,6 +191,9 @@ Client                                             Server
   冒充 readiness。zHealth 只在 `Refresh/Run` 执行 probe，报告和 HTTP 读取缓存；zServer 通过应用注入的
   provider 合并真实进程状态。zMmoServer 四角色的 MySQL/etcd 降级恢复与 `/live`、`/ready` 已通过 E4/E5；
   启动失败回滚、统一停止、listener/注册释放也已由独立生命周期 E4/E5 验证。
+- **运行时剖析**：zProfiling 只提供默认关闭、私有 mux、拒绝 wildcard 和有界关闭的 pprof listener；
+  zMmoServer 四角色在应用配置启用后由进程根显式持有。它不是 readiness 端点，也不包含角色、realm、
+  玩家或场景语义。
 
 ## 8. 扩展点一览
 
@@ -200,6 +204,7 @@ Client                                             Server
 | 加一个后台服务 | 实现服务并用 zService 声明依赖，拓扑初始化 |
 | 加一个进程级组件 | `BaseServer.RegisterComponent` |
 | 加指标 | zMetrics `Register*Checked` 注册 Counter/Gauge/Histogram，并处理 schema 错误 |
+| 加运行时剖析 | zProfiling `NewServer`，由进程根在 `Start` 成功后立即登记 `Close`；绑定地址和启用策略由应用决定 |
 | 加健康检查 | zHealth `RegisterProbe` 声明 scope/timeout/cache；应用层决定哪些依赖阻断 readiness |
 | 加分布式协调 | 单个锁用 `FencedLock`；具名资源用 `OwnershipStore`；etcd 写入用 `GuardedTxn`，业务 resource/state 和非 etcd fence 留上层 |
 
@@ -212,6 +217,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-04 | 0.0.21 | 增加 `zProfiling` 的受控 pprof listener：默认关闭、私有 mux、拒绝 wildcard、同步监听失败和有界幂等关闭；上层四角色接线不改变引擎业务边界。 |
 | 2026-09-02 | 0.0.20 | 记录 `TcpServer.CloseAdmission` 只停新接入、保留已有 session，完整 Close 并发幂等；Gateway 是首个真实调用，四角色业务排空仍由 DRN-01 上层策略逐块完成。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：记录 OwnershipStore 的 owner/lease/ModRevision epoch、显式 CAS handoff、Get/Watch 恢复与 guarded write，并由 zMmoServer 服务实例注册验证；业务状态机和滚动兼容仍留上层。 |
 | 2026-09-01 | 0.0.18 | 完成 LIF-01：记录 zServer 启动事务/资源栈/幂等停止/after-stop/Wait/signal，zService DAG 回滚与错误聚合、zSignal 可取消桥接，以及四角色真实资源 E4/E5；业务疏散仍归 DRN-01。 |

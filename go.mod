@@ -9,6 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/pzqf/zUtil v0.0.1
 	github.com/stretchr/testify v1.11.1
+	go.etcd.io/etcd/api/v3 v3.6.9
 	go.etcd.io/etcd/client/v3 v3.6.9
 	go.uber.org/zap v1.27.0
 	gopkg.in/ini.v1 v1.67.0
@@ -31,7 +32,6 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.9 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.9 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
