@@ -3,7 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**文档版本**：0.0.21
+**文档版本**：0.0.23
 
 ## 项目概述
 
@@ -418,8 +418,11 @@ handler 注册/快照已同步，Stop 通过独立停止通道立即唤醒并等
 
 ### zConfig - 配置管理
 
-当前生产调用主要使用 ini/yaml 文件解析。ConfigWatcher/provider API 存在，但没有 zMmoServer 生产构造，
-初始加载失败、重连快照、并发 Start/Stop 和回调所有权尚未形成已验证的热更新闭环。
+INI 没有标量 schema，`LoadINI`/`Get` 因而保留值的原始字符串（包括纯数字密码和前导零）；调用者通过
+`GetInt/GetFloat/GetBool` 显式选择类型时才解析。INI 来源的 `Unmarshal` 按目标字段类型和 `ini` tag
+映射，JSON/YAML 仍保留各自解析器的原生标量类型。zMmoServer 四角色的生产配置加载已覆盖这条契约。
+ConfigWatcher/provider API 存在但没有 zMmoServer 生产构造；初始加载失败、重连快照、并发 Start/Stop
+和回调所有权尚未形成已验证的热更新闭环。
 
 ## 依赖
 
@@ -464,6 +467,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-04 | 0.0.23 | 完成 CFG-01 引擎侧标量契约：INI 保留原文，typed getter/INI Unmarshal 按显式目标类型解析，SaveINI 保留前导零；JSON/YAML/env 行为不变，ConfigWatcher 不在本轮。 |
 | 2026-09-04 | 0.0.22 | 完成 ACT-COMPAT-01：删除 Runner 无 context 包装、legacy priority message、公开 mailbox 与无实现的 Escalate 名称；保留 context/error、显式优先级和未知监督策略拒绝。 |
 | 2026-09-04 | 0.0.21 | 增加受控 `zProfiling`：默认关闭、私有 mux、拒绝 wildcard、同步监听失败和有界幂等关闭；四角色真实调用及端口释放由 zMmoServer 验证，角色/端口策略留上层。 |
 | 2026-09-02 | 0.0.20 | 增加 `TcpServer.CloseAdmission`：只停新连接/在飞握手登记并保留已有 session；完整 Close 并发幂等，Gateway 真实 drain 首块通过，业务策略仍留上层。 |

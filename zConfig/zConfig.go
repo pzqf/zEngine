@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -14,9 +15,19 @@ import (
 
 // Config 配置结构体
 type Config struct {
-	data map[string]interface{}
-	path string
+	data   map[string]interface{}
+	path   string
+	source configSource
 }
+
+type configSource uint8
+
+const (
+	configSourceUnknown configSource = iota
+	configSourceJSON
+	configSourceYAML
+	configSourceINI
+)
 
 // NewConfig 创建一个新的配置实例
 func NewConfig() *Config {
@@ -40,6 +51,7 @@ func (c *Config) LoadJSON(filePath string) error {
 
 	c.data = data
 	c.path = filePath
+	c.source = configSourceJSON
 	return nil
 }
 
@@ -74,6 +86,7 @@ func (c *Config) LoadYAML(filePath string) error {
 
 	c.data = data
 	c.path = filePath
+	c.source = configSourceYAML
 	return nil
 }
 
@@ -106,7 +119,8 @@ func (c *Config) LoadINI(filePath string) error {
 	if defaultSection != nil {
 		sectionMap := make(map[string]interface{})
 		for _, key := range defaultSection.Keys() {
-			sectionMap[key.Name()] = convertINIValue(key.Value())
+			// INI has no scalar schema. Keep source text until a typed getter or Unmarshal selects a type.
+			sectionMap[key.Name()] = key.Value()
 		}
 		if len(sectionMap) > 0 {
 			for k, v := range sectionMap {
@@ -122,7 +136,7 @@ func (c *Config) LoadINI(filePath string) error {
 
 		sectionMap := make(map[string]interface{})
 		for _, key := range section.Keys() {
-			sectionMap[key.Name()] = convertINIValue(key.Value())
+			sectionMap[key.Name()] = key.Value()
 		}
 
 		sectionKeys := strings.Split(section.Name(), ".")
@@ -148,6 +162,7 @@ func (c *Config) LoadINI(filePath string) error {
 
 	c.data = data
 	c.path = filePath
+	c.source = configSourceINI
 	return nil
 }
 
@@ -173,26 +188,6 @@ func (c *Config) SaveINI(filePath string) error {
 
 	c.path = filePath
 	return nil
-}
-
-// convertINIValue 将INI字符串值转换为合适的类型
-func convertINIValue(value string) interface{} {
-	if value == "true" || value == "True" || value == "TRUE" {
-		return true
-	}
-	if value == "false" || value == "False" || value == "FALSE" {
-		return false
-	}
-
-	if intVal, err := strconv.Atoi(value); err == nil {
-		return intVal
-	}
-
-	if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-		return floatVal
-	}
-
-	return value
 }
 
 // convertToINIString 将值转换为INI字符串
@@ -259,13 +254,16 @@ func (c *Config) GetInt(key string) (int, error) {
 	switch v := value.(type) {
 	case int:
 		return v, nil
+	case string:
+		if parsed, err := strconv.Atoi(v); err == nil {
+			return parsed, nil
+		}
 	case float64:
 		return int(v), nil
 	case int64:
 		return int(v), nil
-	default:
-		return 0, errors.New("value is not an integer: " + key)
 	}
+	return 0, errors.New("value is not an integer: " + key)
 }
 
 // GetFloat 获取浮点数类型的配置值
@@ -278,13 +276,16 @@ func (c *Config) GetFloat(key string) (float64, error) {
 	switch v := value.(type) {
 	case float64:
 		return v, nil
+	case string:
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			return parsed, nil
+		}
 	case int:
 		return float64(v), nil
 	case int64:
 		return float64(v), nil
-	default:
-		return 0, errors.New("value is not a float: " + key)
 	}
+	return 0, errors.New("value is not a float: " + key)
 }
 
 // GetBool 获取布尔类型的配置值
@@ -294,12 +295,16 @@ func (c *Config) GetBool(key string) (bool, error) {
 		return false, err
 	}
 
-	b, ok := value.(bool)
-	if !ok {
-		return false, errors.New("value is not a boolean: " + key)
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			return parsed, nil
+		}
 	}
 
-	return b, nil
+	return false, errors.New("value is not a boolean: " + key)
 }
 
 // Set 设置配置值
@@ -343,6 +348,12 @@ func (c *Config) Set(key string, value interface{}) error {
 
 // Unmarshal 将配置解析到结构体
 func (c *Config) Unmarshal(v interface{}) error {
+	if c.source == configSourceINI && isINIStructTarget(v) {
+		cfg := ini.Empty()
+		populateINI(cfg, "", c.data)
+		return cfg.StrictMapTo(v)
+	}
+
 	content, err := json.Marshal(c.data)
 	if err != nil {
 		return err
@@ -365,7 +376,32 @@ func (c *Config) Marshal(v interface{}) error {
 	}
 
 	c.data = data
+	c.source = configSourceJSON
 	return nil
+}
+
+func isINIStructTarget(v interface{}) bool {
+	value := reflect.ValueOf(v)
+	if !value.IsValid() || value.Kind() != reflect.Ptr || value.IsNil() {
+		return false
+	}
+	kind := value.Elem().Kind()
+	return kind == reflect.Struct || kind == reflect.Slice
+}
+
+func populateINI(cfg *ini.File, sectionName string, values map[string]interface{}) {
+	section := cfg.Section(sectionName)
+	for key, value := range values {
+		if child, ok := value.(map[string]interface{}); ok {
+			childSection := key
+			if sectionName != "" {
+				childSection = sectionName + "." + key
+			}
+			populateINI(cfg, childSection, child)
+			continue
+		}
+		section.Key(key).SetValue(convertToINIString(value))
+	}
 }
 
 // Has 检查配置中是否存在某个键
@@ -414,6 +450,7 @@ func (c *Config) Delete(key string) error {
 // Clear 清空配置
 func (c *Config) Clear() {
 	c.data = make(map[string]interface{})
+	c.source = configSourceUnknown
 }
 
 // Size 获取配置中的键值对数量

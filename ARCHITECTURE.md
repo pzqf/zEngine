@@ -1,6 +1,6 @@
 # zEngine 架构说明
 
-**文档版本**：0.0.21
+**文档版本**：0.0.22
 
 本文讲清楚 zEngine 各模块**如何组合成一个可运行的服务器**、数据如何在其中流动、以及背后的
 并发与安全模型。想快速上手看 [README.md](README.md) 的「快速开始」；想理解设计全貌看这里。
@@ -68,7 +68,7 @@ zEngine 的 19 个模块按角色分五层。上层可自由挑选，模块间�
 | **zMetrics** | Prometheus Counter/Gauge/Histogram checked schema registry（name/type/help/const labels/buckets）与运行时/网络采集；失败注册不缓存，MemoryMonitor handler 同步且 Stop 可立即唤醒。HTTP listener/mux 的进程适配在 zCommon，由四角色显式持有。 |
 | **zProfiling** | 受控 Go pprof HTTP server；默认关闭且不监听，启用时使用私有 mux、拒绝空 host/wildcard、同步取得 listener，并提供有界并发幂等 Close。服务角色、端口、管理网和采样策略留上层。 |
 | **zHealth** | liveness/readiness/diagnostics 通用 probe 与不可变快照；支持 timeout、CacheTTL、LastSuccess、panic 隔离和单 in-flight，空集合/未执行/占位检查保持 Unknown。旧 checker API 复用同一模型；具体“可接流量”策略由应用注入。 |
-| **zConfig** | ini/yaml 配置加载和 watcher API；生产主要使用文件解析，ConfigWatcher 尚无 zMmoServer 生产构造。 |
+| **zConfig** | INI 加载保留无 schema 的原始字符串，由 typed getter 或目标字段类型显式解析；JSON/YAML 保留原生标量。四角色生产文件加载已回归，ConfigWatcher 尚无 zMmoServer 生产构造。 |
 | **zSignal** | 可取消、可释放的 OS signal-to-context 桥接；不定义业务排空，不注册不可捕获的 SIGKILL。 |
 | **zDistributed** | fenced 排他锁与不透明 resource 的 OwnershipStore：显式 handle 随 lease/owner key 丢失而失效；owner token + lease + create/mod revision 提供 compare-delete、单调 fence、显式 handoff、Get/Watch 与 guarded etcd 写入。旧 Lock/Unlock 仅作 advisory 兼容。zMmoServer 服务实例注册已真实接线，业务 resource/state 仍留上层。 |
 | **zConsistency** | context/error 感知的 Memory/SQL Outbox/Inbox：严格三阶段/三态、显式终结、重试/dead-letter 和 fail-closed；`SQLExecutor` 允许 store 绑定 DB/Tx，业务提交点和事务 ownership 仍在上层。真实 MySQL E3 与 zMmoServer grant 生产调用已通过。`InMemoryTransactionCoordinator` 只是一致加锁、锁外回调的 experimental 单进程原语，当前无生产构造，不承诺 durable/recovery 或传输 exactly-once；旧 `TransactionManager` 仅作兼容。 |
@@ -217,6 +217,7 @@ Client                                             Server
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-04 | 0.0.22 | 完成 CFG-01 引擎侧标量契约：INI 原文与前导零不再被猜型破坏，typed getter/INI Unmarshal 承担显式转换；JSON/YAML 和未接线 ConfigWatcher 边界不变。 |
 | 2026-09-04 | 0.0.21 | 增加 `zProfiling` 的受控 pprof listener：默认关闭、私有 mux、拒绝 wildcard、同步监听失败和有界幂等关闭；上层四角色接线不改变引擎业务边界。 |
 | 2026-09-02 | 0.0.20 | 记录 `TcpServer.CloseAdmission` 只停新接入、保留已有 session，完整 Close 并发幂等；Gateway 是首个真实调用，四角色业务排空仍由 DRN-01 上层策略逐块完成。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：记录 OwnershipStore 的 owner/lease/ModRevision epoch、显式 CAS handoff、Get/Watch 恢复与 guarded write，并由 zMmoServer 服务实例注册验证；业务状态机和滚动兼容仍留上层。 |
