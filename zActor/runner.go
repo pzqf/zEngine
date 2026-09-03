@@ -147,36 +147,6 @@ func (r *Runner) TryPost(fn func(context.Context)) error {
 	}, false)
 }
 
-// Do 是旧同步 API 的兼容包装。
-//
-// Deprecated: 使用 DoContext 并传递回调收到的 execCtx。该旧签名无法携带 Runner 执行上下文，
-// 因而只能从所有 Runner 执行域之外调用；在 Runner 回调内调用可能自投递死锁。
-func (r *Runner) Do(fn func()) {
-	if fn == nil {
-		return
-	}
-	_ = r.DoContext(context.Background(), func(context.Context) { fn() })
-}
-
-// Post 是旧异步 API 的兼容包装。
-//
-// Deprecated: 使用 PostContext。该旧签名无法携带 Runner 执行上下文，只能从所有 Runner 执行域
-// 之外调用；在 Runner 回调内且队列已满时可能阻塞执行域。
-func (r *Runner) Post(fn func()) bool {
-	if fn == nil {
-		return false
-	}
-	return r.PostContext(context.Background(), func(context.Context) { fn() }) == nil
-}
-
-// PostTick 是旧 latest-wins API 的兼容包装。Deprecated: 使用 TryPost 并处理 admission 错误。
-func (r *Runner) PostTick(fn func()) {
-	if fn == nil {
-		return
-	}
-	_ = r.TryPost(func(context.Context) { fn() })
-}
-
 // StopContext 原子关闭 admission，并等待所有已接纳命令执行完成和 goroutine 退出。
 // ctx 只限制等待时间；超时后 Runner 仍会继续排空并最终进入 stopped。
 func (r *Runner) StopContext(ctx context.Context) error {
@@ -216,14 +186,6 @@ func (r *Runner) StopContext(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// Stop 是旧停止 API 的兼容包装，等待 Runner 完整排空。
-//
-// Deprecated: 使用 StopContext。该旧签名无法携带 Runner 执行上下文，只能从所有 Runner 执行域
-// 之外调用；在自身回调内调用会等待自己退出并死锁。
-func (r *Runner) Stop() {
-	_ = r.StopContext(context.Background())
 }
 
 func (r *Runner) admit(ctx context.Context, cmd runnerCommand, wait bool) error {

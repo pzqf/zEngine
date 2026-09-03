@@ -234,7 +234,7 @@ UDP/WebSocket client 可在连接前用 `SetPacketSizeLimits` 配置两级上限
 **主要特性**：
 - `BaseActor.SendMessage/SendPriority` 非阻塞返回稳定 admission 错误；正常停止关闭 admission 后排空
 - High/Normal/Low 三条有界队列采用有界高优先级 burst；latest-wins 使用独立单槽
-- Restart/Stop 监督失败可观察；无父监督树的 `Escalate` 仅保留源码名称，`Start` 明确返回 unsupported
+- Restart/Stop 监督失败可观察；无父监督树，不支持的策略由 `Start` 明确返回 unsupported
 - 生命周期钩子（OnStart/OnStop/OnRestart）在 mutex 外按 generation 快照执行，重入返回稳定状态结果
 - `ActorStats` 暴露队列深度、接纳/拒绝、latest 替换、panic/restart、abandoned 和 hook failure
 - `Runner.DoContext` 同步单写者调用：未启动/停止中/已停止返回稳定错误，队列等待可取消
@@ -243,12 +243,11 @@ UDP/WebSocket client 可在连接前用 `SetPacketSizeLimits` 配置两级上限
 - 执行上下文记录 Runner 调用链，同 Runner 重入和跨 Runner 环返回稳定错误；命令 panic 隔离并可观察
 
 **关键类型**：
-- `BaseActor` - 类型化消息 Actor；旧公开 `ActorMsgChan`/`PriorityActorMessage` 仅作 deprecated 兼容
-- `Runner` - 闭包式单写者执行器；旧 `Do/Post/PostTick/Stop` 暂留 deprecated 兼容包装
+- `BaseActor` - 类型化消息 Actor；`SendMessage` 固定进入 normal lane，显式优先级使用 `SendPriority`
+- `Runner` - 只提供显式 context/error 的闭包式单写者执行器
 
-严格的重入/环检测只适用于显式传递 `execCtx` 的新 API。旧包装没有 context 参数，只允许从所有
-Runner 执行域之外调用；`Do/Post/Stop` 在 Runner 回调内使用仍可能发生旧式阻塞或死锁。zMmoServer
-生产调用已迁移到新 API，旧包装将在独立兼容清理任务中删除。
+严格的重入/环检测依赖调用方把回调收到的 `execCtx` 继续传给同步跨 Runner 调用；同 Runner 重入和
+跨 Runner 环会返回 `ErrRunnerReentrantCall`，不会自投递死锁。
 - `SupervisorConfig` - 监督配置（策略、最大重启次数、重启窗口、退避时间）
 
 `Runner` 的严格重入/环检测依赖显式执行上下文；`BaseActor` 不提供同步跨 Actor 调用链，而提供非阻塞
@@ -465,6 +464,7 @@ MIT License
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
+| 2026-09-04 | 0.0.22 | 完成 ACT-COMPAT-01：删除 Runner 无 context 包装、legacy priority message、公开 mailbox 与无实现的 Escalate 名称；保留 context/error、显式优先级和未知监督策略拒绝。 |
 | 2026-09-04 | 0.0.21 | 增加受控 `zProfiling`：默认关闭、私有 mux、拒绝 wildcard、同步监听失败和有界幂等关闭；四角色真实调用及端口释放由 zMmoServer 验证，角色/端口策略留上层。 |
 | 2026-09-02 | 0.0.20 | 增加 `TcpServer.CloseAdmission`：只停新连接/在飞握手登记并保留已有 session；完整 Close 并发幂等，Gateway 真实 drain 首块通过，业务策略仍留上层。 |
 | 2026-09-01 | 0.0.19 | 完成 OWN-01：新增不透明 resource 的 OwnershipStore、ModRevision epoch/revision、owner+lease+revision CAS、watch 恢复，并由 zMmoServer 四角色服务实例注册真实接线验证；业务状态机继续留上层。 |

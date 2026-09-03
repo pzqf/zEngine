@@ -32,10 +32,6 @@ type SupervisorStrategy int
 const (
 	SupervisorStrategyRestart SupervisorStrategy = iota
 	SupervisorStrategyStop
-	// SupervisorStrategyEscalate is retained for source compatibility only. BaseActor has no parent
-	// supervision tree, so Start rejects this strategy instead of pretending that logging is escalation.
-	// Deprecated: use Restart or Stop until a real parent supervisor has a production caller.
-	SupervisorStrategyEscalate
 )
 
 type SupervisorConfig struct {
@@ -64,18 +60,6 @@ type BaseActorMessage struct {
 
 func (msg *BaseActorMessage) GetActorID() int64 {
 	return msg.ActorID
-}
-
-// PriorityActorMessage is the legacy standalone priority message. New callers should keep their own
-// message type and pass it to SendPriority so ProcessMessage receives the original payload.
-// Deprecated: use SendPriority.
-type PriorityActorMessage struct {
-	BaseActorMessage
-	Priority MessagePriority
-}
-
-func (msg *PriorityActorMessage) GetPriority() MessagePriority {
-	return msg.Priority
 }
 
 type MessagePriority int
@@ -174,13 +158,10 @@ func (r *actorRun) requestStop() {
 type BaseActor struct {
 	id int64
 
-	// ActorMsgChan is the legacy normal-priority mailbox. Direct sends bypass lifecycle admission and
-	// metrics; production callers must use SendMessage. It remains temporarily for source compatibility.
-	// Deprecated: use SendMessage.
-	ActorMsgChan chan ActorMessage
-	highPriority chan ActorMessage
-	lowPriority  chan ActorMessage
-	latest       chan ActorMessage
+	normalPriority chan ActorMessage
+	highPriority   chan ActorMessage
+	lowPriority    chan ActorMessage
+	latest         chan ActorMessage
 
 	state atomic.Uint32
 	mu    sync.Mutex
@@ -215,13 +196,13 @@ func newBaseActor(id int64, chanSize int, cfg SupervisorConfig) *BaseActor {
 		chanSize = 1024
 	}
 	return &BaseActor{
-		id:            id,
-		ActorMsgChan:  make(chan ActorMessage, chanSize),
-		highPriority:  make(chan ActorMessage, chanSize),
-		lowPriority:   make(chan ActorMessage, chanSize),
-		latest:        make(chan ActorMessage, 1),
-		logger:        zLog.GetLogger(),
-		supervisorCfg: cfg,
+		id:             id,
+		normalPriority: make(chan ActorMessage, chanSize),
+		highPriority:   make(chan ActorMessage, chanSize),
+		lowPriority:    make(chan ActorMessage, chanSize),
+		latest:         make(chan ActorMessage, 1),
+		logger:         zLog.GetLogger(),
+		supervisorCfg:  cfg,
 	}
 }
 
@@ -367,17 +348,13 @@ func (a *BaseActor) beginStop() (*actorRun, error) {
 	}
 }
 
-// SendMessage performs non-blocking normal admission, unless msg is the legacy PriorityActorMessage.
+// SendMessage performs non-blocking normal-priority admission.
 // A nil error means ownership transferred to the actor; full and lifecycle rejection are explicit.
 func (a *BaseActor) SendMessage(msg ActorMessage) error {
 	if msg == nil {
 		return ErrActorNilMessage
 	}
-	priority := PriorityNormal
-	if prioritized, ok := msg.(interface{ GetPriority() MessagePriority }); ok {
-		priority = prioritized.GetPriority()
-	}
-	return a.send(msg, priority)
+	return a.send(msg, PriorityNormal)
 }
 
 // SendPriority admits the original message into the requested priority lane.
@@ -438,7 +415,7 @@ func (a *BaseActor) mailbox(priority MessagePriority) (chan ActorMessage, error)
 	case PriorityHigh:
 		return a.highPriority, nil
 	case PriorityNormal:
-		return a.ActorMsgChan, nil
+		return a.normalPriority, nil
 	case PriorityLow:
 		return a.lowPriority, nil
 	default:
@@ -464,11 +441,11 @@ func (a *BaseActor) DroppedMessages() uint64 {
 func (a *BaseActor) Stats() ActorStats {
 	return ActorStats{
 		State:          ActorState(a.state.Load()),
-		NormalDepth:    len(a.ActorMsgChan),
+		NormalDepth:    len(a.normalPriority),
 		HighDepth:      len(a.highPriority),
 		LowDepth:       len(a.lowPriority),
 		LatestDepth:    len(a.latest),
-		Capacity:       cap(a.ActorMsgChan),
+		Capacity:       cap(a.normalPriority),
 		Accepted:       a.accepted.Load(),
 		RejectedFull:   a.rejectedFull.Load(),
 		RejectedState:  a.rejectedState.Load(),
@@ -525,7 +502,7 @@ func (a *BaseActor) run(run *actorRun, processFn func(ActorMessage)) {
 		case msg := <-a.highPriority:
 			scheduler.record(actorLaneHigh)
 			processFn(msg)
-		case msg := <-a.ActorMsgChan:
+		case msg := <-a.normalPriority:
 			scheduler.record(actorLaneNormal)
 			processFn(msg)
 		case msg := <-a.lowPriority:
@@ -560,7 +537,7 @@ func (a *BaseActor) tryReceiveFair(scheduler *actorScheduler) (ActorMessage, act
 		}
 	}
 	if scheduler.highBurst >= maxHighPriorityBurst {
-		if msg, ok := tryReceive(a.ActorMsgChan); ok {
+		if msg, ok := tryReceive(a.normalPriority); ok {
 			return msg, actorLaneNormal, true
 		}
 		if msg, ok := tryReceive(a.lowPriority); ok {
@@ -573,7 +550,7 @@ func (a *BaseActor) tryReceiveFair(scheduler *actorScheduler) (ActorMessage, act
 	if msg, ok := tryReceive(a.highPriority); ok {
 		return msg, actorLaneHigh, true
 	}
-	if msg, ok := tryReceive(a.ActorMsgChan); ok {
+	if msg, ok := tryReceive(a.normalPriority); ok {
 		return msg, actorLaneNormal, true
 	}
 	if msg, ok := tryReceive(a.lowPriority); ok {
@@ -729,7 +706,7 @@ func (a *BaseActor) abandonMailboxes() {
 	var count uint64
 	for {
 		drained := false
-		for _, mailbox := range []chan ActorMessage{a.highPriority, a.ActorMsgChan, a.lowPriority, a.latest} {
+		for _, mailbox := range []chan ActorMessage{a.highPriority, a.normalPriority, a.lowPriority, a.latest} {
 			select {
 			case <-mailbox:
 				count++

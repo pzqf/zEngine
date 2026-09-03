@@ -128,6 +128,14 @@ type recordActor struct {
 	first    sync.Once
 }
 
+type priorityTaggedMessage struct {
+	BaseActorMessage
+}
+
+func (*priorityTaggedMessage) GetPriority() MessagePriority {
+	return PriorityHigh
+}
+
 func newRecordActor(id int64, size int, gated bool) *recordActor {
 	a := &recordActor{BaseActor: NewBaseActor(id, size)}
 	if gated {
@@ -201,6 +209,37 @@ func TestActorSendPriorityPreservesPayloadAndBoundsStarvation(t *testing.T) {
 	}
 	if normalIndex < 0 || normalIndex > maxHighPriorityBurst+1 {
 		t.Fatalf("normal message starved behind high priority burst: index=%d", normalIndex)
+	}
+}
+
+func TestActorSendMessageAlwaysUsesNormalLane(t *testing.T) {
+	a := newRecordActor(112, 4, true)
+	if err := a.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := a.SendMessage(newMsg(a.ID())); err != nil {
+		t.Fatalf("send blocker: %v", err)
+	}
+	<-a.entered
+
+	msg := &priorityTaggedMessage{BaseActorMessage: BaseActorMessage{ActorID: a.ID()}}
+	if err := a.SendMessage(msg); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	stats := a.Stats()
+	if stats.NormalDepth != 1 || stats.HighDepth != 0 {
+		t.Fatalf("SendMessage lane depths: normal=%d high=%d, want normal=1 high=0", stats.NormalDepth, stats.HighDepth)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- a.StopContext(context.Background()) }()
+	close(a.release)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("StopContext: %v", err)
+	}
+	received := a.snapshot()
+	if len(received) != 2 || received[1] != msg {
+		t.Fatalf("received messages: got %#v, want blocker then original message", received)
 	}
 }
 
@@ -418,12 +457,12 @@ func TestActorLifecycleHooksAreGenerationScopedAndFailuresAreCounted(t *testing.
 	}
 }
 
-func TestActorEscalateStrategyIsExplicitlyUnsupported(t *testing.T) {
+func TestActorUnknownSupervisorStrategyIsExplicitlyUnsupported(t *testing.T) {
 	cfg := DefaultSupervisorConfig()
-	cfg.Strategy = SupervisorStrategyEscalate
+	cfg.Strategy = SupervisorStrategy(2)
 	a := NewBaseActorWithSupervisor(106, 8, cfg)
 	if err := a.Start(); !errors.Is(err, ErrActorUnsupportedSupervisorStrategy) {
-		t.Fatalf("Start with Escalate: got %v, want ErrActorUnsupportedSupervisorStrategy", err)
+		t.Fatalf("Start with unknown strategy: got %v, want ErrActorUnsupportedSupervisorStrategy", err)
 	}
 }
 

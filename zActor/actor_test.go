@@ -150,7 +150,7 @@ func (s *supervisedActor) ProcessMessage(msg ActorMessage) {
 
 // TestActor_SupervisorRestartsAndDrainsBuffered 验证 Restart 策略下 actor panic 后
 // 能自动重启并继续处理。关键回归点：**重启不得丢弃在途缓冲消息**——旧实现在 tryRestart
-// 里重建 ActorMsgChan，会把 panic 时邮箱内已排队的消息全部丢掉；修复后复用既有 channel，
+// 里重建 normal mailbox，会把 panic 时邮箱内已排队的消息全部丢掉；修复后复用既有 channel，
 // 缓冲消息在重启后应被完整排空。
 func TestActor_SupervisorRestartsAndDrainsBuffered(t *testing.T) {
 	cfg := SupervisorConfig{Strategy: SupervisorStrategyRestart, MaxRestarts: 3, RestartWindow: time.Minute, RestartBackoff: 10 * time.Millisecond}

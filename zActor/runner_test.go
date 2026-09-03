@@ -12,7 +12,7 @@ import (
 func TestRunnerDoContextRunsAndReturns(t *testing.T) {
 	r := NewRunner(1, 0)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	var result int
 	err := r.DoContext(context.Background(), func(context.Context) { result = 42 })
@@ -27,7 +27,7 @@ func TestRunnerDoContextRunsAndReturns(t *testing.T) {
 func TestRunnerDoContextSerializesConcurrentCalls(t *testing.T) {
 	r := NewRunner(2, 0)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	const n = 200
 	counter := 0 // Intentionally unlocked: the Runner is the single writer.
@@ -64,14 +64,6 @@ func TestRunnerDoesNotExecuteBeforeStart(t *testing.T) {
 		t.Fatal("DoContext executed the command in the caller before Start")
 	}
 
-	// Deprecated compatibility calls must not retain the old inline fallback.
-	r.Do(func() { ran.Store(true) })
-	if ran.Load() {
-		t.Fatal("legacy Do executed the command in the caller before Start")
-	}
-	if r.Post(func() {}) {
-		t.Fatal("legacy Post accepted a command before Start")
-	}
 }
 
 func TestRunnerLifecycleErrorPrecedesCanceledContext(t *testing.T) {
@@ -143,7 +135,7 @@ func TestRunnerDoContextReportsStoppingAndStopped(t *testing.T) {
 func TestRunnerDoContextQueueWaitIsCancelable(t *testing.T) {
 	r := NewRunner(5, 1)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -190,7 +182,7 @@ func TestRunnerDoContextQueueWaitIsCancelable(t *testing.T) {
 func TestRunnerAcceptedDoCanCancelBeforeExecution(t *testing.T) {
 	r := NewRunner(32, 2)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -288,7 +280,7 @@ func TestRunnerStopContextWaitIsCancelable(t *testing.T) {
 func TestRunnerDoContextRejectsReentrantCall(t *testing.T) {
 	r := NewRunner(8, 2)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	var nestedErr error
 	var nestedRan atomic.Bool
@@ -311,8 +303,8 @@ func TestRunnerDoContextRejectsCrossRunnerCycle(t *testing.T) {
 	b := NewRunner(10, 2)
 	a.Start()
 	b.Start()
-	defer a.Stop()
-	defer b.Stop()
+	defer stopRunner(t, a)
+	defer stopRunner(t, b)
 
 	var cycleErr error
 	err := a.DoContext(context.Background(), func(aCtx context.Context) {
@@ -333,7 +325,7 @@ func TestRunnerDoContextRejectsCrossRunnerCycle(t *testing.T) {
 func TestRunnerPanicIsolationReturnsError(t *testing.T) {
 	r := NewRunner(11, 0)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	err := r.DoContext(context.Background(), func(context.Context) { panic("boom") })
 	if !errors.Is(err, ErrRunnerCommandPanic) {
@@ -352,7 +344,7 @@ func TestRunnerPanicIsolationReturnsError(t *testing.T) {
 func TestRunnerTryPostNeverBlocksAndReportsFull(t *testing.T) {
 	r := NewRunner(12, 1)
 	r.Start()
-	defer r.Stop()
+	defer stopRunner(t, r)
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -415,8 +407,8 @@ func TestRunnerStopAndAdmissionRace(t *testing.T) {
 	if got, want := executed.Load(), accepted.Load(); got != want {
 		t.Fatalf("executed accepted commands: got %d, want %d", got, want)
 	}
-	if r.Post(func() {}) {
-		t.Fatal("legacy Post accepted a command after Stop")
+	if err := r.PostContext(context.Background(), func(context.Context) {}); !errors.Is(err, ErrRunnerStopped) {
+		t.Fatalf("PostContext after Stop: got %v, want ErrRunnerStopped", err)
 	}
 }
 
@@ -441,7 +433,16 @@ func TestRunnerStopIsIdempotentBeforeAndAfterStart(t *testing.T) {
 	if err := r.StopContext(context.Background()); err != nil {
 		t.Fatalf("second StopContext: %v", err)
 	}
-	r.Stop()
+	if err := r.StopContext(context.Background()); err != nil {
+		t.Fatalf("third StopContext: %v", err)
+	}
+}
+
+func stopRunner(t *testing.T, r *Runner) {
+	t.Helper()
+	if err := r.StopContext(context.Background()); err != nil {
+		t.Errorf("StopContext: %v", err)
+	}
 }
 
 func waitForRunnerError(t *testing.T, r *Runner, target error) {
