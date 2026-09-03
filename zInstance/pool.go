@@ -189,20 +189,6 @@ func (p *Pool[K, T]) AcquireChecked(
 	}
 }
 
-// Acquire preserves the original API for source compatibility.
-// Deprecated: use AcquireChecked and handle build/admission errors.
-func (p *Pool[K, T]) Acquire(key K, affinityID uint64, softCap, hardCap int, build func(id uint64) T) (uint64, T) {
-	var checkedBuilder func(uint64) (T, error)
-	if build != nil {
-		checkedBuilder = func(id uint64) (T, error) { return build(id), nil }
-	}
-	id, inst, err := p.AcquireChecked(key, affinityID, softCap, hardCap, checkedBuilder)
-	if err != nil {
-		panic(err)
-	}
-	return id, inst
-}
-
 // AddChecked builds and registers an explicit instance. It does not reserve an admission
 // slot; pinned instances are excluded from Reap and must be explicitly destroyed.
 func (p *Pool[K, T]) AddChecked(key K, pinned bool, build func(id uint64) (T, error)) (uint64, T, error) {
@@ -232,20 +218,6 @@ func (p *Pool[K, T]) addChecked(key K, pinned bool, reserved int, build func(id 
 	}
 	p.finishCreation(e, inst)
 	return e.id, inst, nil
-}
-
-// Add preserves the original API for source compatibility.
-// Deprecated: use AddChecked and handle build errors.
-func (p *Pool[K, T]) Add(key K, pinned bool, build func(id uint64) T) (uint64, T) {
-	var checkedBuilder func(uint64) (T, error)
-	if build != nil {
-		checkedBuilder = func(id uint64) (T, error) { return build(id), nil }
-	}
-	id, inst, err := p.AddChecked(key, pinned, checkedBuilder)
-	if err != nil {
-		panic(err)
-	}
-	return id, inst
 }
 
 // ReserveChecked reserves one admission slot on an exact active instance.
@@ -305,12 +277,6 @@ func (p *Pool[K, T]) DestroyChecked(id uint64) error {
 
 	p.evict(e)
 	return nil
-}
-
-// Destroy preserves the original no-result API while keeping the new safety boundary.
-// Deprecated: use DestroyChecked to observe a reserved/creating rejection.
-func (p *Pool[K, T]) Destroy(id uint64) {
-	_ = p.DestroyChecked(id)
 }
 
 // Reap removes non-pinned instances that remain empty beyond grace. Occupancy, onEvict,
