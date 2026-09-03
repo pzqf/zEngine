@@ -16,6 +16,7 @@ var (
 	ErrNilInstanceBuilder = errors.New("instance builder is nil")
 	ErrInstanceBuildPanic = errors.New("instance builder panicked")
 	ErrInstanceCreating   = errors.New("instance is still being created")
+	ErrInstanceNotFound   = errors.New("instance is not active")
 	ErrInstanceReserved   = errors.New("instance has in-flight reservations")
 )
 
@@ -245,6 +246,26 @@ func (p *Pool[K, T]) Add(key K, pinned bool, build func(id uint64) T) (uint64, T
 		panic(err)
 	}
 	return id, inst
+}
+
+// ReserveChecked reserves one admission slot on an exact active instance.
+// It does not choose an instance or apply a capacity policy; callers that
+// already own that decision use this to fence Reap until they commit or abort.
+func (p *Pool[K, T]) ReserveChecked(id uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byID[id]
+	if !ok || e.state == entryDestroying {
+		return fmt.Errorf("%w: %d", ErrInstanceNotFound, id)
+	}
+	if e.state == entryCreating {
+		return fmt.Errorf("%w: %d", ErrInstanceCreating, id)
+	}
+	e.reserved++
+	e.emptySince = time.Time{}
+	e.revision++
+	p.bumpKeyVersionLocked(e.key)
+	return nil
 }
 
 // Release returns one in-flight reservation. Unknown IDs and already released entries

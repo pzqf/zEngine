@@ -404,6 +404,57 @@ func TestPoolReapDoesNotOvertakeConcurrentAcquire(t *testing.T) {
 	p.Release(id)
 }
 
+func TestPoolReapDoesNotOvertakeConcurrentExactReserve(t *testing.T) {
+	p := NewPool[int, *contractInst](nil)
+	id, inst, err := p.AddChecked(1, false, func(uint64) (*contractInst, error) {
+		return &contractInst{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Reap(0)
+
+	reapInOccupancy := make(chan struct{})
+	unblockReap := make(chan struct{})
+	var calls atomic.Int64
+	inst.occupancyHook = func() int {
+		if calls.Add(1) == 1 {
+			close(reapInOccupancy)
+			<-unblockReap
+		}
+		return 0
+	}
+	reapDone := make(chan struct{})
+	go func() {
+		p.Reap(0)
+		close(reapDone)
+	}()
+	<-reapInOccupancy
+
+	if err := p.ReserveChecked(id); err != nil {
+		t.Fatalf("ReserveChecked: %v", err)
+	}
+	close(unblockReap)
+	select {
+	case <-reapDone:
+	case <-time.After(time.Second):
+		t.Fatal("Reap did not finish")
+	}
+	if _, ok := p.Get(id); !ok {
+		t.Fatal("Reap removed an exactly reserved instance")
+	}
+	if err := p.DestroyChecked(id); !errors.Is(err, ErrInstanceReserved) {
+		t.Fatalf("DestroyChecked error=%v, want ErrInstanceReserved", err)
+	}
+	p.Release(id)
+	if err := p.DestroyChecked(id); err != nil {
+		t.Fatalf("DestroyChecked after Release: %v", err)
+	}
+	if err := p.ReserveChecked(id); !errors.Is(err, ErrInstanceNotFound) {
+		t.Fatalf("ReserveChecked removed error=%v, want ErrInstanceNotFound", err)
+	}
+}
+
 func TestPoolKeyVersionDoesNotABAWhenGroupIsRecreated(t *testing.T) {
 	p := NewPool[int, *contractInst](nil)
 	oldID, oldInst, err := p.AddChecked(1, false, func(uint64) (*contractInst, error) {
