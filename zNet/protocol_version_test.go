@@ -3,6 +3,7 @@ package zNet
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -188,6 +189,14 @@ func TestProtocolVersionNegotiatorSnapshotAndFailureIsolation(t *testing.T) {
 	if snapshot, ok := negotiator.Snapshot(); !ok || snapshot != want {
 		t.Fatalf("Snapshot() = (%+v, %v), want (%+v, true)", snapshot, ok, want)
 	}
+	if repeated, err := negotiator.Negotiate(ProtocolVersionPolicy{
+		Enabled:      true,
+		MinVersion:   1,
+		MaxVersion:   3,
+		Capabilities: 0b0101,
+	}); err != nil || repeated != want {
+		t.Fatalf("idempotent Negotiate() = (%+v, %v), want (%+v, nil)", repeated, err, want)
+	}
 
 	_, err = negotiator.Negotiate(ProtocolVersionPolicy{Enabled: true, MinVersion: 5, MaxVersion: 6})
 	if !errors.Is(err, ErrNoCompatibleProtocolVersion) {
@@ -195,6 +204,18 @@ func TestProtocolVersionNegotiatorSnapshotAndFailureIsolation(t *testing.T) {
 	}
 	if snapshot, ok := negotiator.Snapshot(); !ok || snapshot != want {
 		t.Fatalf("Snapshot() after failure = (%+v, %v), want (%+v, true)", snapshot, ok, want)
+	}
+	_, err = negotiator.Negotiate(ProtocolVersionPolicy{
+		Enabled:      true,
+		MinVersion:   2,
+		MaxVersion:   4,
+		Capabilities: 0b0011,
+	})
+	if !errors.Is(err, ErrProtocolCompatibilityConflict) {
+		t.Fatalf("conflicting Negotiate() error = %v, want ErrProtocolCompatibilityConflict", err)
+	}
+	if snapshot, ok := negotiator.Snapshot(); !ok || snapshot != want {
+		t.Fatalf("Snapshot() after conflict = (%+v, %v), want (%+v, true)", snapshot, ok, want)
 	}
 }
 
@@ -236,13 +257,18 @@ func TestProtocolVersionNegotiatorConcurrentSnapshots(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	start := make(chan struct{})
+	var conflicts atomic.Int64
 	for i := 0; i < 24; i++ {
 		peer := peers[i%len(peers)]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for attempt := 0; attempt < 200; attempt++ {
-				if _, err := negotiator.Negotiate(peer); err != nil {
+				if _, err := negotiator.Negotiate(peer); errors.Is(err, ErrProtocolCompatibilityConflict) {
+					conflicts.Add(1)
+				} else if err != nil {
 					t.Errorf("Negotiate() error = %v", err)
 					return
 				}
@@ -253,6 +279,7 @@ func TestProtocolVersionNegotiatorConcurrentSnapshots(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			for attempt := 0; attempt < 200; attempt++ {
 				snapshot, ok := negotiator.Snapshot()
 				if !ok {
@@ -265,12 +292,16 @@ func TestProtocolVersionNegotiatorConcurrentSnapshots(t *testing.T) {
 			}
 		}()
 	}
+	close(start)
 	wg.Wait()
 
 	if snapshot, ok := negotiator.Snapshot(); !ok {
 		t.Fatal("Snapshot() remained unset after successful negotiations")
 	} else if _, exists := valid[snapshot]; !exists {
 		t.Fatalf("final Snapshot() = %+v", snapshot)
+	}
+	if conflicts.Load() == 0 {
+		t.Fatal("concurrent negotiation did not exercise conflicting candidates")
 	}
 }
 

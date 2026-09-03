@@ -12,6 +12,7 @@ var (
 	ErrInvalidProtocolVersionPolicy    = errors.New("invalid protocol version policy")
 	ErrNoCompatibleProtocolVersion     = errors.New("no compatible protocol version")
 	ErrProtocolCapabilitiesUnavailable = errors.New("required protocol capabilities unavailable")
+	ErrProtocolCompatibilityConflict   = errors.New("protocol compatibility already established")
 )
 
 // ProtocolVersionPolicy describes one endpoint's version range and capability
@@ -120,9 +121,9 @@ func NegotiateProtocolCompatibility(local, peer ProtocolVersionPolicy) (Protocol
 	}, nil
 }
 
-// ProtocolVersionNegotiator owns an immutable local policy and publishes each
-// successful result as one atomic snapshot. Failed negotiations leave the last
-// successful snapshot unchanged.
+// ProtocolVersionNegotiator owns an immutable local policy and publishes the
+// first successful result as one atomic snapshot. Repeating the same result is
+// idempotent; a conflicting result is rejected to prevent in-session downgrade.
 type ProtocolVersionNegotiator struct {
 	local   ProtocolVersionPolicy
 	current atomic.Pointer[ProtocolCompatibility]
@@ -151,8 +152,21 @@ func (n *ProtocolVersionNegotiator) Negotiate(peer ProtocolVersionPolicy) (Proto
 		return ProtocolCompatibility{}, err
 	}
 	snapshot := compatibility
-	n.current.Store(&snapshot)
-	return compatibility, nil
+	if n.current.CompareAndSwap(nil, &snapshot) {
+		return compatibility, nil
+	}
+	current := n.current.Load()
+	if current != nil && *current == compatibility {
+		return *current, nil
+	}
+	return ProtocolCompatibility{}, fmt.Errorf(
+		"%w: current version=%d capabilities=0x%016x, candidate version=%d capabilities=0x%016x",
+		ErrProtocolCompatibilityConflict,
+		current.Version,
+		current.Capabilities,
+		compatibility.Version,
+		compatibility.Capabilities,
+	)
 }
 
 // Snapshot returns a complete point-in-time copy and whether any negotiation
