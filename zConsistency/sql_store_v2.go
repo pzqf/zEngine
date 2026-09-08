@@ -53,7 +53,10 @@ func (o *SQLOutbox) Enqueue(ctx context.Context, message OutboxMessage) error {
 		message.CreatedAt = now
 	}
 	if message.NextRetryAt.IsZero() {
-		message.NextRetryAt = message.CreatedAt
+		// 新行不立即"可重投"：重投扫描与首次投递并发，若 next_retry_at=CreatedAt，
+		// 扫描会在首个 ACK 在途窗口内把同一消息再发一遍。默认按退避曲线给首投留出
+		// ACK 往返窗口；需要更快重试的调用方自行显式设置 NextRetryAt。
+		message.NextRetryAt = message.CreatedAt.Add(retryDelay(o.retryBackoff, o.maxRetryDelay, 0))
 	}
 	setOutboxState(&message, OutboxStateEnqueued)
 	payload := append([]byte(nil), message.Payload...)
@@ -153,9 +156,13 @@ func (o *SQLOutbox) RecordAttempt(ctx context.Context, requestID uint64, cause e
 	}
 	now := time.Now()
 	if cause == nil {
+		// 成功发送同样要调度下次重投资格：否则 next_retry_at 停留在入队时刻（已过期），
+		// 重投扫描会把"ACK 在途"的消息立刻重发一遍。ACK 丢失时按退避曲线（500ms 起）
+		// 重投，at-least-once 语义不变，只消除在途窗口内的系统性重复投递。
+		nextRetry := now.Add(retryDelay(o.retryBackoff, o.maxRetryDelay, message.Attempts))
 		return o.recordAttemptAffected(ctx, requestID,
-			"UPDATE "+o.table+" SET attempts=attempts+1, last_attempt_at=? WHERE request_id=? AND acked=0 AND dead_letter=0",
-			now, requestID)
+			"UPDATE "+o.table+" SET attempts=attempts+1, last_attempt_at=?, next_retry_at=? WHERE request_id=? AND acked=0 AND dead_letter=0",
+			now, nextRetry, requestID)
 	}
 	nextRetry := now.Add(retryDelay(o.retryBackoff, o.maxRetryDelay, message.Attempts))
 	return o.recordAttemptAffected(ctx, requestID,

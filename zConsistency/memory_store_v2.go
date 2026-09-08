@@ -20,7 +20,9 @@ func (m *MemoryOutbox) Enqueue(ctx context.Context, message OutboxMessage) error
 		message.CreatedAt = now
 	}
 	if message.NextRetryAt.IsZero() {
-		message.NextRetryAt = message.CreatedAt
+		// 与 SQL store 一致：新行默认按退避曲线调度下次重投资格，
+		// 不与首次投递在 ACK 在途窗口内竞争重发。
+		message.NextRetryAt = message.CreatedAt.Add(retryDelay(m.retryBackoff, m.maxRetryDelay, 0))
 	}
 	setOutboxState(&message, OutboxStateEnqueued)
 	m.messages.Store(message.RequestID, cloneOutboxMessage(message))
@@ -88,9 +90,11 @@ func (m *MemoryOutbox) RecordAttempt(ctx context.Context, requestID uint64, caus
 	}
 	message.Attempts++
 	message.LastAttemptAt = time.Now()
+	// 成功发送同样调度下次重投资格（与 SQL store 一致）：next_retry_at 不得停留在
+	// 入队时刻，否则重投扫描会在 ACK 在途窗口内重复投递。
+	message.NextRetryAt = message.LastAttemptAt.Add(retryDelay(m.retryBackoff, m.maxRetryDelay, message.Attempts-1))
 	if cause != nil {
 		message.LastError = cause.Error()
-		message.NextRetryAt = message.LastAttemptAt.Add(retryDelay(m.retryBackoff, m.maxRetryDelay, message.Attempts-1))
 		setOutboxState(&message, OutboxStateEnqueued)
 	}
 	m.messages.Store(requestID, message)
